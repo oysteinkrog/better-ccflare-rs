@@ -206,11 +206,11 @@ export function createAnalyticsHandler(context: APIContext) {
 			`);
 
 			const consolidatedResult = consolidatedQuery.get(
-				bucket.bucketMs,
-				bucket.bucketMs,
-				NO_ACCOUNT_ID,
-				NO_ACCOUNT_ID,
-				...queryParams,
+				...queryParams, // For ${whereClause} in filtered_requests CTE
+				bucket.bucketMs, // For (timestamp / ?)
+				bucket.bucketMs, // For (* ?)
+				NO_ACCOUNT_ID, // For COALESCE(a.name, ?)
+				NO_ACCOUNT_ID, // For COALESCE(account_used, ?)
 			) as {
 				total_requests: number;
 				success_rate: number;
