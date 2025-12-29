@@ -106,18 +106,18 @@ jobs:
 
           \`\`\`bash
           # Linux x86_64
-          wget https://github.com/tombii/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-linux-amd64
+          wget https://github.com/SijanC147/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-linux-amd64
           chmod +x better-ccflare-linux-amd64
           ./better-ccflare-linux-amd64
 
           # macOS Apple Silicon (ARM64)
-          curl -L -o better-ccflare-macos-arm64 https://github.com/tombii/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-macos-arm64
+          curl -L -o better-ccflare-macos-arm64 https://github.com/SijanC147/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-macos-arm64
           chmod +x better-ccflare-macos-arm64
           xattr -d com.apple.quarantine better-ccflare-macos-arm64  # Required for unsigned binaries
           ./better-ccflare-macos-arm64
           \`\`\`
 
-          **macOS Users:** The \`xattr\` command is required to bypass Gatekeeper for unsigned binaries. If you prefer not to run unsigned binaries, [install from source](https://github.com/tombii/better-ccflare#install-from-source) instead.
+          **macOS Users:** The \`xattr\` command is required to bypass Gatekeeper for unsigned binaries. If you prefer not to run unsigned binaries, [install from source](https://github.com/SijanC147/better-ccflare#install-from-source) instead.
 
           Or install via npm: \`npm install -g better-ccflare@${{ github.ref_name }}\`
 
@@ -139,18 +139,18 @@ jobs:
 
           \`\`\`bash
           # Linux x86_64
-          wget https://github.com/tombii/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-linux-amd64
+          wget https://github.com/SijanC147/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-linux-amd64
           chmod +x better-ccflare-linux-amd64
           ./better-ccflare-linux-amd64
 
           # macOS Apple Silicon (ARM64)
-          curl -L -o better-ccflare-macos-arm64 https://github.com/tombii/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-macos-arm64
+          curl -L -o better-ccflare-macos-arm64 https://github.com/SijanC147/better-ccflare/releases/download/${{ github.ref_name }}/better-ccflare-macos-arm64
           chmod +x better-ccflare-macos-arm64
           xattr -d com.apple.quarantine better-ccflare-macos-arm64  # Required for unsigned binaries
           ./better-ccflare-macos-arm64
           \`\`\`
 
-          **macOS Users:** The \`xattr\` command is required to bypass Gatekeeper for unsigned binaries. If you prefer not to run unsigned binaries, [install from source](https://github.com/tombii/better-ccflare#install-from-source) instead.
+          **macOS Users:** The \`xattr\` command is required to bypass Gatekeeper for unsigned binaries. If you prefer not to run unsigned binaries, [install from source](https://github.com/SijanC147/better-ccflare#install-from-source) instead.
 
           Or install via npm: \`npm install -g better-ccflare@${{ github.ref_name }}\`
 
@@ -185,7 +185,7 @@ jobs:
                     HASH=$(echo "$commit" | cut -d' ' -f1)
                     MSG=$(echo "$commit" | cut -d' ' -f2-)
                     CHANGELOG="$CHANGELOG
-          - $MSG ([\`$HASH\`](https://github.com/tombii/better-ccflare/commit/$HASH))"
+          - $MSG ([\`$HASH\`](https://github.com/SijanC147/better-ccflare/commit/$HASH))"
                   fi
                 done <<< "$FEATURES"
               fi
@@ -200,7 +200,7 @@ jobs:
                     HASH=$(echo "$commit" | cut -d' ' -f1)
                     MSG=$(echo "$commit" | cut -d' ' -f2-)
                     CHANGELOG="$CHANGELOG
-          - $MSG ([\`$HASH\`](https://github.com/tombii/better-ccflare/commit/$HASH))"
+          - $MSG ([\`$HASH\`](https://github.com/SijanC147/better-ccflare/commit/$HASH))"
                   fi
                 done <<< "$FIXES"
               fi
@@ -215,7 +215,7 @@ jobs:
                     HASH=$(echo "$commit" | cut -d' ' -f1)
                     MSG=$(echo "$commit" | cut -d' ' -f2-)
                     CHANGELOG="$CHANGELOG
-          - $MSG ([\`$HASH\`](https://github.com/tombii/better-ccflare/commit/$HASH))"
+          - $MSG ([\`$HASH\`](https://github.com/SijanC147/better-ccflare/commit/$HASH))"
                   fi
                 done <<< "$SECURITY"
               fi
@@ -230,7 +230,7 @@ jobs:
                     HASH=$(echo "$commit" | cut -d' ' -f1)
                     MSG=$(echo "$commit" | cut -d' ' -f2-)
                     CHANGELOG="$CHANGELOG
-          - $MSG ([\`$HASH\`](https://github.com/tombii/better-ccflare/commit/$HASH))"
+          - $MSG ([\`$HASH\`](https://github.com/SijanC147/better-ccflare/commit/$HASH))"
                   fi
                 done <<< "$IMPROVEMENTS"
               fi
@@ -239,7 +239,7 @@ jobs:
               CHANGELOG="$CHANGELOG
 
           ## Full Changelog
-          📋 [Compare with previous version](https://github.com/tombii/better-ccflare/compare/$PREV_TAG..${{ github.ref_name }})"
+          📋 [Compare with previous version](https://github.com/SijanC147/better-ccflare/compare/$PREV_TAG..${{ github.ref_name }})"
             fi
           fi
 
