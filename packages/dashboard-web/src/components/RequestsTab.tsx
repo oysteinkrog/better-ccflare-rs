@@ -10,10 +10,13 @@ import {
 	ChevronDown,
 	ChevronRight,
 	Clock,
+	Coins,
 	Eye,
 	Filter,
+	FolderOpen,
 	Hash,
 	RefreshCw,
+	Sparkles,
 	User,
 	X,
 } from "lucide-react";
@@ -61,6 +64,9 @@ export function RequestsTab() {
 	const [statusCodeFilters, setStatusCodeFilters] = useState<Set<string>>(
 		new Set(),
 	);
+	const [withTokensOnly, setWithTokensOnly] = useState(false);
+	const [modelFilters, setModelFilters] = useState<Set<string>>(new Set());
+	const [projectFilters, setProjectFilters] = useState<Set<string>>(new Set());
 
 	const {
 		data: requestsData,
@@ -128,6 +134,34 @@ export function RequestsTab() {
 			).sort()
 		: [];
 
+	// Extract unique models for filter
+	const uniqueModels = data
+		? Array.from(
+				new Set(
+					data.requests
+						.map((r) => {
+							const summary = data.summaries.get(r.id);
+							return summary?.model;
+						})
+						.filter((model): model is string => !!model),
+				),
+			).sort()
+		: [];
+
+	// Extract unique projects for filter
+	const uniqueProjects = data
+		? Array.from(
+				new Set(
+					data.requests
+						.map((r) => {
+							const summary = data.summaries.get(r.id);
+							return summary?.project || r.meta.project;
+						})
+						.filter((project): project is string => !!project),
+				),
+			).sort()
+		: [];
+
 	// Filter requests based on selected filters
 	const filteredRequests = data
 		? data.requests.filter((request) => {
@@ -163,6 +197,29 @@ export function RequestsTab() {
 					const toDate = new Date(dateTo);
 					toDate.setHours(23, 59, 59, 999);
 					if (requestDate > toDate) return false;
+				}
+
+				// With tokens filter
+				if (withTokensOnly) {
+					const summary = data.summaries.get(request.id);
+					const hasTokens =
+						(summary?.totalTokens && summary.totalTokens > 0) ||
+						(summary?.costUsd && summary.costUsd > 0);
+					if (!hasTokens) return false;
+				}
+
+				// Model filter
+				if (modelFilters.size > 0) {
+					const summary = data.summaries.get(request.id);
+					const model = summary?.model;
+					if (!model || !modelFilters.has(model)) return false;
+				}
+
+				// Project filter
+				if (projectFilters.size > 0) {
+					const summary = data.summaries.get(request.id);
+					const project = summary?.project || request.meta.project;
+					if (!project || !projectFilters.has(project)) return false;
 				}
 
 				return true;
@@ -226,6 +283,30 @@ export function RequestsTab() {
 		});
 	};
 
+	const toggleModel = (model: string) => {
+		setModelFilters((prev) => {
+			const next = new Set(prev);
+			if (next.has(model)) {
+				next.delete(model);
+			} else {
+				next.add(model);
+			}
+			return next;
+		});
+	};
+
+	const toggleProject = (project: string) => {
+		setProjectFilters((prev) => {
+			const next = new Set(prev);
+			if (next.has(project)) {
+				next.delete(project);
+			} else {
+				next.add(project);
+			}
+			return next;
+		});
+	};
+
 	const getStatusCodeColor = (code: number) => {
 		if (code >= 200 && code < 300) return "text-green-600";
 		if (code >= 400 && code < 500) return "text-yellow-600";
@@ -239,6 +320,9 @@ export function RequestsTab() {
 		setDateFrom("");
 		setDateTo("");
 		setStatusCodeFilters(new Set());
+		setWithTokensOnly(false);
+		setModelFilters(new Set());
+		setProjectFilters(new Set());
 	};
 
 	const hasActiveFilters =
@@ -246,7 +330,10 @@ export function RequestsTab() {
 		agentFilter !== "all" ||
 		dateFrom ||
 		dateTo ||
-		statusCodeFilters.size > 0;
+		statusCodeFilters.size > 0 ||
+		withTokensOnly ||
+		modelFilters.size > 0 ||
+		projectFilters.size > 0;
 
 	const decodeBase64 = (str: string | null): string => {
 		if (!str) return "No data";
@@ -392,6 +479,49 @@ export function RequestsTab() {
 									</button>
 								</Badge>
 							)}
+							{withTokensOnly && (
+								<Badge variant="outline" className="gap-1.5 pr-1">
+									<Coins className="h-3 w-3" />
+									With tokens
+									<button
+										type="button"
+										onClick={() => setWithTokensOnly(false)}
+										className="ml-1 p-0.5 hover:bg-destructive/20 rounded"
+									>
+										<X className="h-3 w-3" />
+									</button>
+								</Badge>
+							)}
+							{modelFilters.size > 0 && (
+								<Badge variant="outline" className="gap-1.5 pr-1">
+									<Sparkles className="h-3 w-3" />
+									{Array.from(modelFilters).length === 1
+										? Array.from(modelFilters)[0]
+										: `${modelFilters.size} models`}
+									<button
+										type="button"
+										onClick={() => setModelFilters(new Set())}
+										className="ml-1 p-0.5 hover:bg-destructive/20 rounded"
+									>
+										<X className="h-3 w-3" />
+									</button>
+								</Badge>
+							)}
+							{projectFilters.size > 0 && (
+								<Badge variant="outline" className="gap-1.5 pr-1">
+									<FolderOpen className="h-3 w-3" />
+									{Array.from(projectFilters).length === 1
+										? Array.from(projectFilters)[0]
+										: `${projectFilters.size} projects`}
+									<button
+										type="button"
+										onClick={() => setProjectFilters(new Set())}
+										className="ml-1 p-0.5 hover:bg-destructive/20 rounded"
+									>
+										<X className="h-3 w-3" />
+									</button>
+								</Badge>
+							)}
 							<div className="ml-auto flex items-center gap-2">
 								<span className="text-xs text-muted-foreground">
 									{filteredRequests.length} of {data?.requests.length || 0}{" "}
@@ -495,7 +625,7 @@ export function RequestsTab() {
 							<div className="h-px bg-border" />
 
 							{/* Resource Filters */}
-							<div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+							<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
 								{/* Account Filter */}
 								<div>
 									<Label className="text-xs flex items-center gap-1 mb-2">
@@ -607,6 +737,187 @@ export function RequestsTab() {
 										</DropdownMenuContent>
 									</DropdownMenu>
 								</div>
+
+								{/* Model Filter */}
+								<div>
+									<Label className="text-xs flex items-center gap-1 mb-2">
+										<Sparkles className="h-3 w-3" />
+										Model
+									</Label>
+									<DropdownMenu>
+										<DropdownMenuTrigger asChild>
+											<Button
+												variant="outline"
+												className="h-9 w-full justify-between font-normal"
+											>
+												{modelFilters.size > 0
+													? `${modelFilters.size} selected`
+													: "All models"}
+												<ChevronDown className="h-4 w-4 opacity-50" />
+											</Button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent className="w-56 max-h-64 overflow-y-auto">
+											<div className="p-2">
+												<div className="text-xs font-medium text-muted-foreground mb-2">
+													Select models
+												</div>
+												{uniqueModels.map((model) => (
+													<button
+														key={model}
+														type="button"
+														className="flex items-center gap-2 p-2 hover:bg-accent rounded cursor-pointer w-full text-left"
+														onClick={() => toggleModel(model)}
+													>
+														<div
+															className={`w-4 h-4 border rounded-sm flex items-center justify-center ${
+																modelFilters.has(model)
+																	? "bg-primary border-primary"
+																	: "border-input"
+															}`}
+														>
+															{modelFilters.has(model) && (
+																<svg
+																	className="w-3 h-3 text-primary-foreground"
+																	fill="none"
+																	viewBox="0 0 24 24"
+																	stroke="currentColor"
+																	aria-label="Selected"
+																>
+																	<title>Selected</title>
+																	<path
+																		strokeLinecap="round"
+																		strokeLinejoin="round"
+																		strokeWidth={3}
+																		d="M5 13l4 4L19 7"
+																	/>
+																</svg>
+															)}
+														</div>
+														<span className="text-sm font-medium truncate">
+															{model}
+														</span>
+													</button>
+												))}
+											</div>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
+
+								{/* Project Filter */}
+								<div>
+									<Label className="text-xs flex items-center gap-1 mb-2">
+										<FolderOpen className="h-3 w-3" />
+										Project
+									</Label>
+									<DropdownMenu>
+										<DropdownMenuTrigger asChild>
+											<Button
+												variant="outline"
+												className="h-9 w-full justify-between font-normal"
+											>
+												{projectFilters.size > 0
+													? `${projectFilters.size} selected`
+													: "All projects"}
+												<ChevronDown className="h-4 w-4 opacity-50" />
+											</Button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent className="w-56 max-h-64 overflow-y-auto">
+											<div className="p-2">
+												<div className="text-xs font-medium text-muted-foreground mb-2">
+													Select projects
+												</div>
+												{uniqueProjects.length === 0 ? (
+													<div className="text-xs text-muted-foreground p-2">
+														No projects found. Set X-CCFlare-Project header in
+														your requests.
+													</div>
+												) : (
+													uniqueProjects.map((project) => (
+														<button
+															key={project}
+															type="button"
+															className="flex items-center gap-2 p-2 hover:bg-accent rounded cursor-pointer w-full text-left"
+															onClick={() => toggleProject(project)}
+														>
+															<div
+																className={`w-4 h-4 border rounded-sm flex items-center justify-center ${
+																	projectFilters.has(project)
+																		? "bg-primary border-primary"
+																		: "border-input"
+																}`}
+															>
+																{projectFilters.has(project) && (
+																	<svg
+																		className="w-3 h-3 text-primary-foreground"
+																		fill="none"
+																		viewBox="0 0 24 24"
+																		stroke="currentColor"
+																		aria-label="Selected"
+																	>
+																		<title>Selected</title>
+																		<path
+																			strokeLinecap="round"
+																			strokeLinejoin="round"
+																			strokeWidth={3}
+																			d="M5 13l4 4L19 7"
+																		/>
+																	</svg>
+																)}
+															</div>
+															<span className="text-sm font-medium truncate">
+																{project}
+															</span>
+														</button>
+													))
+												)}
+											</div>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
+							</div>
+
+							<div className="h-px bg-border" />
+
+							{/* Token Usage Filter */}
+							<div>
+								<h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+									<Coins className="h-4 w-4" />
+									Token Usage
+								</h4>
+								<button
+									type="button"
+									className="flex items-center gap-2 p-2 hover:bg-accent rounded cursor-pointer"
+									onClick={() => setWithTokensOnly(!withTokensOnly)}
+								>
+									<div
+										className={`w-4 h-4 border rounded-sm flex items-center justify-center ${
+											withTokensOnly
+												? "bg-primary border-primary"
+												: "border-input"
+										}`}
+									>
+										{withTokensOnly && (
+											<svg
+												className="w-3 h-3 text-primary-foreground"
+												fill="none"
+												viewBox="0 0 24 24"
+												stroke="currentColor"
+												aria-label="Selected"
+											>
+												<title>Selected</title>
+												<path
+													strokeLinecap="round"
+													strokeLinejoin="round"
+													strokeWidth={3}
+													d="M5 13l4 4L19 7"
+												/>
+											</svg>
+										)}
+									</div>
+									<span className="text-sm">
+										Show only requests with token usage
+									</span>
+								</button>
 							</div>
 						</div>
 					</div>

@@ -498,6 +498,7 @@ class API extends HttpClient {
 		filters?: {
 			accounts?: string[];
 			models?: string[];
+			projects?: string[];
 			status?: "all" | "success" | "error";
 		},
 		mode: "normal" | "cumulative" = "normal",
@@ -510,6 +511,9 @@ class API extends HttpClient {
 		}
 		if (filters?.models?.length) {
 			params.append("models", filters.models.join(","));
+		}
+		if (filters?.projects?.length) {
+			params.append("projects", filters.projects.join(","));
 		}
 		if (filters?.status && filters.status !== "all") {
 			params.append("status", filters.status);
@@ -1180,6 +1184,27 @@ class API extends HttpClient {
 			url,
 			"account token health",
 		);
+	}
+
+	async getProjects(): Promise<string[]> {
+		const startTime = Date.now();
+		const url = "/api/projects";
+
+		this.logger.debug(`→ GET ${url}`);
+
+		try {
+			const response = await this.get<string[]>(url);
+			const duration = Date.now() - startTime;
+			this.logger.debug(`← GET ${url} - 200 (${duration}ms)`);
+			return response;
+		} catch (error) {
+			const duration = Date.now() - startTime;
+			this.logger.error(`✗ GET ${url} - ERROR (${duration}ms)`, {
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+			throw error;
+		}
 	}
 }
 

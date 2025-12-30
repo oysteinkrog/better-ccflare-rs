@@ -1,7 +1,7 @@
 import { format } from "date-fns";
 import React, { useCallback, useMemo, useState } from "react";
 import type { TimeRange } from "../constants";
-import { useAnalytics } from "../hooks/queries";
+import { useAnalytics, useProjects } from "../hooks/queries";
 import {
 	AnalyticsControls,
 	CumulativeGrowthChart,
@@ -23,6 +23,7 @@ export const AnalyticsTab = React.memo(() => {
 	const [filters, setFilters] = useState<FilterState>({
 		accounts: [],
 		models: [],
+		projects: [],
 		status: "all",
 	});
 
@@ -33,6 +34,9 @@ export const AnalyticsTab = React.memo(() => {
 		viewMode,
 		modelBreakdown,
 	);
+
+	// Fetch available projects for filtering
+	const { data: availableProjects = [] } = useProjects();
 
 	// Get unique accounts and models from analytics data
 	const availableAccounts = useMemo(
@@ -151,6 +155,7 @@ export const AnalyticsTab = React.memo(() => {
 	const activeFilterCount =
 		filters.accounts.length +
 		filters.models.length +
+		filters.projects.length +
 		(filters.status !== "all" ? 1 : 0);
 
 	return (
@@ -171,6 +176,7 @@ export const AnalyticsTab = React.memo(() => {
 				setFilters={setFilters}
 				availableAccounts={availableAccounts}
 				availableModels={availableModels}
+				availableProjects={availableProjects}
 				activeFilterCount={activeFilterCount}
 				filterOpen={filterOpen}
 				setFilterOpen={setFilterOpen}
