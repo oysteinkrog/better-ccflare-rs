@@ -222,6 +222,15 @@ export class APIRouter {
 			apiKeysGenerateHandler(req),
 		);
 		this.handlers.set("GET:/api/api-keys/stats", () => apiKeysStatsHandler());
+
+		// Projects route (for filtering)
+		this.handlers.set("GET:/api/projects", () => {
+			const statsRepository = dbOps.getStatsRepository();
+			const projects = statsRepository.getDistinctProjects();
+			return new Response(JSON.stringify(projects), {
+				headers: { "Content-Type": "application/json" },
+			});
+		});
 	}
 
 	/**
