@@ -40,3 +40,5 @@ test_*.sh
 
 **/*.bun-build
 .serena
+
+references
