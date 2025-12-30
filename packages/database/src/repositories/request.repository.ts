@@ -11,6 +11,7 @@ export interface RequestData {
 	responseTime: number;
 	failoverAttempts: number;
 	agentUsed?: string;
+	project?: string | null;
 	usage?: {
 		model?: string;
 		promptTokens?: number;
@@ -51,13 +52,13 @@ export class RequestRepository extends BaseRepository<RequestData> {
 		this.run(
 			`
 			INSERT OR REPLACE INTO requests (
-				id, timestamp, method, path, account_used, 
+				id, timestamp, method, path, account_used,
 				status_code, success, error_message, response_time_ms, failover_attempts,
 				model, prompt_tokens, completion_tokens, total_tokens, cost_usd,
 				input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens,
-				agent_used, output_tokens_per_second
+				agent_used, output_tokens_per_second, project
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			[
 				data.id,
@@ -81,6 +82,7 @@ export class RequestRepository extends BaseRepository<RequestData> {
 				usage?.outputTokens || null,
 				data.agentUsed || null,
 				usage?.tokensPerSecond || null,
+				data.project || null,
 			],
 		);
 	}

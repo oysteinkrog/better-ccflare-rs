@@ -49,6 +49,7 @@ export interface ResponseHandlerOptions {
 	retryAttempt: number;
 	failoverAttempts: number;
 	agentUsed?: string | null;
+	project?: string | null;
 }
 
 /**
@@ -72,6 +73,7 @@ export async function forwardToClient(
 		retryAttempt, // Always 0 in new flow, but kept for message compatibility
 		failoverAttempts,
 		agentUsed,
+		project,
 	} = options;
 
 	// Always strip compression headers *before* we do anything else
@@ -109,6 +111,7 @@ export async function forwardToClient(
 			isStream,
 			providerName: ctx.provider.name,
 			agentUsed: agentUsed || null,
+			project: project || null,
 			retryAttempt,
 			failoverAttempts,
 		};

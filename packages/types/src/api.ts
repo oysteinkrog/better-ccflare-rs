@@ -5,6 +5,7 @@ export interface RequestMeta {
 	timestamp: number;
 	agentUsed?: string | null;
 	headers?: Headers;
+	project?: string | null;
 }
 
 export interface AgentUpdatePayload {

@@ -175,6 +175,23 @@ export class StatsRepository {
 	}
 
 	/**
+	 * Get distinct projects from requests
+	 */
+	getDistinctProjects(limit = 50): string[] {
+		const projects = this.db
+			.query(
+				`SELECT DISTINCT project
+				FROM requests
+				WHERE project IS NOT NULL AND project != ''
+				ORDER BY project
+				LIMIT ?`,
+			)
+			.all(limit) as Array<{ project: string }>;
+
+		return projects.map((p) => p.project);
+	}
+
+	/**
 	 * Get top models by usage
 	 */
 	getTopModels(

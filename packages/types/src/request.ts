@@ -21,6 +21,7 @@ export interface RequestRow {
 	output_tokens: number | null;
 	agent_used: string | null;
 	output_tokens_per_second: number | null;
+	project: string | null;
 }
 
 // Domain model
@@ -46,6 +47,7 @@ export interface Request {
 	outputTokens?: number;
 	agentUsed?: string;
 	tokensPerSecond?: number;
+	project?: string | null;
 }
 
 // API response type
@@ -71,6 +73,7 @@ export interface RequestResponse {
 	costUsd?: number;
 	agentUsed?: string;
 	tokensPerSecond?: number;
+	project?: string | null;
 }
 
 // Detailed request with payload
@@ -100,6 +103,7 @@ export interface RequestPayload {
 		path?: string;
 		method?: string;
 		agentUsed?: string;
+		project?: string | null;
 		requestBodyTruncated?: boolean;
 		responseBodyTruncated?: boolean;
 		limitApplied?: number;
@@ -130,6 +134,7 @@ export function toRequest(row: RequestRow): Request {
 		outputTokens: row.output_tokens || undefined,
 		agentUsed: row.agent_used || undefined,
 		tokensPerSecond: row.output_tokens_per_second || undefined,
+		project: row.project,
 	};
 }
 
@@ -156,6 +161,7 @@ export function toRequestResponse(request: Request): RequestResponse {
 		costUsd: request.costUsd,
 		agentUsed: request.agentUsed,
 		tokensPerSecond: request.tokensPerSecond,
+		project: request.project,
 	};
 }
 

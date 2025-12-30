@@ -26,6 +26,9 @@ export interface StartMessage {
 	// Agent info
 	agentUsed: string | null;
 
+	// Project info (from X-CCFlare-Project header)
+	project: string | null;
+
 	// Retry info
 	retryAttempt: number;
 	failoverAttempts: number;

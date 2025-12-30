@@ -400,6 +400,7 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 		failoverAttempts: number,
 		usage?: RequestData["usage"],
 		agentUsed?: string,
+		project?: string | null,
 	): void {
 		withDatabaseRetrySync(
 			() =>
@@ -415,6 +416,7 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 					failoverAttempts,
 					usage,
 					agentUsed,
+					project,
 				}),
 			this.retryConfig,
 			"saveRequest",

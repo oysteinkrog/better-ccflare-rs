@@ -589,6 +589,7 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 					}
 				: undefined,
 			state.agentUsed,
+			startMessage.project,
 		),
 	);
 
@@ -666,6 +667,7 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 		costUsd: state.usage.costUsd,
 		agentUsed: state.agentUsed,
 		tokensPerSecond: state.usage.tokensPerSecond,
+		project: startMessage.project,
 	};
 
 	self.postMessage({
@@ -694,6 +696,7 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 			path: startMessage.path,
 			method: startMessage.method,
 			agentUsed: state.agentUsed,
+			project: startMessage.project,
 		},
 	};
 
