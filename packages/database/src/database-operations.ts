@@ -372,6 +372,8 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 		accountUsed: string | null,
 		statusCode: number | null,
 		timestamp?: number,
+		apiKeyId?: string,
+		apiKeyName?: string,
 	): void {
 		withDatabaseRetrySync(
 			() =>
@@ -382,6 +384,8 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 					accountUsed,
 					statusCode,
 					timestamp,
+					apiKeyId,
+					apiKeyName,
 				),
 			this.retryConfig,
 			"saveRequestMeta",
@@ -401,6 +405,8 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 		usage?: RequestData["usage"],
 		agentUsed?: string,
 		project?: string | null,
+		apiKeyId?: string,
+		apiKeyName?: string,
 	): void {
 		withDatabaseRetrySync(
 			() =>
@@ -417,6 +423,8 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 					usage,
 					agentUsed,
 					project,
+					apiKeyId,
+					apiKeyName,
 				}),
 			this.retryConfig,
 			"saveRequest",

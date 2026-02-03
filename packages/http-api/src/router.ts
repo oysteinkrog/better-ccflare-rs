@@ -17,6 +17,7 @@ import {
 	createMinimaxAccountAddHandler,
 	createNanoGPTAccountAddHandler,
 	createOpenAIAccountAddHandler,
+	createVertexAIAccountAddHandler,
 	createZaiAccountAddHandler,
 } from "./handlers/accounts";
 import {
@@ -60,6 +61,7 @@ import {
 	createReauthNeededHandler,
 	createTokenHealthHandler,
 } from "./handlers/token-health";
+import { createVersionCheckHandler } from "./handlers/version";
 import { AuthService } from "./services/auth-service";
 import type { APIContext } from "./types";
 import { errorResponse } from "./utils/http-error";
@@ -93,6 +95,7 @@ export class APIRouter {
 		const accountAddHandler = createAccountAddHandler(dbOps, config);
 		const zaiAccountAddHandler = createZaiAccountAddHandler(dbOps);
 		const minimaxAccountAddHandler = createMinimaxAccountAddHandler(dbOps);
+		const vertexAIAccountAddHandler = createVertexAIAccountAddHandler(dbOps);
 		const nanogptAccountAddHandler = createNanoGPTAccountAddHandler(dbOps);
 		const anthropicCompatibleAccountAddHandler =
 			createAnthropicCompatibleAccountAddHandler(dbOps);
@@ -112,6 +115,7 @@ export class APIRouter {
 		const cleanupHandler = createCleanupHandler(dbOps, config);
 		const compactHandler = createCompactHandler(dbOps);
 		const systemInfoHandler = createSystemInfoHandler();
+		const versionCheckHandler = createVersionCheckHandler();
 
 		// API Key handlers
 		const apiKeysListHandler = createApiKeysListHandler(dbOps);
@@ -129,6 +133,9 @@ export class APIRouter {
 		);
 		this.handlers.set("POST:/api/accounts/minimax", (req) =>
 			minimaxAccountAddHandler(req),
+		);
+		this.handlers.set("POST:/api/accounts/vertex-ai", (req) =>
+			vertexAIAccountAddHandler(req),
 		);
 		this.handlers.set("POST:/api/accounts/nanogpt", (req) =>
 			nanogptAccountAddHandler(req),
@@ -202,6 +209,7 @@ export class APIRouter {
 		this.handlers.set("POST:/api/maintenance/cleanup", () => cleanupHandler());
 		this.handlers.set("POST:/api/maintenance/compact", () => compactHandler());
 		this.handlers.set("GET:/api/system/info", () => systemInfoHandler());
+		this.handlers.set("GET:/api/version/check", () => versionCheckHandler());
 		this.handlers.set("GET:/api/logs/stream", (req) => logsStreamHandler(req));
 		this.handlers.set("GET:/api/logs/history", () => logsHistoryHandler());
 		this.handlers.set("GET:/api/analytics", (_req, url) => {

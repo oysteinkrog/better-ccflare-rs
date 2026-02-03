@@ -42,6 +42,7 @@ export const useAnalytics = (
 		accounts?: string[];
 		models?: string[];
 		projects?: string[];
+		apiKeys?: string[];
 		status?: "all" | "success" | "error";
 	},
 	viewMode: "normal" | "cumulative",

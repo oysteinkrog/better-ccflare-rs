@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/c859872f-ca5e-4f8b-b6a0-7cc7461fe62a
 ## Why better-ccflare?
 
 - **🚀 Zero Rate Limit Errors** - Automatically distribute requests across multiple accounts
-- **🤖 Multi-Provider Support** - Claude OAuth, Claude API console, NanoGPT, z.ai, Minimax, Anthropic-compatible, and OpenAI-compatible providers
+- **🤖 Multi-Provider Support** - Claude OAuth, Claude API console, Vertex AI, NanoGPT, z.ai, Minimax, Anthropic-compatible, and OpenAI-compatible providers
 - **🔒 OAuth Token Health** - Real-time monitoring of OAuth token status with automatic refresh and health indicators
 - **🔗 Custom API Endpoints** - Configure custom endpoints for Anthropic accounts for enterprise deployments
 - **☁️ OpenAI-Compatible Support** - Use OpenAI-compatible providers like OpenRouter, Together AI, and more with Claude API format
@@ -267,7 +267,7 @@ docker run -d \
 docker logs -f better-ccflare
 
 # Manage accounts
-docker exec -it better-ccflare better-ccflare --add-account myaccount
+docker exec -it better-ccflare better-ccflare --add-account myaccount --mode claude-oauth --priority 0
 docker exec -it better-ccflare better-ccflare --list
 ```
 
@@ -297,7 +297,7 @@ export ANTHROPIC_BASE_URL=http://localhost:8080
 claude
 ```
 
-**Important:** When using Claude CLI with an active OAuth login, do **NOT** set `ANTHROPIC_API_KEY`. Setting both will trigger a warning from Claude CLI about conflicting authentication methods.
+**Important:** When using Claude CLI with an active OAuth login, do **NOT** set `ANTHROPIC_AUTH_TOKEN`. Setting both will trigger a warning from Claude CLI about conflicting authentication methods.
 
 ### Option 2: Using API Key Authentication
 
@@ -309,7 +309,13 @@ claude /logout
 
 # Then set both the base URL and API key
 export ANTHROPIC_BASE_URL=http://localhost:8080
-export ANTHROPIC_API_KEY=dummy-key
+
+# If better-ccflare has NO API keys configured (open access):
+export ANTHROPIC_AUTH_TOKEN=dummy-key
+
+# If better-ccflare HAS API keys configured (protected):
+# Generate a key first: better-ccflare --generate-api-key "My VPS"
+export ANTHROPIC_AUTH_TOKEN=btr-abcdef1234567890...  # Use your real better-ccflare API key
 
 # Make sure to configure your accounts in the better-ccflare dashboard
 
@@ -317,9 +323,43 @@ export ANTHROPIC_API_KEY=dummy-key
 claude
 ```
 
+### Option 3: Remote/Headless VPS Setup (Secure Proxy)
+
+Use better-ccflare on a trusted server to avoid storing OAuth credentials on untrusted/temporary machines:
+
+**On your trusted server (running better-ccflare):**
+```bash
+# Add your Claude account with OAuth
+better-ccflare --add-account myaccount --mode claude-oauth --priority 0
+
+# Generate an API key for remote access
+better-ccflare --generate-api-key "Remote VPS"
+# Save the generated key: btr-abcdef1234567890...
+
+# Start the server (ensure it's accessible remotely)
+better-ccflare --serve
+```
+
+**On your untrusted/temporary VPS:**
+```bash
+# Set the remote better-ccflare URL and API key
+export ANTHROPIC_BASE_URL=https://your-server.com:8080
+export ANTHROPIC_AUTH_TOKEN=btr-abcdef1234567890...  # Your better-ccflare API key
+
+# Start Claude CLI (no need to login - better-ccflare handles auth)
+claude
+```
+
+**How it works:**
+- Claude Code CLI sends requests with your better-ccflare API key
+- better-ccflare validates the API key and proxies requests using its stored OAuth credentials
+- Your OAuth credentials stay secure on your trusted server
+- You can use Claude Code on any machine without storing sensitive credentials
+
 ### Which method should I use?
 
-- **Have Claude Pro/Team?** Use Option 1 (OAuth only) - simpler and no API key needed
+- **Have Claude Pro/Team and working locally?** Use Option 1 (OAuth only) - simpler and no API key needed
+- **Working on untrusted/temporary machines?** Use Option 3 (Remote VPS setup) - keeps credentials secure
 - **Using only API keys in better-ccflare?** Use Option 2 (logout + API key)
 - **Getting auth conflict warnings?** You have both methods active - choose one and follow its steps above
 
@@ -508,6 +548,8 @@ No `NODE_OPTIONS` needed - Traefik provides trusted certificates automatically!
 - Cost estimation and budgeting
 - Request deduplication for improved performance
 - Lazy-loaded analytics components for faster initial load
+- Advanced filtering by accounts, models, API keys, and request status
+- API key performance tracking and detailed analytics
 
 ### 🛠️ Developer Tools
 - Powerful CLI (`better-ccflare`)
@@ -617,6 +659,8 @@ Inspired by [snipeship/ccflare](https://github.com/snipeship/ccflare) - thanks f
 - [@bitcoin4cashqc](https://github.com/bitcoin4cashqc) - SSL/HTTPS support implementation with comprehensive documentation
 - [@anonym-uz](https://github.com/anonym-uz) - Critical auto-pause bug fix, analytics performance optimizations, request body truncation, and incremental vacuum implementation
 - [@makhweeb](https://github.com/makhweeb) - Enhanced request handling and analytics improvements
+- [@jw409](https://github.com/jw409) - Fixed OAuth account addition in WSL2 and compiled binaries by replacing unreliable prompt() with readline
+- [@materemias](https://github.com/materemias) - Testing and validation of Vertex AI provider implementation, thorough debugging of OAuth API key authentication (issue #54)
 
 ## Contributing
 

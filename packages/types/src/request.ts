@@ -22,6 +22,8 @@ export interface RequestRow {
 	agent_used: string | null;
 	output_tokens_per_second: number | null;
 	project: string | null;
+	api_key_id: string | null;
+	api_key_name: string | null;
 }
 
 // Domain model
@@ -48,6 +50,8 @@ export interface Request {
 	agentUsed?: string;
 	tokensPerSecond?: number;
 	project?: string | null;
+	apiKeyId?: string;
+	apiKeyName?: string;
 }
 
 // API response type
@@ -74,6 +78,8 @@ export interface RequestResponse {
 	agentUsed?: string;
 	tokensPerSecond?: number;
 	project?: string | null;
+	apiKeyId?: string;
+	apiKeyName?: string;
 }
 
 // Detailed request with payload
@@ -135,6 +141,8 @@ export function toRequest(row: RequestRow): Request {
 		agentUsed: row.agent_used || undefined,
 		tokensPerSecond: row.output_tokens_per_second || undefined,
 		project: row.project,
+		apiKeyId: row.api_key_id || undefined,
+		apiKeyName: row.api_key_name || undefined,
 	};
 }
 
@@ -162,6 +170,8 @@ export function toRequestResponse(request: Request): RequestResponse {
 		agentUsed: request.agentUsed,
 		tokensPerSecond: request.tokensPerSecond,
 		project: request.project,
+		apiKeyId: request.apiKeyId,
+		apiKeyName: request.apiKeyName,
 	};
 }
 

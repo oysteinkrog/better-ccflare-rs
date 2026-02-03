@@ -50,6 +50,8 @@ export interface ResponseHandlerOptions {
 	failoverAttempts: number;
 	agentUsed?: string | null;
 	project?: string | null;
+	apiKeyId?: string | null;
+	apiKeyName?: string | null;
 }
 
 /**
@@ -74,6 +76,8 @@ export async function forwardToClient(
 		failoverAttempts,
 		agentUsed,
 		project,
+		apiKeyId,
+		apiKeyName,
 	} = options;
 
 	// Always strip compression headers *before* we do anything else
@@ -112,6 +116,8 @@ export async function forwardToClient(
 			providerName: ctx.provider.name,
 			agentUsed: agentUsed || null,
 			project: project || null,
+			apiKeyId: apiKeyId || null,
+			apiKeyName: apiKeyName || null,
 			retryAttempt,
 			failoverAttempts,
 		};

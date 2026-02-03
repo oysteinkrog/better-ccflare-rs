@@ -1,4 +1,8 @@
-import { HttpClient, HttpError } from "@better-ccflare/http-common";
+import {
+	HttpClient,
+	HttpError,
+	type RequestOptions,
+} from "@better-ccflare/http-common";
 import type {
 	AccountResponse,
 	Agent,
@@ -66,6 +70,8 @@ export interface ReauthNeededResponse {
 }
 
 class API extends HttpClient {
+	private static readonly API_KEY_STORAGE_KEY = "better-ccflare-api-key";
+
 	private logger = {
 		info: (message: string, ...args: unknown[]) => {
 			console.log(`[API] ${message}`, ...args);
@@ -90,6 +96,67 @@ class API extends HttpClient {
 			timeout: API_TIMEOUT,
 			retries: 1,
 		});
+	}
+
+	/**
+	 * Store API key in sessionStorage (cleared when tab closes)
+	 */
+	setApiKey(apiKey: string): void {
+		sessionStorage.setItem(API.API_KEY_STORAGE_KEY, apiKey);
+	}
+
+	/**
+	 * Retrieve API key from sessionStorage
+	 */
+	getApiKey(): string | null {
+		return sessionStorage.getItem(API.API_KEY_STORAGE_KEY);
+	}
+
+	/**
+	 * Clear stored API key
+	 */
+	clearApiKey(): void {
+		sessionStorage.removeItem(API.API_KEY_STORAGE_KEY);
+	}
+
+	/**
+	 * Check if API key is stored
+	 */
+	hasApiKey(): boolean {
+		return !!this.getApiKey();
+	}
+
+	/**
+	 * Override request method to inject API key into headers and handle 401 errors
+	 */
+	override async request<T = unknown>(
+		url: string,
+		options: RequestOptions = {},
+	): Promise<T> {
+		const apiKey = this.getApiKey();
+
+		if (apiKey) {
+			this.logger.debug("Including API key in request to:", url);
+			// Merge API key into headers
+			const headers = {
+				...((options.headers as Record<string, string>) || {}),
+				"x-api-key": apiKey,
+			};
+			options = { ...options, headers };
+		} else {
+			this.logger.debug("No API key found for request to:", url);
+		}
+
+		try {
+			return await super.request<T>(url, options);
+		} catch (error) {
+			// If we get a 401, dispatch a custom event to trigger auth dialog
+			if (error instanceof HttpError && error.status === 401) {
+				this.logger.warn("401 Unauthorized - dispatching auth required event");
+				window.dispatchEvent(new CustomEvent("auth-required"));
+			}
+			throw error;
+		}
 	}
 
 	async getStats(): Promise<Stats> {
@@ -143,7 +210,8 @@ class API extends HttpClient {
 			| "minimax"
 			| "anthropic-compatible"
 			| "openai-compatible"
-			| "nanogpt";
+			| "nanogpt"
+			| "vertex-ai";
 		apiKey?: string;
 		priority: number;
 		customEndpoint?: string;
@@ -307,6 +375,38 @@ class API extends HttpClient {
 	}): Promise<{ message: string; account: Account }> {
 		const startTime = Date.now();
 		const url = "/api/accounts/minimax";
+
+		this.logger.debug(`→ POST ${url}`, { data });
+
+		try {
+			const response = await this.post<{ message: string; account: Account }>(
+				url,
+				data,
+			);
+			const duration = Date.now() - startTime;
+			this.logger.debug(`← POST ${url} - 200 (${duration}ms)`);
+			return response;
+		} catch (error) {
+			const duration = Date.now() - startTime;
+			this.logger.error(`✗ POST ${url} - ERROR (${duration}ms)`, {
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+			if (error instanceof HttpError) {
+				throw new Error(error.message);
+			}
+			throw error;
+		}
+	}
+
+	async addVertexAIAccount(data: {
+		name: string;
+		projectId: string;
+		region: string;
+		priority: number;
+	}): Promise<{ message: string; account: Account }> {
+		const startTime = Date.now();
+		const url = "/api/accounts/vertex-ai";
 
 		this.logger.debug(`→ POST ${url}`, { data });
 
@@ -499,6 +599,7 @@ class API extends HttpClient {
 			accounts?: string[];
 			models?: string[];
 			projects?: string[];
+			apiKeys?: string[];
 			status?: "all" | "success" | "error";
 		},
 		mode: "normal" | "cumulative" = "normal",
@@ -514,6 +615,9 @@ class API extends HttpClient {
 		}
 		if (filters?.projects?.length) {
 			params.append("projects", filters.projects.join(","));
+		}
+		if (filters?.apiKeys?.length) {
+			params.append("apiKeys", filters.apiKeys.join(","));
 		}
 		if (filters?.status && filters.status !== "all") {
 			params.append("status", filters.status);

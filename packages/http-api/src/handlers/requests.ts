@@ -67,6 +67,8 @@ export function createRequestsSummaryHandler(db: Database) {
 			agent_used: string | null;
 			output_tokens_per_second: number | null;
 			project: string | null;
+			api_key_id: string | null;
+			api_key_name: string | null;
 		}>;
 
 		const response: RequestResponse[] = requests.map((request) => ({
@@ -93,6 +95,8 @@ export function createRequestsSummaryHandler(db: Database) {
 			agentUsed: request.agent_used || undefined,
 			tokensPerSecond: request.output_tokens_per_second || undefined,
 			project: request.project,
+			apiKeyId: request.api_key_id || undefined,
+			apiKeyName: request.api_key_name || undefined,
 		}));
 
 		return jsonResponse(response);

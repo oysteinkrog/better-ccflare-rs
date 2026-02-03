@@ -24,6 +24,7 @@ export const AnalyticsTab = React.memo(() => {
 		accounts: [],
 		models: [],
 		projects: [],
+		apiKeys: [],
 		status: "all",
 	});
 
@@ -39,13 +40,63 @@ export const AnalyticsTab = React.memo(() => {
 	const { data: availableProjects = [] } = useProjects();
 
 	// Get unique accounts and models from analytics data
+	// Accumulate all seen accounts/models/apiKeys to maintain full list for filters
+	const [allSeenAccounts, setAllSeenAccounts] = useState<Set<string>>(
+		new Set(),
+	);
+	const [allSeenModels, setAllSeenModels] = useState<Set<string>>(new Set());
+	const [allSeenApiKeys, setAllSeenApiKeys] = useState<Set<string>>(new Set());
+
+	// Update seen values whenever analytics data changes
+	useMemo(() => {
+		if (!analytics) return;
+
+		// Add new accounts
+		if (analytics.accountPerformance) {
+			setAllSeenAccounts((prev) => {
+				const updated = new Set(prev);
+				for (const account of analytics.accountPerformance) {
+					updated.add(account.name);
+				}
+				return updated;
+			});
+		}
+
+		// Add new models
+		if (analytics.modelDistribution) {
+			setAllSeenModels((prev) => {
+				const updated = new Set(prev);
+				for (const model of analytics.modelDistribution) {
+					updated.add(model.model);
+				}
+				return updated;
+			});
+		}
+
+		// Add new API keys
+		if (analytics.apiKeyPerformance) {
+			setAllSeenApiKeys((prev) => {
+				const updated = new Set(prev);
+				for (const apiKey of analytics.apiKeyPerformance) {
+					updated.add(apiKey.name);
+				}
+				return updated;
+			});
+		}
+	}, [analytics]);
+
+	// Convert sets to sorted arrays for filter dropdowns
 	const availableAccounts = useMemo(
-		() => analytics?.accountPerformance?.map((a) => a.name) || [],
-		[analytics],
+		() => Array.from(allSeenAccounts).sort(),
+		[allSeenAccounts],
 	);
 	const availableModels = useMemo(
-		() => analytics?.modelDistribution?.map((m) => m.model) || [],
-		[analytics],
+		() => Array.from(allSeenModels).sort(),
+		[allSeenModels],
+	);
+	const availableApiKeys = useMemo(
+		() => Array.from(allSeenApiKeys).sort(),
+		[allSeenApiKeys],
 	);
 
 	// Memoize filter function
@@ -156,6 +207,7 @@ export const AnalyticsTab = React.memo(() => {
 		filters.accounts.length +
 		filters.models.length +
 		filters.projects.length +
+		filters.apiKeys.length +
 		(filters.status !== "all" ? 1 : 0);
 
 	return (
@@ -177,6 +229,7 @@ export const AnalyticsTab = React.memo(() => {
 				availableAccounts={availableAccounts}
 				availableModels={availableModels}
 				availableProjects={availableProjects}
+				availableApiKeys={availableApiKeys}
 				activeFilterCount={activeFilterCount}
 				filterOpen={filterOpen}
 				setFilterOpen={setFilterOpen}

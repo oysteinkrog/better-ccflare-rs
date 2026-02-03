@@ -17,7 +17,7 @@ import {
 import { container, SERVICE_KEYS } from "@better-ccflare/core-di";
 import type { DatabaseOperations } from "@better-ccflare/database";
 import { AsyncDbWriter, DatabaseFactory } from "@better-ccflare/database";
-import { APIRouter } from "@better-ccflare/http-api";
+import { APIRouter, AuthService } from "@better-ccflare/http-api";
 import { SessionStrategy } from "@better-ccflare/load-balancer";
 import { Logger } from "@better-ccflare/logger";
 import { getProvider, usageCache } from "@better-ccflare/providers";
@@ -87,6 +87,31 @@ function serveDashboardFile(
 	contentType?: string,
 	cacheControl?: string,
 ): Response {
+	// Security headers for dashboard files
+	const securityHeaders: Record<string, string> = {
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options": "DENY",
+		"X-XSS-Protection": "1; mode=block",
+		"Referrer-Policy": "strict-origin-when-cross-origin",
+	};
+
+	// Add Content Security Policy for HTML files
+	const isHtml = assetPath.endsWith(".html") || contentType === "text/html";
+	if (isHtml) {
+		// Strict CSP for React apps: only bundled scripts and styles from same origin
+		securityHeaders["Content-Security-Policy"] = [
+			"default-src 'self'",
+			"script-src 'self'", // Only bundled scripts from same origin (no inline)
+			"style-src 'self' 'unsafe-inline'", // CSS-in-JS and Tailwind require inline styles
+			"img-src 'self' data:",
+			"font-src 'self' data:",
+			"connect-src 'self'", // API calls to same origin only
+			"frame-ancestors 'none'",
+			"base-uri 'self'",
+			"form-action 'self'",
+		].join("; ");
+	}
+
 	// First, try to serve from embedded assets (production)
 	if (embeddedDashboard?.[assetPath]) {
 		const asset = embeddedDashboard[assetPath];
@@ -95,6 +120,7 @@ function serveDashboardFile(
 			headers: {
 				"Content-Type": contentType || asset.contentType,
 				"Cache-Control": cacheControl || CACHE.CACHE_CONTROL_NO_CACHE,
+				...securityHeaders,
 			},
 		});
 	}
@@ -119,6 +145,7 @@ function serveDashboardFile(
 		headers: {
 			"Content-Type": contentType,
 			"Cache-Control": cacheControl || CACHE.CACHE_CONTROL_NO_CACHE,
+			...securityHeaders,
 		},
 	});
 }
@@ -129,6 +156,8 @@ let stopRetentionJob: (() => void) | null = null;
 let stopOAuthCleanupJob: (() => void) | null = null;
 let stopRateLimitCleanupJob: (() => void) | null = null;
 let autoRefreshScheduler: AutoRefreshScheduler | null = null;
+// Track usage polling retry timeouts for cleanup
+const usagePollingRetryTimeouts = new Map<string, NodeJS.Timeout>();
 
 // SSL/TLS configuration
 let tlsEnabled = false;
@@ -196,6 +225,8 @@ function startUsagePollingWithRefresh(
 	proxyContext: ProxyContext,
 ) {
 	const logger = new Logger("UsagePolling");
+	const MAX_RETRY_ATTEMPTS = 10;
+	let retryCount = 0;
 
 	// Initial polling with token refresh
 	const pollWithRefresh = async () => {
@@ -245,6 +276,15 @@ function startUsagePollingWithRefresh(
 				account.provider,
 				30000,
 			); // Poll every 30s
+
+			// Reset retry count on success
+			retryCount = 0;
+			// Clear any tracked timeout since we succeeded
+			const existingTimeout = usagePollingRetryTimeouts.get(account.id);
+			if (existingTimeout) {
+				clearTimeout(existingTimeout);
+				usagePollingRetryTimeouts.delete(account.id);
+			}
 		} catch (error) {
 			logger.error(
 				`Error starting usage polling for account ${account.name}:`,
@@ -296,15 +336,44 @@ function startUsagePollingWithRefresh(
 					);
 				}
 			}
+
+			// Clear any existing retry timeout before scheduling a new one
+			const existingTimeout = usagePollingRetryTimeouts.get(account.id);
+			if (existingTimeout) {
+				clearTimeout(existingTimeout);
+				usagePollingRetryTimeouts.delete(account.id);
+			}
+
+			// Check if we've exceeded max retry attempts
+			retryCount++;
+			if (retryCount >= MAX_RETRY_ATTEMPTS) {
+				logger.error(
+					`Max retry attempts (${MAX_RETRY_ATTEMPTS}) reached for account ${account.name}. Please check the account configuration and try restarting the server after resolving issues.`,
+				);
+				return;
+			}
+
 			// Don't restore paused state on error - let the user control pause/resume via API
-			// Retry in 5 minutes if there was an error
-			setTimeout(
-				() => {
-					logger.info(`Retrying usage polling for account ${account.name}`);
-					pollWithRefresh();
-				},
-				5 * 60 * 1000,
+			// Retry with exponential backoff (5 min, 10 min, 20 min, ...)
+			const baseDelayMs = 5 * 60 * 1000; // 5 minutes
+			const delayMs = Math.min(
+				baseDelayMs * 2 ** (retryCount - 1),
+				60 * 60 * 1000, // Cap at 1 hour
 			);
+			logger.info(
+				`Scheduling retry ${retryCount}/${MAX_RETRY_ATTEMPTS} for account ${account.name} in ${Math.round(delayMs / 1000 / 60)} minutes`,
+			);
+
+			const timeoutId = setTimeout(() => {
+				logger.info(
+					`Retrying usage polling for account ${account.name} (attempt ${retryCount}/${MAX_RETRY_ATTEMPTS})`,
+				);
+				usagePollingRetryTimeouts.delete(account.id);
+				pollWithRefresh();
+			}, delayMs);
+
+			// Track the timeout for cleanup
+			usagePollingRetryTimeouts.set(account.id, timeoutId);
 		}
 	};
 
@@ -427,6 +496,9 @@ export default function startServer(options?: {
 			tlsEnabled,
 		},
 	});
+
+	// Initialize AuthService for proxy authentication
+	const authService = new AuthService(dbOps);
 
 	// Run startup maintenance once (cleanup only) - fire and forget
 	runStartupMaintenance(config, dbOps).catch((err) => {
@@ -592,7 +664,53 @@ export default function startServer(options?: {
 				}
 
 				// All other paths go to proxy
-				return handleProxy(req, url, proxyContext);
+				// Authenticate the proxy request with error handling to prevent bypass
+				try {
+					const authResult = await authService.authenticateRequest(
+						req,
+						url.pathname,
+						req.method,
+					);
+					if (!authResult.isAuthenticated) {
+						return new Response(
+							JSON.stringify({
+								type: "error",
+								error: {
+									type: "authentication_error",
+									message: authResult.error || "Authentication failed",
+								},
+							}),
+							{
+								status: 401,
+								headers: { "Content-Type": "application/json" },
+							},
+						);
+					}
+
+					return handleProxy(
+						req,
+						url,
+						proxyContext,
+						authResult.apiKeyId,
+						authResult.apiKeyName,
+					);
+				} catch (authError) {
+					// Log authentication errors for security monitoring
+					log.error("Authentication service error:", authError);
+					return new Response(
+						JSON.stringify({
+							type: "error",
+							error: {
+								type: "authentication_error",
+								message: "Authentication service error",
+							},
+						}),
+						{
+							status: 401,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				}
 			},
 		};
 
@@ -738,6 +856,42 @@ Available endpoints:
 		log.info(`No NanoGPT accounts found, usage polling will not start`);
 	}
 
+	// Start usage polling for Zai accounts
+	const zaiAccounts = accounts.filter((a) => a.provider === "zai");
+	if (zaiAccounts.length > 0) {
+		log.info(
+			`Found ${zaiAccounts.length} Zai accounts, starting usage polling...`,
+		);
+		for (const account of zaiAccounts) {
+			log.debug(`Processing Zai account: ${account.name}`, {
+				accountId: account.id,
+				hasApiKey: !!account.api_key,
+				paused: account.paused,
+			});
+
+			if (account.api_key) {
+				// Zai uses API key authentication, no token refresh needed
+				// Create a simple token provider that returns the API key
+				const apiKeyProvider = async () => account.api_key || "";
+
+				// Start usage polling with the API key
+				usageCache.startPolling(
+					account.id,
+					apiKeyProvider,
+					account.provider,
+					90000, // Poll every 90 seconds (same as Anthropic)
+				);
+				log.info(`Started usage polling for Zai account ${account.name}`);
+			} else {
+				log.warn(
+					`Zai account ${account.name} has no API key, skipping usage polling`,
+				);
+			}
+		}
+	} else {
+		log.info(`No Zai accounts found, usage polling will not start`);
+	}
+
 	// Initialize NanoGPT pricing refresh if there are NanoGPT accounts (non-blocking)
 	void initializeNanoGPTPricingIfAccountsExist(dbOps, pricingLogger);
 
@@ -780,6 +934,20 @@ async function handleGracefulShutdown(signal: string) {
 
 		// Stop token health monitoring
 		stopGlobalTokenHealthChecks();
+
+		// Clear all pending usage polling retry timeouts
+		if (usagePollingRetryTimeouts.size > 0) {
+			console.log(
+				`Clearing ${usagePollingRetryTimeouts.size} pending usage polling retry timeout(s)...`,
+			);
+			for (const [
+				_accountId,
+				timeoutId,
+			] of usagePollingRetryTimeouts.entries()) {
+				clearTimeout(timeoutId);
+			}
+			usagePollingRetryTimeouts.clear();
+		}
 
 		usageCache.clear(); // Stop all usage polling
 		terminateUsageWorker();

@@ -162,6 +162,8 @@ export function terminateUsageWorker(): void {
  * @param req - The incoming request
  * @param url - The parsed URL
  * @param ctx - The proxy context containing strategy, database, and provider
+ * @param apiKeyId - Optional API key ID for tracking
+ * @param apiKeyName - Optional API key name for tracking
  * @returns Promise resolving to the proxied response
  * @throws {ValidationError} If the provider cannot handle the path
  * @throws {ServiceUnavailableError} If all accounts fail to proxy the request
@@ -171,7 +173,20 @@ export async function handleProxy(
 	req: Request,
 	url: URL,
 	ctx: ProxyContext,
+	apiKeyId?: string | null,
+	apiKeyName?: string | null,
 ): Promise<Response> {
+	// 0. Silently ignore Claude Code internal endpoints (non-critical, not supported by all providers)
+	if (
+		url.pathname === "/api/event_logging/batch" ||
+		url.pathname === "/api/system/package-manager"
+	) {
+		return new Response(JSON.stringify({ success: true }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
 	// 1. Track client version from user-agent for use in auto-refresh
 	trackClientVersion(req.headers.get("user-agent"));
 
@@ -180,6 +195,42 @@ export async function handleProxy(
 
 	// 3. Prepare request body
 	const { buffer: requestBodyBuffer } = await prepareRequestBody(req);
+
+	// 3a. Validate request body for /v1/messages endpoint
+	if (url.pathname === "/v1/messages" && requestBodyBuffer) {
+		try {
+			const bodyText = new TextDecoder().decode(requestBodyBuffer);
+			const bodyJson = JSON.parse(bodyText);
+
+			// Reject requests without messages field (e.g., Claude Code internal events)
+			if (!bodyJson.messages || !Array.isArray(bodyJson.messages)) {
+				log.warn(
+					`Rejected invalid request to /v1/messages without messages field`,
+					{
+						event_type: bodyJson.event_type,
+						event_name: bodyJson.event_data?.event_name,
+					},
+				);
+				return new Response(
+					JSON.stringify({
+						type: "error",
+						error: {
+							type: "invalid_request_error",
+							message:
+								"messages: Field required for /v1/messages endpoint. Internal events should not be proxied.",
+						},
+					}),
+					{
+						status: 400,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+		} catch (error) {
+			// If we can't parse the body, let it through and let the provider handle it
+			log.debug("Could not parse request body for validation", error);
+		}
+	}
 
 	// 4. Intercept and modify request for agent model preferences
 	const { modifiedBody, agentUsed, originalModel, appliedModel } =
@@ -214,6 +265,8 @@ export async function handleProxy(
 			finalBodyBuffer,
 			finalCreateBodyStream,
 			ctx,
+			apiKeyId,
+			apiKeyName,
 		);
 	}
 
@@ -240,6 +293,8 @@ export async function handleProxy(
 			finalCreateBodyStream,
 			i,
 			ctx,
+			apiKeyId,
+			apiKeyName,
 		);
 
 		if (response) {

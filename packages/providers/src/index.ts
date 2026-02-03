@@ -26,12 +26,15 @@ export {
 export * from "./types";
 // Export usage fetcher
 export * from "./usage-fetcher";
+// Export Zai usage fetcher
+export * from "./zai-usage-fetcher";
 
 import { AnthropicProvider } from "./providers/anthropic/provider";
 import { AnthropicCompatibleProvider } from "./providers/anthropic-compatible/provider";
 import { MinimaxProvider } from "./providers/minimax/provider";
 import { NanoGPTProvider } from "./providers/nanogpt/provider";
 import { OpenAICompatibleProvider } from "./providers/openai/provider";
+import { VertexAIProvider } from "./providers/vertex-ai/provider";
 import { ZaiProvider } from "./providers/zai/provider";
 // Auto-register built-in providers
 import { registry } from "./registry";
@@ -40,5 +43,6 @@ registry.registerProvider(new AnthropicProvider());
 registry.registerProvider(new MinimaxProvider());
 registry.registerProvider(new NanoGPTProvider());
 registry.registerProvider(new ZaiProvider());
+registry.registerProvider(new VertexAIProvider());
 registry.registerProvider(new OpenAICompatibleProvider());
 registry.registerProvider(new AnthropicCompatibleProvider());

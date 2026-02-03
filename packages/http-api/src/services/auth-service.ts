@@ -4,6 +4,8 @@ import { type ApiKey, NodeCryptoUtils } from "@better-ccflare/types";
 export interface AuthenticationResult {
 	isAuthenticated: boolean;
 	apiKey?: ApiKey;
+	apiKeyId?: string;
+	apiKeyName?: string;
 	error?: string;
 }
 
@@ -58,6 +60,8 @@ export class AuthService {
 				return {
 					isAuthenticated: true,
 					apiKey: keyRecord,
+					apiKeyId: keyRecord.id,
+					apiKeyName: keyRecord.name,
 				};
 			}
 		}
@@ -94,16 +98,6 @@ export class AuthService {
 	 * Check if a path should be exempt from authentication
 	 */
 	isPathExempt(path: string, method: string): boolean {
-		// Web dashboard paths are always exempt
-		if (path.startsWith("/dashboard") || path === "/") {
-			return true;
-		}
-
-		// Static assets are exempt
-		if (path.startsWith("/static") || path.startsWith("/assets")) {
-			return true;
-		}
-
 		// Health endpoint is always exempt
 		if (path === "/health") {
 			return true;
@@ -135,8 +129,10 @@ export class AuthService {
 			return false;
 		}
 
-		// Default to requiring authentication for non-exempt paths
-		return false;
+		// All other paths are dashboard routes (client-side routing) or static assets
+		// These should be exempt to allow serving the dashboard HTML and assets
+		// This matches the server logic that serves index.html for non-API routes
+		return true;
 	}
 
 	/**

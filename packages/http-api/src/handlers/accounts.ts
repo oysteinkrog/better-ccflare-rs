@@ -224,6 +224,26 @@ export function createAccountsListHandler(db: Database) {
 						);
 					}
 				}
+			} else if (account.provider === "zai" && usageData) {
+				// Zai usage data - type guard to check it's ZaiUsageData
+				const isZaiData =
+					"time_limit" in usageData || "tokens_limit" in usageData;
+				if (isZaiData) {
+					try {
+						const {
+							getRepresentativeZaiUtilization,
+							getRepresentativeZaiWindow,
+						} = require("@better-ccflare/providers");
+						usageUtilization = getRepresentativeZaiUtilization(usageData);
+						usageWindow = getRepresentativeZaiWindow(usageData);
+						fullUsageData = usageData as FullUsageData;
+					} catch (error) {
+						log.warn(
+							`Failed to process Zai usage data for account ${account.name}:`,
+							error,
+						);
+					}
+				}
 			}
 
 			// Parse model mappings for OpenAI-compatible, Anthropic-compatible, and NanoGPT providers
@@ -350,6 +370,8 @@ export function createAccountAddHandler(
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 
@@ -596,6 +618,8 @@ export function createAccountRenameHandler(dbOps: DatabaseOperations) {
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 
@@ -659,6 +683,8 @@ export function createZaiAccountAddHandler(dbOps: DatabaseOperations) {
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 
@@ -814,6 +840,8 @@ export function createOpenAIAccountAddHandler(dbOps: DatabaseOperations) {
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 
@@ -967,6 +995,147 @@ export function createOpenAIAccountAddHandler(dbOps: DatabaseOperations) {
 /**
  * Create a Minimax account add handler
  */
+export function createVertexAIAccountAddHandler(dbOps: DatabaseOperations) {
+	return async (req: Request): Promise<Response> => {
+		try {
+			const body = await req.json();
+
+			// Validate account name
+			const name = validateString(body.name, "name", {
+				required: true,
+				minLength: 1,
+				maxLength: 100,
+				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
+				transform: sanitizers.trim,
+			});
+
+			if (!name) {
+				return errorResponse(BadRequest("Account name is required"));
+			}
+
+			// Validate project ID
+			const projectId = validateString(body.projectId, "projectId", {
+				required: true,
+				minLength: 1,
+				transform: sanitizers.trim,
+			});
+
+			if (!projectId) {
+				return errorResponse(BadRequest("Project ID is required"));
+			}
+
+			// Validate region
+			const region = validateString(body.region, "region", {
+				required: true,
+				minLength: 1,
+				transform: sanitizers.trim,
+			});
+
+			if (!region) {
+				return errorResponse(BadRequest("Region is required"));
+			}
+
+			// Validate priority
+			const priority = validatePriority(body.priority);
+
+			// Store project ID and region in custom_endpoint as JSON
+			const vertexConfig = JSON.stringify({
+				projectId,
+				region,
+			});
+
+			// Create Vertex AI account directly in database
+			const accountId = crypto.randomUUID();
+			const now = Date.now();
+			const db = dbOps.getDatabase();
+			db.run(
+				`INSERT INTO accounts (
+					id, name, provider, api_key, refresh_token, access_token,
+					expires_at, created_at, request_count, total_requests, priority, custom_endpoint
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					accountId,
+					name,
+					"vertex-ai",
+					null, // No API key - uses Google Cloud credentials
+					"", // Empty refresh token
+					null, // Access token will be fetched on first use
+					null, // Expiry will be set on first token refresh
+					now,
+					0,
+					0,
+					priority,
+					vertexConfig,
+				],
+			);
+
+			log.info(
+				`Successfully added Vertex AI account: ${name} (Project: ${projectId}, Region: ${region}, Priority ${priority})`,
+			);
+
+			// Get the created account for response
+			const account = db
+				.query<
+					{
+						id: string;
+						name: string;
+						provider: string;
+						request_count: number;
+						total_requests: number;
+						last_used: number | null;
+						created_at: number;
+						expires_at: number | null;
+						refresh_token: string;
+						paused: number;
+					},
+					[string]
+				>(
+					`SELECT
+						id, name, provider, request_count, total_requests,
+						last_used, created_at, expires_at, refresh_token,
+						COALESCE(paused, 0) as paused
+					FROM accounts WHERE id = ?`,
+				)
+				.get(accountId);
+
+			if (!account) {
+				return errorResponse(
+					InternalServerError("Failed to retrieve created account"),
+				);
+			}
+
+			return jsonResponse({
+				message: `Vertex AI account '${name}' added successfully`,
+				account: {
+					id: account.id,
+					name: account.name,
+					provider: account.provider,
+					request_count: account.request_count,
+					total_requests: account.total_requests,
+					last_used: account.last_used,
+					created_at: new Date(account.created_at),
+					expires_at: account.expires_at ? new Date(account.expires_at) : null,
+					tokenStatus: "valid",
+					mode: "vertex-ai",
+					paused: account.paused === 1,
+				},
+			});
+		} catch (error) {
+			log.error("Failed to add Vertex AI account:", error);
+			if (error instanceof ValidationError) {
+				return errorResponse(BadRequest(error.message));
+			}
+			return errorResponse(
+				InternalServerError(
+					error instanceof Error ? error.message : "Failed to add account",
+				),
+			);
+		}
+	};
+}
+
 export function createMinimaxAccountAddHandler(dbOps: DatabaseOperations) {
 	return async (req: Request): Promise<Response> => {
 		try {
@@ -978,6 +1147,8 @@ export function createMinimaxAccountAddHandler(dbOps: DatabaseOperations) {
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 
@@ -1110,6 +1281,8 @@ export function createNanoGPTAccountAddHandler(dbOps: DatabaseOperations) {
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 			if (!name) {
@@ -1281,6 +1454,8 @@ export function createAnthropicCompatibleAccountAddHandler(
 				minLength: 1,
 				maxLength: 100,
 				pattern: patterns.accountName,
+				patternErrorMessage:
+					"can only contain letters, numbers, spaces, hyphens, and underscores",
 				transform: sanitizers.trim,
 			});
 
