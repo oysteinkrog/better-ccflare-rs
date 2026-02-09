@@ -464,7 +464,6 @@ export function runMigrations(db: Database, dbPath?: string): void {
 			`CREATE INDEX IF NOT EXISTS idx_requests_project ON requests(project)`,
 		);
 
-
 		// Add api_key_id column if it doesn't exist
 		if (!requestsColumnNames.includes("api_key_id")) {
 			db.prepare("ALTER TABLE requests ADD COLUMN api_key_id TEXT").run();

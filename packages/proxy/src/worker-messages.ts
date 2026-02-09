@@ -29,7 +29,6 @@ export interface StartMessage {
 	// Project info (from X-CCFlare-Project header)
 	project: string | null;
 
-
 	// API key info
 	apiKeyId: string | null;
 	apiKeyName: string | null;
