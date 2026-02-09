@@ -26,8 +26,9 @@ export interface StartMessage {
 	// Agent info
 	agentUsed: string | null;
 
-// Project info (from X-CCFlare-Project header)
+	// Project info (from X-CCFlare-Project header)
 	project: string | null;
+
 
 	// API key info
 	apiKeyId: string | null;
