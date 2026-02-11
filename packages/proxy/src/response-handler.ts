@@ -99,6 +99,14 @@ export async function forwardToClient(
 
 	// Send START message immediately if not filtered
 	if (shouldProcessRequest) {
+		// Cap request body to avoid sending large payloads (long conversation histories)
+		// to the worker via postMessage. Bodies > 256KB are omitted.
+		const MAX_REQUEST_BODY_BYTES = 256 * 1024;
+		const requestBodyB64 =
+			requestBody && requestBody.byteLength <= MAX_REQUEST_BODY_BYTES
+				? Buffer.from(requestBody).toString("base64")
+				: null;
+
 		const startMessage: StartMessage = {
 			type: "start",
 			requestId,
@@ -107,9 +115,7 @@ export async function forwardToClient(
 			path,
 			timestamp,
 			requestHeaders: requestHeadersObj,
-			requestBody: requestBody
-				? Buffer.from(requestBody).toString("base64")
-				: null,
+			requestBody: requestBodyB64,
 			responseStatus: response.status,
 			responseHeaders: responseHeadersObj,
 			isStream,

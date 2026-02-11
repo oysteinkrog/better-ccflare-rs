@@ -30,6 +30,8 @@ interface RequestState {
 	startMessage: StartMessage;
 	buffer: string;
 	chunks: Uint8Array[];
+	totalChunksBytes: number;
+	chunksOverflow: boolean;
 	usage: {
 		model?: string;
 		inputTokens?: number;
@@ -60,6 +62,7 @@ log.info("Post-processor worker started");
 // Limits to prevent unbounded growth
 const MAX_REQUESTS_MAP_SIZE = 10000;
 const REQUEST_TTL_MS = 5 * 60 * 1000; // 5 minutes - hard limit for request lifecycle
+const MAX_CHUNKS_BYTES = 512 * 1024; // 512KB - cap raw chunk accumulation for payload storage
 
 // Initialize tiktoken encoder (cl100k_base is used for Claude models)
 // Using embedded WASM to avoid "Missing tiktoken_bg.wasm" errors in bunx
@@ -356,6 +359,8 @@ async function handleStart(msg: StartMessage): Promise<void> {
 		startMessage: msg,
 		buffer: "",
 		chunks: [],
+		totalChunksBytes: 0,
+		chunksOverflow: false,
 		usage: {},
 		lastActivity: now,
 		createdAt: now,
@@ -424,10 +429,20 @@ function handleChunk(msg: ChunkMessage): void {
 		return;
 	}
 
-	// Store chunk for later payload saving
-	state.chunks.push(msg.data);
+	// Store chunk for later payload saving, but cap total size
+	if (!state.chunksOverflow) {
+		if (state.totalChunksBytes + msg.data.byteLength <= MAX_CHUNKS_BYTES) {
+			state.chunks.push(msg.data);
+			state.totalChunksBytes += msg.data.byteLength;
+		} else {
+			// Over limit - stop accumulating raw chunks, free existing ones
+			state.chunksOverflow = true;
+			state.chunks = [];
+			state.totalChunksBytes = 0;
+		}
+	}
 
-	// Process for usage extraction
+	// Process for usage extraction (uses text buffer, independent of chunk storage)
 	processStreamChunk(msg.data, state);
 }
 
@@ -613,19 +628,22 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 		),
 	);
 
-	// Save payload
+	// Save payload (null if chunks exceeded size cap)
 	let responseBody: string | null = null;
 
 	if (msg.responseBody) {
 		// Non-streaming response
 		responseBody = msg.responseBody;
-	} else if (state.chunks.length > 0) {
-		// Streaming response - combine chunks
+	} else if (!state.chunksOverflow && state.chunks.length > 0) {
+		// Streaming response - combine chunks (only if within size cap)
 		const combined = combineChunks(state.chunks);
 		if (combined.length > 0) {
 			responseBody = combined.toString("base64");
 		}
 	}
+	// Free chunks immediately after combining
+	state.chunks = [];
+	state.totalChunksBytes = 0;
 
 	const payload = {
 		request: {
@@ -697,17 +715,18 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 		summary,
 	} satisfies SummaryMessage);
 
-	// Post full payload to main thread
+	// Post payload metadata to main thread (bodies omitted to avoid memory bloat;
+	// full bodies are saved to DB and can be fetched on demand by the dashboard)
 	const fullPayload: RequestPayload = {
 		id: startMessage.requestId,
 		request: {
 			headers: startMessage.requestHeaders,
-			body: startMessage.requestBody,
+			body: null,
 		},
 		response: {
 			status: startMessage.responseStatus,
 			headers: startMessage.responseHeaders,
-			body: responseBody,
+			body: null,
 		},
 		error: msg.error,
 		meta: {
