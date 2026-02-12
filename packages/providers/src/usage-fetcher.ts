@@ -264,6 +264,8 @@ class UsageCache {
 			clearInterval(interval);
 			this.polling.delete(accountId);
 			this.tokenProviders.delete(accountId);
+			this.providerTypes.delete(accountId);
+			this.customEndpoints.delete(accountId);
 			// Clean up cache entry when polling stops to prevent memory leaks
 			this.cache.delete(accountId);
 			log.info(

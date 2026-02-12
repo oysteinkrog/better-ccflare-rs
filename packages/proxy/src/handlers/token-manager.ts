@@ -73,6 +73,7 @@ registerDisposable({
 		stopTokenCleanupInterval();
 		refreshFailures.clear();
 		backoffCounters.clear();
+		refreshClearers.clear();
 	},
 });
 

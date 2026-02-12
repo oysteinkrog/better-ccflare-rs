@@ -27,14 +27,14 @@ function safePostMessage(
  * Check if a response should be considered successful/expected
  * Treats certain well-known paths that return 404 as expected
  */
-function isExpectedResponse(path: string, response: Response): boolean {
+function isExpectedResponse(path: string, status: number): boolean {
 	// Any .well-known path returning 404 is expected
-	if (path.startsWith("/.well-known/") && response.status === 404) {
+	if (path.startsWith("/.well-known/") && status === 404) {
 		return true;
 	}
 
 	// Otherwise use standard HTTP success logic
-	return response.ok;
+	return status >= 200 && status < 300;
 }
 
 export interface ResponseHandlerOptions {
@@ -144,146 +144,161 @@ export async function forwardToClient(
 		});
 	}
 
+	const responseStatus = response.status;
+
 	/*********************************************************************
-	 *  STREAMING RESPONSES — tee with Response.clone() and send chunks
+	 *  STREAMING RESPONSES — tee the body stream for analytics
+	 *  Avoids response.clone() which creates an internal tee buffer that
+	 *  can leak memory when one branch is consumed slower than the other.
 	 *********************************************************************/
 	if (isStream && response.body) {
 		// For OpenAI providers, use pre-teed analytics stream if available
-		// Otherwise clone the response
 		const preTeedStream = (response as any)[ANALYTICS_STREAM_SYMBOL];
-		const analyticsClone =
-			preTeedStream && preTeedStream instanceof ReadableStream
-				? new Response(preTeedStream, {
-						status: response.status,
-						statusText: response.statusText,
-						headers: response.headers,
-					})
-				: response.clone();
 
-		(async () => {
-			const STREAM_TIMEOUT_MS = 300000; // 5 minutes max stream duration
-			const CHUNK_TIMEOUT_MS = 30000; // 30 seconds between chunks
+		let clientStream: ReadableStream<Uint8Array>;
+		let analyticsStream: ReadableStream<Uint8Array>;
 
-			try {
-				const reader = analyticsClone.body?.getReader();
-				if (!reader) return; // Safety check
+		if (preTeedStream && preTeedStream instanceof ReadableStream) {
+			// OpenAI provider already teed the stream
+			clientStream = response.body;
+			analyticsStream = preTeedStream;
+		} else {
+			// Tee the body stream directly — no response.clone() needed
+			const [branch1, branch2] = response.body.tee();
+			clientStream = branch1;
+			analyticsStream = branch2;
+		}
 
-				const startTime = Date.now();
-				let lastChunkTime = Date.now();
+		// Read analytics branch in background, send chunks to worker
+		if (shouldProcessRequest) {
+			(async () => {
+				const STREAM_TIMEOUT_MS = 300000; // 5 minutes max stream duration
+				const CHUNK_TIMEOUT_MS = 30000; // 30 seconds between chunks
 
-				// eslint-disable-next-line no-constant-condition
-				while (true) {
-					// Check for overall stream timeout
-					if (Date.now() - startTime > STREAM_TIMEOUT_MS) {
-						await reader.cancel();
-						throw new Error(
-							`Stream timeout: exceeded ${STREAM_TIMEOUT_MS}ms total duration`,
-						);
-					}
+				try {
+					const reader = analyticsStream.getReader();
+					const startTime = Date.now();
+					let lastChunkTime = Date.now();
 
-					// Check for chunk timeout (no data received)
-					if (Date.now() - lastChunkTime > CHUNK_TIMEOUT_MS) {
-						await reader.cancel();
-						throw new Error(
-							`Stream timeout: no data received for ${CHUNK_TIMEOUT_MS}ms`,
-						);
-					}
-
-					// Read with a timeout wrapper that properly cleans up
-					const readPromise = reader.read();
-					let timeoutId: Timer | null = null;
-					const timeoutPromise = new Promise<{
-						value?: Uint8Array;
-						done: boolean;
-					}>((_, reject) => {
-						timeoutId = setTimeout(
-							() => reject(new Error("Read operation timeout")),
-							CHUNK_TIMEOUT_MS,
-						);
-					});
-
-					try {
-						const { value, done } = await Promise.race([
-							readPromise,
-							timeoutPromise,
-						]);
-
-						// Clear timeout if race completed successfully
-						if (timeoutId) {
-							clearTimeout(timeoutId);
-							timeoutId = null;
+					// eslint-disable-next-line no-constant-condition
+					while (true) {
+						// Check for overall stream timeout
+						if (Date.now() - startTime > STREAM_TIMEOUT_MS) {
+							await reader.cancel();
+							throw new Error(
+								`Stream timeout: exceeded ${STREAM_TIMEOUT_MS}ms total duration`,
+							);
 						}
 
-						if (done) break;
+						// Check for chunk timeout (no data received)
+						if (Date.now() - lastChunkTime > CHUNK_TIMEOUT_MS) {
+							await reader.cancel();
+							throw new Error(
+								`Stream timeout: no data received for ${CHUNK_TIMEOUT_MS}ms`,
+							);
+						}
 
-						if (value) {
-							lastChunkTime = Date.now();
-							const chunkMsg: ChunkMessage = {
-								type: "chunk",
-								requestId,
-								data: value,
-							};
-							safePostMessage(ctx.usageWorker, chunkMsg);
+						// Read with a timeout wrapper that properly cleans up
+						const readPromise = reader.read();
+						let timeoutId: Timer | null = null;
+						const timeoutPromise = new Promise<{
+							value?: Uint8Array;
+							done: boolean;
+						}>((_, reject) => {
+							timeoutId = setTimeout(
+								() => reject(new Error("Read operation timeout")),
+								CHUNK_TIMEOUT_MS,
+							);
+						});
+
+						try {
+							const { value, done } = await Promise.race([
+								readPromise,
+								timeoutPromise,
+							]);
+
+							// Clear timeout if race completed successfully
+							if (timeoutId) {
+								clearTimeout(timeoutId);
+								timeoutId = null;
+							}
+
+							if (done) break;
+
+							if (value) {
+								lastChunkTime = Date.now();
+								const chunkMsg: ChunkMessage = {
+									type: "chunk",
+									requestId,
+									data: value,
+								};
+								safePostMessage(ctx.usageWorker, chunkMsg);
+							}
+						} catch (error) {
+							// Ensure timeout is cleared on error
+							if (timeoutId) {
+								clearTimeout(timeoutId);
+								timeoutId = null;
+							}
+							throw error;
 						}
-					} catch (error) {
-						// Ensure timeout is cleared on error
-						if (timeoutId) {
-							clearTimeout(timeoutId);
-							timeoutId = null;
-						}
-						throw error;
 					}
+					// Finished without errors
+					const endMsg: EndMessage = {
+						type: "end",
+						requestId,
+						success: isExpectedResponse(path, responseStatus),
+					};
+					safePostMessage(ctx.usageWorker, endMsg);
+				} catch (err) {
+					const endMsg: EndMessage = {
+						type: "end",
+						requestId,
+						success: false,
+						error: (err as Error).message,
+					};
+					safePostMessage(ctx.usageWorker, endMsg);
 				}
-				// Finished without errors
-				const endMsg: EndMessage = {
-					type: "end",
-					requestId,
-					success: isExpectedResponse(path, analyticsClone),
-				};
-				safePostMessage(ctx.usageWorker, endMsg);
-			} catch (err) {
-				const endMsg: EndMessage = {
-					type: "end",
-					requestId,
-					success: false,
-					error: (err as Error).message,
-				};
-				safePostMessage(ctx.usageWorker, endMsg);
-			}
-		})();
+			})();
+		} else {
+			// Not processing this request — cancel the analytics branch to avoid leak
+			analyticsStream.cancel().catch(() => {});
+		}
 
-		// Return the sanitized response
-		return response;
+		// Return new response with the client branch
+		return new Response(clientStream, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		});
 	}
 
 	/*********************************************************************
-	 *  NON-STREAMING RESPONSES — read body in background, send END once
+	 *  NON-STREAMING RESPONSES — read body once, send to worker
+	 *  Avoids response.clone() by reading arrayBuffer and creating a
+	 *  new Response from it for the client.
 	 *********************************************************************/
-	(async () => {
-		try {
-			const clone = response.clone();
-			const bodyBuf = await clone.arrayBuffer();
-			const endMsg: EndMessage = {
-				type: "end",
-				requestId,
-				responseBody:
-					bodyBuf.byteLength > 0
-						? Buffer.from(bodyBuf).toString("base64")
-						: null,
-				success: isExpectedResponse(path, clone),
-			};
-			safePostMessage(ctx.usageWorker, endMsg);
-		} catch (err) {
-			const endMsg: EndMessage = {
-				type: "end",
-				requestId,
-				success: false,
-				error: (err as Error).message,
-			};
-			safePostMessage(ctx.usageWorker, endMsg);
-		}
-	})();
+	const bodyBuf = await response.arrayBuffer();
 
-	// Return the sanitized response
-	return response;
+	if (shouldProcessRequest) {
+		// Cap non-streaming response body sent to worker at 256KB
+		const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
+		const endMsg: EndMessage = {
+			type: "end",
+			requestId,
+			responseBody:
+				bodyBuf.byteLength > 0 && bodyBuf.byteLength <= MAX_RESPONSE_BODY_BYTES
+					? Buffer.from(bodyBuf).toString("base64")
+					: null,
+			success: isExpectedResponse(path, responseStatus),
+		};
+		safePostMessage(ctx.usageWorker, endMsg);
+	}
+
+	// Return new response from the already-read body
+	return new Response(bodyBuf, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	});
 }
