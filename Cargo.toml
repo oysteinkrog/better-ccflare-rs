@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/database",
+    "crates/providers",
+    "crates/load-balancer",
+    "crates/proxy",
+    "crates/oauth",
+    "crates/dashboard",
+    "crates/analytics",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/nicholasgriffintn/better-ccflare"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Internal crates
+bccf-core = { path = "crates/core" }
+bccf-database = { path = "crates/database" }
+bccf-providers = { path = "crates/providers" }
+bccf-load-balancer = { path = "crates/load-balancer" }
+bccf-proxy = { path = "crates/proxy" }
+bccf-oauth = { path = "crates/oauth" }
+bccf-dashboard = { path = "crates/dashboard" }
+bccf-analytics = { path = "crates/analytics" }
+bccf-cli = { path = "crates/cli" }
+
+[package]
+name = "better-ccflare"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "better-ccflare"
+path = "src/main.rs"
+
+[dependencies]
+bccf-core = { workspace = true }
+bccf-cli = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }

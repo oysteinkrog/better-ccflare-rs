@@ -1,0 +1,2 @@
+[env]
+CC = { value = "/c/users/oystein/.local/bin/cc", force = true }
