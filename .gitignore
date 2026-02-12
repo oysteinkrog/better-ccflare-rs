@@ -24,6 +24,8 @@ AGENTS.md
 
 # Build artifacts and test files
 better-ccflare-*
+!better-ccflare-rs/
+better-ccflare-rs/target/
 config.json
 ssl-cert-snakeoil.key
 ssl-cert-snakeoil.pem
@@ -43,3 +45,9 @@ test_*.sh
 .serena
 
 references
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Claude Code local settings (contains secrets)
+.claude/settings.local.json

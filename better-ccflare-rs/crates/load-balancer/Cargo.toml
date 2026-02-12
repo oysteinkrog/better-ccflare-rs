@@ -1,0 +1,10 @@
+[package]
+name = "bccf-load-balancer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bccf-core = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

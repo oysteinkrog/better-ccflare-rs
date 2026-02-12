@@ -1,0 +1,11 @@
+[package]
+name = "bccf-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bccf-core = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
