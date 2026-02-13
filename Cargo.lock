@@ -264,8 +264,6 @@ name = "bccf-load-balancer"
 version = "0.1.0"
 dependencies = [
  "bccf-core",
- "chrono",
- "dashmap",
  "thiserror",
  "tokio",
  "tracing",
@@ -292,6 +290,7 @@ dependencies = [
  "base64",
  "bccf-core",
  "chrono",
+ "dashmap",
  "http",
  "rand",
  "reqwest",
@@ -307,10 +306,12 @@ dependencies = [
 name = "bccf-proxy"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bccf-core",
  "bccf-load-balancer",
  "bccf-providers",
+ "dashmap",
  "reqwest",
  "serde",
  "serde_json",

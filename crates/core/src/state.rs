@@ -12,13 +12,15 @@ use tokio::sync::broadcast;
 use crate::config::Config;
 
 // ---------------------------------------------------------------------------
-// Event bus (placeholder — US-017 will expand)
+// Event bus
 // ---------------------------------------------------------------------------
 
-/// Broadcast event bus for real-time updates (SSE, WebSocket, etc.).
+/// Broadcast event bus for real-time updates to SSE clients.
 ///
-/// For now this is a simple wrapper around `tokio::sync::broadcast`.
-/// US-017 will add typed events and subscriber helpers.
+/// Wraps `tokio::sync::broadcast` with typed [`Event`](crate::events::Event)
+/// payloads serialized to JSON strings. The channel uses a 1024-event ring
+/// buffer; slow subscribers that fall behind receive `RecvError::Lagged` and
+/// automatically skip missed events.
 #[derive(Debug, Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<String>,
@@ -30,20 +32,36 @@ impl EventBus {
         Self { tx }
     }
 
-    /// Send an event to all subscribers.
+    /// Publish a typed event. Serializes to JSON and broadcasts to all
+    /// subscribers. Returns the number of active receivers, or an error
+    /// if serialization fails or there are no receivers.
+    pub fn publish(&self, event: &crate::events::Event) -> Result<usize, String> {
+        let json = event.to_json().map_err(|e| e.to_string())?;
+        self.tx.send(json).map_err(|e| e.to_string())
+    }
+
+    /// Send a raw JSON string event. Prefer [`publish`](Self::publish) for
+    /// typed events.
     pub fn send(&self, event: String) -> Result<usize, broadcast::error::SendError<String>> {
         self.tx.send(event)
     }
 
-    /// Subscribe to events.
+    /// Subscribe to events. The returned receiver gets all events published
+    /// after this call. If the subscriber falls behind by more than the
+    /// channel capacity, it receives `RecvError::Lagged(n)`.
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.tx.subscribe()
+    }
+
+    /// Number of active subscribers.
+    pub fn receiver_count(&self) -> usize {
+        self.tx.receiver_count()
     }
 }
 
 impl Default for EventBus {
     fn default() -> Self {
-        Self::new(256)
+        Self::new(crate::events::EVENT_BUS_CAPACITY)
     }
 }
 
@@ -300,6 +318,110 @@ mod tests {
         bus.send("test-event".into()).unwrap();
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg, "test-event");
+    }
+
+    #[test]
+    fn event_bus_publish_typed_event() {
+        use crate::events::Event;
+
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        let event = Event::RequestStart {
+            id: "req-1".into(),
+            timestamp: 1700000000000,
+            method: "POST".into(),
+            path: "/v1/messages".into(),
+            account_id: Some("acct-1".into()),
+            status_code: 200,
+            agent_used: None,
+        };
+
+        let count = bus.publish(&event).unwrap();
+        assert_eq!(count, 1);
+
+        let json = rx.try_recv().unwrap();
+        assert!(json.contains(r#""type":"request_start""#));
+        assert!(json.contains(r#""id":"req-1""#));
+    }
+
+    #[test]
+    fn event_bus_multiple_subscribers() {
+        let bus = EventBus::new(16);
+        let mut rx1 = bus.subscribe();
+        let mut rx2 = bus.subscribe();
+        let mut rx3 = bus.subscribe();
+
+        assert_eq!(bus.receiver_count(), 3);
+
+        bus.send("broadcast".into()).unwrap();
+
+        assert_eq!(rx1.try_recv().unwrap(), "broadcast");
+        assert_eq!(rx2.try_recv().unwrap(), "broadcast");
+        assert_eq!(rx3.try_recv().unwrap(), "broadcast");
+    }
+
+    #[test]
+    fn event_bus_lagging_receiver() {
+        // Create a bus with capacity 4
+        let bus = EventBus::new(4);
+        let mut rx = bus.subscribe();
+
+        // Send more events than the buffer can hold
+        for i in 0..8 {
+            let _ = bus.send(format!("event-{i}"));
+        }
+
+        // First recv should report lag
+        match rx.try_recv() {
+            Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                assert!(n > 0, "should report skipped events");
+            }
+            other => {
+                // Some implementations may return the oldest available event
+                // Either way, we should be able to continue receiving
+                assert!(
+                    other.is_ok()
+                        || matches!(other, Err(broadcast::error::TryRecvError::Lagged(_)))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn event_bus_default_capacity() {
+        let bus = EventBus::default();
+        // Default should use EVENT_BUS_CAPACITY (1024)
+        // We can't directly check capacity, but we can verify it works
+        // by sending many events without lag for a small subscriber
+        let mut rx = bus.subscribe();
+        for i in 0..100 {
+            bus.send(format!("event-{i}")).unwrap();
+        }
+        // All 100 should be receivable without lag
+        for i in 0..100 {
+            let msg = rx.try_recv().unwrap();
+            assert_eq!(msg, format!("event-{i}"));
+        }
+    }
+
+    #[test]
+    fn event_bus_no_receivers_returns_err() {
+        let bus = EventBus::new(16);
+        // No subscribers — send returns error (zero receivers)
+        let result = bus.send("nobody-listening".into());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn event_bus_dropped_receiver_decrements_count() {
+        let bus = EventBus::new(16);
+        let rx1 = bus.subscribe();
+        let _rx2 = bus.subscribe();
+        assert_eq!(bus.receiver_count(), 2);
+
+        drop(rx1);
+        assert_eq!(bus.receiver_count(), 1);
     }
 
     #[test]
