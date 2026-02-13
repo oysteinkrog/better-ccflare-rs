@@ -19,6 +19,9 @@ pub enum ProviderError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+
     #[error("Provider not found: {0}")]
     NotFound(String),
 

@@ -18,3 +18,4 @@ rand = { workspace = true }
 http = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
+yup-oauth2 = { workspace = true }
