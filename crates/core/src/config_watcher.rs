@@ -50,6 +50,7 @@ fn diff_config_fields(
     check_field!(db_retry_delay_ms);
     check_field!(db_retry_backoff);
     check_field!(db_retry_max_delay_ms);
+    check_field!(metrics_enabled);
 
     changed
 }
@@ -370,10 +371,11 @@ mod tests {
             db_retry_delay_ms: Some(200),
             db_retry_backoff: Some(3.0),
             db_retry_max_delay_ms: Some(10000),
+            metrics_enabled: Some(true),
         };
 
         let changed = diff_config_fields(&old, &new);
-        assert_eq!(changed.len(), 19, "All 19 fields should differ");
+        assert_eq!(changed.len(), 20, "All 20 fields should differ");
     }
 
     #[tokio::test]

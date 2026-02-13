@@ -147,8 +147,8 @@ fn build_overview(state: &AppState) -> OverviewTab {
     };
 
     // Aggregated stats
-    let aggregated = bccf_database::repositories::stats::get_aggregated_stats(&conn)
-        .unwrap_or(bccf_database::repositories::stats::AggregatedStats {
+    let aggregated = bccf_database::repositories::stats::get_aggregated_stats(&conn).unwrap_or(
+        bccf_database::repositories::stats::AggregatedStats {
             total_requests: 0,
             successful_requests: 0,
             avg_response_time: 0.0,
@@ -159,7 +159,8 @@ fn build_overview(state: &AppState) -> OverviewTab {
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
             avg_tokens_per_second: None,
-        });
+        },
+    );
 
     let success_rate = if aggregated.total_requests > 0 {
         (aggregated.successful_requests as f64 / aggregated.total_requests as f64) * 100.0
