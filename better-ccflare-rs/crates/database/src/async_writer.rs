@@ -32,7 +32,7 @@ const BACKPRESSURE_WARN_THRESHOLD: usize = (CHANNEL_CAPACITY as f64 * 0.8) as us
 #[derive(Debug)]
 pub enum WriteOp {
     /// Insert a full proxy request row.
-    SaveRequest(bccf_core::types::ProxyRequest),
+    SaveRequest(Box<bccf_core::types::ProxyRequest>),
 
     /// Insert or replace request+response payloads.
     SavePayload {
@@ -403,7 +403,7 @@ mod tests {
         let pool = test_pool();
         let (writer, task) = spawn(pool.clone());
 
-        writer.send(WriteOp::SaveRequest(test_request("req-1")));
+        writer.send(WriteOp::SaveRequest(Box::new(test_request("req-1"))));
 
         // Give the flush loop time to process
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -424,7 +424,9 @@ mod tests {
 
         // Send exactly BATCH_SIZE requests to trigger a count-based flush
         for i in 0..BATCH_SIZE {
-            writer.send(WriteOp::SaveRequest(test_request(&format!("batch-{i}"))));
+            writer.send(WriteOp::SaveRequest(Box::new(test_request(&format!(
+                "batch-{i}"
+            )))));
         }
 
         // Should flush quickly (not waiting for the 5s timer)
@@ -444,7 +446,9 @@ mod tests {
 
         // Send a few ops but don't wait for the interval
         for i in 0..5 {
-            writer.send(WriteOp::SaveRequest(test_request(&format!("shut-{i}"))));
+            writer.send(WriteOp::SaveRequest(Box::new(test_request(&format!(
+                "shut-{i}"
+            )))));
         }
 
         // Immediately shut down — should flush remaining
@@ -463,7 +467,7 @@ mod tests {
         assert!(!writer.is_closed());
         assert_eq!(writer.queued(), 0);
 
-        writer.send(WriteOp::SaveRequest(test_request("q-1")));
+        writer.send(WriteOp::SaveRequest(Box::new(test_request("q-1"))));
         // queued() is approximate, just check it doesn't panic
         let _q = writer.queued();
 
@@ -485,7 +489,7 @@ mod tests {
         });
 
         // Send a valid op after the error
-        writer.send(WriteOp::SaveRequest(test_request("after-error")));
+        writer.send(WriteOp::SaveRequest(Box::new(test_request("after-error"))));
 
         // Shut down to force a flush of remaining ops (including the error + valid one)
         drop(writer);
