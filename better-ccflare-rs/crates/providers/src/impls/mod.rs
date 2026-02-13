@@ -4,6 +4,7 @@
 //! for a specific AI service backend.
 
 pub mod anthropic_compatible;
+pub mod claude_oauth;
 pub mod minimax;
 pub mod nanogpt;
 pub mod openai_compatible;
@@ -13,6 +14,7 @@ pub mod zai;
 
 // Re-exports for convenience
 pub use anthropic_compatible::AnthropicCompatibleProvider;
+pub use claude_oauth::ClaudeOAuthProvider;
 pub use minimax::MinimaxProvider;
 pub use nanogpt::NanoGptProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
