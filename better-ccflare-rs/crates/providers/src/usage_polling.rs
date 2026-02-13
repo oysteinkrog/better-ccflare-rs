@@ -1,0 +1,767 @@
+//! Usage polling service — background polling for account usage data.
+//!
+//! Runs a tokio task per provider type (Anthropic, NanoGPT, Zai) that polls
+//! at 90-second intervals and caches usage data in memory. The cache is
+//! queried by the dashboard and API handlers.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use dashmap::DashMap;
+use serde_json::Value as JsonValue;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
+use tracing::{debug, info, warn};
+
+use crate::impls::nanogpt::{self, NanoGptUsageData};
+use crate::impls::zai::{self, ZaiUsageData};
+
+// ---------------------------------------------------------------------------
+// Anthropic usage types (from OAuth usage endpoint)
+// ---------------------------------------------------------------------------
+
+/// Anthropic usage window (from /api/oauth/usage).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AnthropicUsageWindow {
+    pub utilization: f64,
+    pub resets_at: Option<String>,
+}
+
+/// Anthropic usage data — flexible to handle new fields from API updates.
+pub type AnthropicUsageData = serde_json::Map<String, JsonValue>;
+
+/// Union of all provider usage data types.
+#[derive(Debug, Clone)]
+pub enum AnyUsageData {
+    Anthropic(AnthropicUsageData),
+    NanoGpt(NanoGptUsageData),
+    Zai(ZaiUsageData),
+}
+
+impl AnyUsageData {
+    /// Serialize to JSON for API responses.
+    pub fn to_json(&self) -> Option<JsonValue> {
+        match self {
+            AnyUsageData::Anthropic(data) => Some(JsonValue::Object(data.clone())),
+            AnyUsageData::NanoGpt(data) => serde_json::to_value(data).ok(),
+            AnyUsageData::Zai(data) => serde_json::to_value(data).ok(),
+        }
+    }
+
+    /// Get representative utilization percentage (0-100).
+    pub fn utilization(&self) -> Option<f64> {
+        match self {
+            AnyUsageData::Anthropic(data) => anthropic_utilization(data),
+            AnyUsageData::NanoGpt(data) => nanogpt::nanogpt_utilization(data),
+            AnyUsageData::Zai(data) => zai::zai_utilization(data),
+        }
+    }
+
+    /// Get the name of the most restrictive usage window.
+    pub fn representative_window(&self) -> Option<String> {
+        match self {
+            AnyUsageData::Anthropic(data) => anthropic_representative_window(data),
+            AnyUsageData::NanoGpt(data) => {
+                nanogpt::nanogpt_representative_window(data).map(String::from)
+            }
+            AnyUsageData::Zai(data) => {
+                if data.tokens_limit.is_some() {
+                    Some("five_hour".to_string())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Get the highest utilization across all Anthropic usage windows.
+fn anthropic_utilization(data: &AnthropicUsageData) -> Option<f64> {
+    let mut max_util: Option<f64> = None;
+
+    for (_key, value) in data {
+        // Check if this is a usage window object with "utilization" field
+        if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
+            max_util = Some(max_util.map_or(util, |m: f64| m.max(util)));
+        }
+        // Also check extra_usage
+        if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
+            max_util = Some(max_util.map_or(util, |m: f64| m.max(util)));
+        }
+    }
+
+    max_util.or(Some(0.0))
+}
+
+/// Get the name of the most restrictive Anthropic usage window.
+fn anthropic_representative_window(data: &AnthropicUsageData) -> Option<String> {
+    let mut max_name = None;
+    let mut max_util = f64::NEG_INFINITY;
+
+    for (key, value) in data {
+        if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
+            if util > max_util {
+                max_util = util;
+                max_name = Some(key.clone());
+            }
+        }
+    }
+
+    max_name
+}
+
+// ---------------------------------------------------------------------------
+// Cache entry
+// ---------------------------------------------------------------------------
+
+/// Cached usage data with timestamp for staleness detection.
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    data: AnyUsageData,
+    timestamp: i64,
+}
+
+/// Max age for cache entries (10 minutes).
+const MAX_CACHE_AGE_MS: i64 = 10 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Usage cache (thread-safe)
+// ---------------------------------------------------------------------------
+
+/// Thread-safe in-memory cache for account usage data.
+#[derive(Debug, Clone)]
+pub struct UsageCache {
+    entries: Arc<DashMap<String, CacheEntry>>,
+}
+
+impl Default for UsageCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UsageCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Get cached usage data for an account (returns None if stale).
+    pub fn get(&self, account_id: &str) -> Option<AnyUsageData> {
+        let entry = self.entries.get(account_id)?;
+        let age = chrono::Utc::now().timestamp_millis() - entry.timestamp;
+        if age > MAX_CACHE_AGE_MS {
+            drop(entry);
+            self.entries.remove(account_id);
+            return None;
+        }
+        Some(entry.data.clone())
+    }
+
+    /// Store usage data for an account.
+    pub fn set(&self, account_id: &str, data: AnyUsageData) {
+        self.entries.insert(
+            account_id.to_string(),
+            CacheEntry {
+                data,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            },
+        );
+    }
+
+    /// Remove cached data for an account.
+    pub fn remove(&self, account_id: &str) {
+        self.entries.remove(account_id);
+    }
+
+    /// Clear all cached data.
+    pub fn clear(&self) {
+        self.entries.clear();
+    }
+
+    /// Clean up stale entries.
+    pub fn cleanup_stale(&self) {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.entries
+            .retain(|_, entry| now - entry.timestamp <= MAX_CACHE_AGE_MS);
+    }
+
+    /// Number of cached entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Account info for polling (minimal subset)
+// ---------------------------------------------------------------------------
+
+/// Minimal account info needed for usage polling.
+#[derive(Debug, Clone)]
+pub struct PollableAccount {
+    pub id: String,
+    pub provider: String,
+    pub access_token: Option<String>,
+    pub api_key: Option<String>,
+    pub custom_endpoint: Option<String>,
+    pub paused: bool,
+}
+
+/// Trait for fetching accounts eligible for usage polling.
+/// Implemented by the server layer to provide database access.
+pub trait AccountSource: Send + Sync + 'static {
+    /// Return accounts that support usage tracking.
+    fn get_pollable_accounts(&self) -> Vec<PollableAccount>;
+}
+
+// ---------------------------------------------------------------------------
+// Fetcher functions
+// ---------------------------------------------------------------------------
+
+/// Fetch Anthropic usage data from the OAuth usage endpoint.
+pub async fn fetch_anthropic_usage(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Option<AnthropicUsageData> {
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Accept", "application/json")
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let data: serde_json::Map<String, JsonValue> = r.json().await.ok()?;
+            Some(data)
+        }
+        Ok(r) => {
+            warn!(
+                status = %r.status(),
+                "Failed to fetch Anthropic usage data"
+            );
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, "Error fetching Anthropic usage data");
+            None
+        }
+    }
+}
+
+/// Fetch NanoGPT usage data from subscription endpoint.
+pub async fn fetch_nanogpt_usage(
+    client: &reqwest::Client,
+    api_key: &str,
+    custom_endpoint: Option<&str>,
+) -> Option<NanoGptUsageData> {
+    let base_url = custom_endpoint.unwrap_or("https://nano-gpt.com/api");
+    let url = format!("{}/subscription/v1/usage", base_url.trim_end_matches('/'));
+
+    let resp = client
+        .get(&url)
+        .header("x-api-key", api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body = r.bytes().await.ok()?;
+            nanogpt::parse_nanogpt_usage_response(&body)
+        }
+        Ok(r) => {
+            warn!(
+                status = %r.status(),
+                "Failed to fetch NanoGPT usage data"
+            );
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, "Error fetching NanoGPT usage data");
+            None
+        }
+    }
+}
+
+/// Fetch Zai usage data from monitoring endpoint.
+pub async fn fetch_zai_usage(client: &reqwest::Client, api_key: &str) -> Option<ZaiUsageData> {
+    let resp = client
+        .get("https://api.z.ai/api/monitor/usage/quota/limit")
+        .header("x-api-key", api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body = r.bytes().await.ok()?;
+            zai::parse_zai_usage_response(&body)
+        }
+        Ok(r) => {
+            warn!(
+                status = %r.status(),
+                "Failed to fetch Zai usage data"
+            );
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, "Error fetching Zai usage data");
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Polling service
+// ---------------------------------------------------------------------------
+
+/// Default polling interval (90 seconds).
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(90);
+
+/// Max retries per poll cycle with exponential backoff.
+const MAX_RETRIES: u32 = 10;
+
+/// Usage polling service that runs background tasks to fetch account usage.
+pub struct UsagePollingService {
+    cache: UsageCache,
+    shutdown: Arc<Notify>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl UsagePollingService {
+    /// Start the polling service.
+    ///
+    /// Spawns a single tokio task that polls all eligible accounts every 90s.
+    /// The task is tracked via JoinHandle for clean shutdown.
+    pub fn start(
+        account_source: Arc<dyn AccountSource>,
+        cache: UsageCache,
+        client: reqwest::Client,
+    ) -> Self {
+        let shutdown = Arc::new(Notify::new());
+        let shutdown_rx = shutdown.clone();
+        let cache_inner = cache.clone();
+
+        let handle = tokio::spawn(async move {
+            info!("Usage polling service started");
+            let mut interval = tokio::time::interval(DEFAULT_POLL_INTERVAL);
+
+            // Do an immediate first poll
+            poll_all_accounts(&account_source, &cache_inner, &client).await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        poll_all_accounts(&account_source, &cache_inner, &client).await;
+                        cache_inner.cleanup_stale();
+                    }
+                    _ = shutdown_rx.notified() => {
+                        info!("Usage polling service shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Self {
+            cache,
+            shutdown,
+            handle: Some(handle),
+        }
+    }
+
+    /// Get the shared usage cache.
+    pub fn cache(&self) -> &UsageCache {
+        &self.cache
+    }
+
+    /// Gracefully shut down the polling service.
+    pub async fn shutdown(mut self) {
+        self.shutdown.notify_one();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+        info!("Usage polling service stopped");
+    }
+}
+
+/// Poll all accounts that support usage tracking.
+async fn poll_all_accounts(
+    source: &Arc<dyn AccountSource>,
+    cache: &UsageCache,
+    client: &reqwest::Client,
+) {
+    let accounts = source.get_pollable_accounts();
+    if accounts.is_empty() {
+        debug!("No accounts eligible for usage polling");
+        return;
+    }
+
+    debug!(count = accounts.len(), "Polling usage for accounts");
+
+    for account in accounts {
+        poll_single_account(&account, cache, client).await;
+    }
+}
+
+/// Poll usage data for a single account with retry logic.
+async fn poll_single_account(
+    account: &PollableAccount,
+    cache: &UsageCache,
+    client: &reqwest::Client,
+) {
+    let token = account
+        .access_token
+        .as_deref()
+        .or(account.api_key.as_deref());
+
+    let Some(token) = token else {
+        debug!(
+            account_id = %account.id,
+            "No token available for usage polling, skipping"
+        );
+        return;
+    };
+
+    if token.trim().is_empty() {
+        debug!(
+            account_id = %account.id,
+            "Empty token for usage polling, skipping"
+        );
+        return;
+    }
+
+    // Retry with exponential backoff
+    let mut backoff = Duration::from_secs(1);
+
+    for attempt in 1..=MAX_RETRIES {
+        let result = fetch_usage_for_provider(
+            &account.provider,
+            client,
+            token,
+            account.custom_endpoint.as_deref(),
+        )
+        .await;
+
+        match result {
+            Some(data) => {
+                debug!(
+                    account_id = %account.id,
+                    provider = %account.provider,
+                    utilization = ?data.utilization(),
+                    "Fetched usage data"
+                );
+                cache.set(&account.id, data);
+                return;
+            }
+            None if attempt < MAX_RETRIES => {
+                debug!(
+                    account_id = %account.id,
+                    attempt,
+                    backoff_ms = backoff.as_millis(),
+                    "Usage fetch failed, retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(60));
+            }
+            None => {
+                warn!(
+                    account_id = %account.id,
+                    provider = %account.provider,
+                    "Usage fetch failed after {MAX_RETRIES} attempts"
+                );
+            }
+        }
+    }
+}
+
+/// Dispatch usage fetch to the correct provider-specific function.
+async fn fetch_usage_for_provider(
+    provider: &str,
+    client: &reqwest::Client,
+    token: &str,
+    custom_endpoint: Option<&str>,
+) -> Option<AnyUsageData> {
+    match provider {
+        "claude-oauth" | "anthropic" => fetch_anthropic_usage(client, token)
+            .await
+            .map(AnyUsageData::Anthropic),
+        "nanogpt" => fetch_nanogpt_usage(client, token, custom_endpoint)
+            .await
+            .map(AnyUsageData::NanoGpt),
+        "zai" => fetch_zai_usage(client, token).await.map(AnyUsageData::Zai),
+        _ => {
+            debug!(provider, "Provider does not support usage polling");
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- Cache tests --------------------------------------------------------
+
+    #[test]
+    fn cache_set_and_get() {
+        let cache = UsageCache::new();
+        let data = AnyUsageData::Zai(ZaiUsageData {
+            time_limit: None,
+            tokens_limit: Some(zai::ZaiUsageWindow {
+                used: 100.0,
+                remaining: 900.0,
+                percentage: 10.0,
+                reset_at: None,
+                limit_type: "TOKENS_LIMIT".to_string(),
+            }),
+        });
+
+        cache.set("acc1", data);
+        assert!(cache.get("acc1").is_some());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn cache_remove() {
+        let cache = UsageCache::new();
+        cache.set(
+            "acc1",
+            AnyUsageData::Zai(ZaiUsageData {
+                time_limit: None,
+                tokens_limit: None,
+            }),
+        );
+        cache.remove("acc1");
+        assert!(cache.get("acc1").is_none());
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn cache_clear() {
+        let cache = UsageCache::new();
+        cache.set(
+            "acc1",
+            AnyUsageData::Zai(ZaiUsageData {
+                time_limit: None,
+                tokens_limit: None,
+            }),
+        );
+        cache.set(
+            "acc2",
+            AnyUsageData::Zai(ZaiUsageData {
+                time_limit: None,
+                tokens_limit: None,
+            }),
+        );
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn cache_missing_key_returns_none() {
+        let cache = UsageCache::new();
+        assert!(cache.get("nonexistent").is_none());
+    }
+
+    // -- Anthropic utilization -----------------------------------------------
+
+    #[test]
+    fn anthropic_utilization_from_windows() {
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "five_hour".to_string(),
+            serde_json::json!({"utilization": 0.25, "resets_at": null}),
+        );
+        data.insert(
+            "seven_day".to_string(),
+            serde_json::json!({"utilization": 0.75, "resets_at": null}),
+        );
+
+        let util = anthropic_utilization(&data);
+        assert_eq!(util, Some(0.75));
+    }
+
+    #[test]
+    fn anthropic_utilization_empty() {
+        let data = serde_json::Map::new();
+        let util = anthropic_utilization(&data);
+        assert_eq!(util, Some(0.0));
+    }
+
+    #[test]
+    fn anthropic_representative_window_picks_highest() {
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "five_hour".to_string(),
+            serde_json::json!({"utilization": 0.8}),
+        );
+        data.insert(
+            "seven_day".to_string(),
+            serde_json::json!({"utilization": 0.3}),
+        );
+
+        assert_eq!(
+            anthropic_representative_window(&data),
+            Some("five_hour".to_string())
+        );
+    }
+
+    // -- AnyUsageData methods ------------------------------------------------
+
+    #[test]
+    fn any_usage_data_utilization_zai() {
+        let data = AnyUsageData::Zai(ZaiUsageData {
+            time_limit: None,
+            tokens_limit: Some(zai::ZaiUsageWindow {
+                used: 5000.0,
+                remaining: 45000.0,
+                percentage: 10.0,
+                reset_at: None,
+                limit_type: "TOKENS_LIMIT".to_string(),
+            }),
+        });
+        assert_eq!(data.utilization(), Some(10.0));
+    }
+
+    #[test]
+    fn any_usage_data_utilization_nanogpt() {
+        let data = AnyUsageData::NanoGpt(NanoGptUsageData {
+            active: true,
+            limits: nanogpt::NanoGptLimits {
+                daily: 1000.0,
+                monthly: 30000.0,
+            },
+            enforce_daily_limit: true,
+            daily: nanogpt::NanoGptUsageWindow {
+                used: 500.0,
+                remaining: 500.0,
+                percent_used: 0.5,
+                reset_at: 0,
+            },
+            monthly: nanogpt::NanoGptUsageWindow {
+                used: 3000.0,
+                remaining: 27000.0,
+                percent_used: 0.1,
+                reset_at: 0,
+            },
+            state: "active".to_string(),
+            grace_until: None,
+        });
+        assert_eq!(data.utilization(), Some(50.0)); // daily 50% > monthly 10%
+    }
+
+    #[test]
+    fn any_usage_data_to_json() {
+        let data = AnyUsageData::Zai(ZaiUsageData {
+            time_limit: None,
+            tokens_limit: None,
+        });
+        let json = data.to_json().unwrap();
+        assert!(json.is_object());
+    }
+
+    #[test]
+    fn any_usage_data_representative_window_zai() {
+        let data = AnyUsageData::Zai(ZaiUsageData {
+            time_limit: None,
+            tokens_limit: Some(zai::ZaiUsageWindow {
+                used: 5000.0,
+                remaining: 45000.0,
+                percentage: 10.0,
+                reset_at: None,
+                limit_type: "TOKENS_LIMIT".to_string(),
+            }),
+        });
+        assert_eq!(data.representative_window(), Some("five_hour".to_string()));
+    }
+
+    // -- Dispatch tests ------------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_unknown_provider_returns_none() {
+        let client = reqwest::Client::new();
+        let result = fetch_usage_for_provider("openai-compatible", &client, "key", None).await;
+        assert!(result.is_none());
+    }
+
+    // -- Polling service lifecycle -------------------------------------------
+
+    struct MockAccountSource {
+        accounts: Vec<PollableAccount>,
+    }
+
+    impl AccountSource for MockAccountSource {
+        fn get_pollable_accounts(&self) -> Vec<PollableAccount> {
+            self.accounts.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn polling_service_starts_and_shuts_down() {
+        let source = Arc::new(MockAccountSource { accounts: vec![] });
+        let cache = UsageCache::new();
+        let client = reqwest::Client::new();
+
+        let service = UsagePollingService::start(source, cache, client);
+        assert!(service.cache().is_empty());
+
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn poll_single_account_no_token_skips() {
+        let cache = UsageCache::new();
+        let client = reqwest::Client::new();
+        let account = PollableAccount {
+            id: "acc1".to_string(),
+            provider: "zai".to_string(),
+            access_token: None,
+            api_key: None,
+            custom_endpoint: None,
+            paused: false,
+        };
+
+        poll_single_account(&account, &cache, &client).await;
+        assert!(cache.get("acc1").is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_single_account_empty_token_skips() {
+        let cache = UsageCache::new();
+        let client = reqwest::Client::new();
+        let account = PollableAccount {
+            id: "acc1".to_string(),
+            provider: "zai".to_string(),
+            access_token: Some("  ".to_string()),
+            api_key: None,
+            custom_endpoint: None,
+            paused: false,
+        };
+
+        poll_single_account(&account, &cache, &client).await;
+        assert!(cache.get("acc1").is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_all_empty_accounts_no_panic() {
+        let source: Arc<dyn AccountSource> = Arc::new(MockAccountSource { accounts: vec![] });
+        let cache = UsageCache::new();
+        let client = reqwest::Client::new();
+
+        poll_all_accounts(&source, &cache, &client).await;
+        assert!(cache.is_empty());
+    }
+}
