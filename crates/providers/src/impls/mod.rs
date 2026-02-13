@@ -10,6 +10,7 @@ pub mod nanogpt;
 pub mod openai_compatible;
 pub mod openai_format;
 pub mod openai_stream;
+pub mod vertex_ai;
 pub mod zai;
 
 // Re-exports for convenience
@@ -19,4 +20,5 @@ pub use minimax::MinimaxProvider;
 pub use nanogpt::NanoGptProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
 pub use openai_stream::OpenAiStreamContext;
+pub use vertex_ai::VertexAiProvider;
 pub use zai::ZaiProvider;

@@ -65,6 +65,9 @@ rand = "0.9"
 # HTTP types
 http = "1"
 
+# Google Cloud auth
+yup-oauth2 = "12"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
