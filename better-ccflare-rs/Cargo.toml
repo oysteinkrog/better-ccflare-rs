@@ -73,6 +73,10 @@ http = "1"
 # Google Cloud auth
 yup-oauth2 = "12"
 
+# Metrics / Monitoring
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+
 # Filesystem watching
 notify = "7"
 notify-debouncer-mini = "0.5"
