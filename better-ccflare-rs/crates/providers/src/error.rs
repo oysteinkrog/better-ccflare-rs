@@ -10,6 +10,9 @@ pub enum ProviderError {
     #[error("Request build failed: {0}")]
     RequestBuild(String),
 
+    #[error("Request transform failed: {0}")]
+    RequestTransform(String),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 

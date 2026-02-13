@@ -5,7 +5,16 @@
 
 pub mod anthropic_compatible;
 pub mod minimax;
+pub mod nanogpt;
+pub mod openai_compatible;
+pub mod openai_format;
+pub mod openai_stream;
+pub mod zai;
 
 // Re-exports for convenience
 pub use anthropic_compatible::AnthropicCompatibleProvider;
 pub use minimax::MinimaxProvider;
+pub use nanogpt::NanoGptProvider;
+pub use openai_compatible::OpenAiCompatibleProvider;
+pub use openai_stream::OpenAiStreamContext;
+pub use zai::ZaiProvider;
