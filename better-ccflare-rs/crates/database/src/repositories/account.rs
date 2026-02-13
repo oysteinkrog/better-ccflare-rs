@@ -78,6 +78,15 @@ pub fn find_by_id(conn: &Connection, account_id: &str) -> Result<Option<Account>
     Ok(result)
 }
 
+/// Fetch a single account by name.
+pub fn find_by_name(conn: &Connection, name: &str) -> Result<Option<Account>, DbError> {
+    let sql = format!("{ACCOUNT_SELECT} WHERE name = ?1");
+    let result = conn
+        .query_row(&sql, params![name], row_to_account)
+        .optional()?;
+    Ok(result)
+}
+
 /// Update access/refresh tokens for an account.
 pub fn update_tokens(
     conn: &Connection,

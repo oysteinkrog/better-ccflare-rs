@@ -1,6 +1,6 @@
 //! API key authentication middleware.
 //!
-//! Verifies requests against stored API key hashes using SHA-256.
+//! Verifies requests against stored API key hashes using scrypt (with SHA-256 legacy fallback).
 //! Supports path-based exemptions for health, OAuth, and dashboard routes.
 
 use std::sync::Arc;
@@ -90,15 +90,14 @@ fn is_path_exempt(path: &str, _method: &str) -> bool {
 
 /// Verify an API key against stored hashed keys in the database.
 ///
-/// Uses SHA-256 hash comparison. Returns the matching key's info if valid.
+/// Supports both scrypt hashes (salt:hash format) and legacy SHA-256 hashes.
+/// Uses constant-time comparison to prevent timing attacks.
 fn verify_api_key(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
-    use sha2::{Digest, Sha256};
-
     let conn = pool.get().ok()?;
 
     // Get all active API keys
     let mut stmt = conn
-        .prepare("SELECT id, name, hashed_key FROM api_keys WHERE enabled = 1")
+        .prepare("SELECT id, name, hashed_key FROM api_keys WHERE is_active = 1")
         .ok()?;
 
     let keys: Vec<(String, String, String)> = stmt
@@ -113,14 +112,10 @@ fn verify_api_key(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
         .filter_map(|r| r.ok())
         .collect();
 
-    // Compare hash of provided key against stored hashes
-    let mut hasher = Sha256::new();
-    hasher.update(api_key.as_bytes());
-    let hash = format!("{:x}", hasher.finalize());
-
     for (id, name, stored_hash) in &keys {
-        if *stored_hash == hash {
-            return Some((id.clone(), name.clone()));
+        match crate::crypto::verify_api_key(api_key, stored_hash) {
+            Ok(true) => return Some((id.clone(), name.clone())),
+            _ => continue,
         }
     }
 

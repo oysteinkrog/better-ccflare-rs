@@ -64,6 +64,9 @@ subtle = "2"
 base64 = "0.22"
 rand = "0.9"
 
+# Templating
+askama = "0.13"
+
 # HTTP types
 http = "1"
 
