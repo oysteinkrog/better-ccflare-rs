@@ -1,2 +1,604 @@
 //! Load Balancer crate — Request distribution across account providers.
-//! Implements priority-based routing with health-aware failover.
+//!
+//! Implements priority-based routing with session affinity for OAuth accounts,
+//! round-robin for pay-as-you-go accounts within the same priority tier,
+//! and auto-fallback when higher-priority accounts recover from rate limits.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use bccf_core::constants::time;
+use bccf_core::providers::Provider;
+use bccf_core::types::Account;
+
+/// Metadata about an incoming request, used by the strategy to make routing decisions.
+#[derive(Debug, Clone, Default)]
+pub struct SelectionMeta {
+    /// If set, force routing to this specific account id.
+    pub force_account_id: Option<String>,
+    /// If true, skip session tracking (used for auto-refresh messages).
+    pub bypass_session: bool,
+}
+
+/// Result of a session reset, returned so the caller can persist changes.
+#[derive(Debug, Clone)]
+pub struct SessionReset {
+    pub account_id: String,
+    pub new_session_start: i64,
+}
+
+/// The session-based load balancing strategy.
+///
+/// Routes requests to accounts by priority with session affinity for OAuth
+/// (Anthropic) accounts and round-robin within the same priority tier for
+/// pay-as-you-go accounts.
+pub struct SessionStrategy {
+    session_duration_ms: i64,
+    round_robin_counter: AtomicUsize,
+}
+
+impl SessionStrategy {
+    pub fn new(session_duration_ms: i64) -> Self {
+        Self {
+            session_duration_ms,
+            round_robin_counter: AtomicUsize::new(0),
+        }
+    }
+
+    /// Select accounts for a request, returning them in priority order.
+    ///
+    /// The first account in the returned vec is the preferred account.
+    /// Remaining accounts are fallbacks sorted by priority.
+    /// Any `SessionReset` values should be persisted by the caller.
+    pub fn select(
+        &self,
+        accounts: &[Account],
+        meta: &SelectionMeta,
+        now: i64,
+    ) -> (Vec<Account>, Vec<SessionReset>) {
+        let mut resets = Vec::new();
+
+        // Force-account: if header specifies an account, use only that one
+        if let Some(ref forced_id) = meta.force_account_id {
+            if let Some(account) = accounts.iter().find(|a| &a.id == forced_id) {
+                return (vec![account.clone()], resets);
+            }
+            // Account not found — fall through to normal selection
+        }
+
+        // Check for auto-fallback candidates first
+        let fallback_candidates = self.check_auto_fallback_accounts(accounts, now);
+        if !fallback_candidates.is_empty() {
+            let mut chosen = fallback_candidates[0].clone();
+            if !meta.bypass_session {
+                if let Some(reset) = self.maybe_reset_session(&mut chosen, now) {
+                    resets.push(reset);
+                }
+            }
+
+            let mut others: Vec<Account> = accounts
+                .iter()
+                .filter(|a| a.id != chosen.id && is_account_available(a, now))
+                .cloned()
+                .collect();
+            others.sort_by_key(|a| a.priority);
+
+            let mut result = vec![chosen];
+            result.extend(others);
+            return (result, resets);
+        }
+
+        // Find account with the most recent active session (Anthropic only)
+        let active_account = accounts
+            .iter()
+            .filter(|a| self.has_active_session(a, now))
+            .max_by_key(|a| a.session_start.unwrap_or(0));
+
+        if let Some(active) = active_account {
+            if is_account_available(active, now) {
+                let mut chosen = active.clone();
+                if !meta.bypass_session {
+                    if let Some(reset) = self.maybe_reset_session(&mut chosen, now) {
+                        resets.push(reset);
+                    }
+                }
+
+                let mut others: Vec<Account> = accounts
+                    .iter()
+                    .filter(|a| a.id != chosen.id && is_account_available(a, now))
+                    .cloned()
+                    .collect();
+                others.sort_by_key(|a| a.priority);
+
+                let mut result = vec![chosen];
+                result.extend(others);
+                return (result, resets);
+            }
+        }
+
+        // No active session — select from available accounts by priority
+        let mut available: Vec<Account> = accounts
+            .iter()
+            .filter(|a| is_account_available(a, now))
+            .cloned()
+            .collect();
+        available.sort_by_key(|a| a.priority);
+
+        if available.is_empty() {
+            return (vec![], resets);
+        }
+
+        // For pay-as-you-go accounts at the same priority tier, use round-robin
+        let top_priority = available[0].priority;
+        let same_tier: Vec<&Account> = available
+            .iter()
+            .filter(|a| a.priority == top_priority)
+            .collect();
+
+        let chosen_idx = if same_tier.len() > 1 {
+            // Only apply round-robin for non-session-tracking (pay-as-you-go) accounts
+            let all_payg = same_tier
+                .iter()
+                .all(|a| !requires_session_tracking(&a.provider));
+            if all_payg {
+                let counter = self.round_robin_counter.fetch_add(1, Ordering::Relaxed);
+                counter % same_tier.len()
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let mut chosen = same_tier[chosen_idx].clone();
+        if !meta.bypass_session {
+            if let Some(reset) = self.maybe_reset_session(&mut chosen, now) {
+                resets.push(reset);
+            }
+        }
+
+        let others: Vec<Account> = available
+            .iter()
+            .filter(|a| a.id != chosen.id)
+            .cloned()
+            .collect();
+
+        let mut result = vec![chosen];
+        result.extend(others);
+        (result, resets)
+    }
+
+    /// Check if a session has expired and needs resetting.
+    /// Returns a `SessionReset` if the session was reset, so the caller can persist it.
+    fn maybe_reset_session(&self, account: &mut Account, now: i64) -> Option<SessionReset> {
+        let provider_requires_session = requires_session_tracking(&account.provider);
+
+        // Check if fixed duration expired (only for session-tracking providers)
+        let fixed_duration_expired = provider_requires_session
+            && match account.session_start {
+                Some(start) => now - start >= self.session_duration_ms,
+                None => true, // No session started yet
+            };
+
+        // Check if the rate limit window has reset (Anthropic usage windows)
+        let rate_limit_window_reset = account.provider == Provider::Anthropic.to_string()
+            && account
+                .rate_limit_reset
+                .is_some_and(|reset| reset < now - 1000);
+
+        if fixed_duration_expired || rate_limit_window_reset {
+            account.session_start = Some(now);
+            account.session_request_count = 0;
+            return Some(SessionReset {
+                account_id: account.id.clone(),
+                new_session_start: now,
+            });
+        }
+
+        None
+    }
+
+    /// Whether an account has an active session within the duration window.
+    /// Only true for providers that require session tracking (Anthropic).
+    fn has_active_session(&self, account: &Account, now: i64) -> bool {
+        if !requires_session_tracking(&account.provider) {
+            return false;
+        }
+        match account.session_start {
+            Some(start) => now - start < self.session_duration_ms,
+            None => false,
+        }
+    }
+
+    /// Find higher-priority accounts eligible for auto-fallback.
+    /// These are accounts whose rate limit window has reset and are no longer rate-limited.
+    fn check_auto_fallback_accounts(&self, accounts: &[Account], now: i64) -> Vec<Account> {
+        let mut candidates: Vec<Account> = accounts
+            .iter()
+            .filter(|a| {
+                if !a.auto_fallback_enabled {
+                    return false;
+                }
+
+                // Check if the Anthropic usage window has reset
+                let anthropic_window_reset = a.provider == Provider::Anthropic.to_string()
+                    && a.rate_limit_reset.is_some_and(|reset| reset < now - 1000);
+
+                // Check not currently rate-limited
+                let not_rate_limited = a.rate_limited_until.is_none_or(|until| until <= now);
+
+                anthropic_window_reset && not_rate_limited
+            })
+            .cloned()
+            .collect();
+
+        candidates.sort_by_key(|a| a.priority);
+        candidates
+    }
+}
+
+impl Default for SessionStrategy {
+    fn default() -> Self {
+        Self::new(time::ANTHROPIC_SESSION_DURATION_DEFAULT)
+    }
+}
+
+/// Check if an account is available (not paused and not rate-limited).
+pub fn is_account_available(account: &Account, now: i64) -> bool {
+    !account.paused && account.rate_limited_until.is_none_or(|until| until < now)
+}
+
+/// Check if a provider string requires session duration tracking.
+fn requires_session_tracking(provider: &str) -> bool {
+    Provider::from_str_loose(provider).is_some_and(|p| p.requires_session_tracking())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_account(id: &str, provider: &str, priority: i64) -> Account {
+        Account {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: provider.to_string(),
+            api_key: None,
+            refresh_token: String::new(),
+            access_token: None,
+            expires_at: None,
+            request_count: 0,
+            total_requests: 0,
+            last_used: None,
+            created_at: 0,
+            rate_limited_until: None,
+            session_start: None,
+            session_request_count: 0,
+            paused: false,
+            rate_limit_reset: None,
+            rate_limit_status: None,
+            rate_limit_remaining: None,
+            priority,
+            auto_fallback_enabled: false,
+            auto_refresh_enabled: false,
+            custom_endpoint: None,
+            model_mappings: None,
+        }
+    }
+
+    fn default_meta() -> SelectionMeta {
+        SelectionMeta::default()
+    }
+
+    const NOW: i64 = 1_700_000_000_000; // Fixed timestamp for tests
+
+    #[test]
+    fn basic_priority_ordering() {
+        let strategy = SessionStrategy::default();
+        let accounts = vec![
+            make_account("low", "zai", 10),
+            make_account("high", "zai", 1),
+            make_account("mid", "zai", 5),
+        ];
+
+        let (result, _) = strategy.select(&accounts, &default_meta(), NOW);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].id, "high");
+        assert_eq!(result[1].id, "mid");
+        assert_eq!(result[2].id, "low");
+    }
+
+    #[test]
+    fn skip_paused_accounts() {
+        let strategy = SessionStrategy::default();
+        let mut paused = make_account("paused", "zai", 1);
+        paused.paused = true;
+        let available = make_account("available", "zai", 5);
+
+        let (result, _) = strategy.select(&[paused, available], &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "available");
+    }
+
+    #[test]
+    fn skip_rate_limited_accounts() {
+        let strategy = SessionStrategy::default();
+        let mut limited = make_account("limited", "zai", 1);
+        limited.rate_limited_until = Some(NOW + 60_000); // Rate limited for 60 more seconds
+        let available = make_account("available", "zai", 5);
+
+        let (result, _) = strategy.select(&[limited, available], &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "available");
+    }
+
+    #[test]
+    fn expired_rate_limit_is_available() {
+        let strategy = SessionStrategy::default();
+        let mut was_limited = make_account("was-limited", "zai", 1);
+        was_limited.rate_limited_until = Some(NOW - 1000); // Rate limit expired
+        let other = make_account("other", "zai", 5);
+
+        let (result, _) = strategy.select(&[was_limited, other], &default_meta(), NOW);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "was-limited"); // Higher priority
+    }
+
+    #[test]
+    fn session_affinity_for_anthropic() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 5);
+        anthropic.session_start = Some(NOW - time::HOUR); // 1 hour into session (within 5hr window)
+        anthropic.session_request_count = 10;
+
+        let higher_prio = make_account("higher", "zai", 1); // Higher priority but no session
+
+        let (result, _) = strategy.select(&[anthropic, higher_prio], &default_meta(), NOW);
+        // Anthropic with active session should come first, even though lower priority
+        assert_eq!(result[0].id, "oauth");
+        assert_eq!(result[1].id, "higher");
+    }
+
+    #[test]
+    fn session_expired_anthropic_falls_back() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 5);
+        // Session started 6 hours ago — expired (>5hr window)
+        anthropic.session_start = Some(NOW - 6 * time::HOUR);
+
+        let higher_prio = make_account("higher", "zai", 1);
+
+        let (result, _) = strategy.select(&[anthropic, higher_prio], &default_meta(), NOW);
+        // Expired session means no active session, falls back to priority ordering
+        assert_eq!(result[0].id, "higher");
+        assert_eq!(result[1].id, "oauth");
+    }
+
+    #[test]
+    fn session_expired_anthropic_resets_when_chosen() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 1);
+        // Session started 6 hours ago — expired (>5hr window), but highest priority
+        anthropic.session_start = Some(NOW - 6 * time::HOUR);
+
+        let (result, resets) = strategy.select(&[anthropic], &default_meta(), NOW);
+        assert_eq!(result[0].id, "oauth");
+        // Session should be reset since it's expired
+        assert_eq!(resets.len(), 1);
+        assert_eq!(resets[0].account_id, "oauth");
+        assert_eq!(resets[0].new_session_start, NOW);
+    }
+
+    #[test]
+    fn no_session_affinity_for_payg() {
+        let strategy = SessionStrategy::default();
+        let mut zai = make_account("zai1", "zai", 5);
+        zai.session_start = Some(NOW - time::HOUR); // Has a "session" but shouldn't stick
+
+        let higher = make_account("zai2", "zai", 1);
+
+        let (result, _) = strategy.select(&[zai, higher], &default_meta(), NOW);
+        // Pay-as-you-go should NOT have session affinity — priority wins
+        assert_eq!(result[0].id, "zai2");
+    }
+
+    #[test]
+    fn auto_fallback_when_rate_limit_resets() {
+        let strategy = SessionStrategy::default();
+        let mut high_prio = make_account("high", "anthropic", 1);
+        high_prio.auto_fallback_enabled = true;
+        high_prio.rate_limit_reset = Some(NOW - 2000); // Usage window reset 2 seconds ago
+
+        let mut low_prio = make_account("low", "anthropic", 5);
+        low_prio.session_start = Some(NOW - time::HOUR); // Active session
+
+        let (result, _) = strategy.select(&[high_prio, low_prio], &default_meta(), NOW);
+        // Auto-fallback should choose the higher-priority account
+        assert_eq!(result[0].id, "high");
+    }
+
+    #[test]
+    fn auto_fallback_skips_rate_limited() {
+        let strategy = SessionStrategy::default();
+        let mut high_prio = make_account("high", "anthropic", 1);
+        high_prio.auto_fallback_enabled = true;
+        high_prio.rate_limit_reset = Some(NOW - 2000); // Window reset
+        high_prio.rate_limited_until = Some(NOW + 60_000); // But still rate-limited by our system
+
+        let low_prio = make_account("low", "zai", 5);
+
+        let (result, _) = strategy.select(&[high_prio, low_prio], &default_meta(), NOW);
+        // Should not auto-fallback because account is still rate-limited
+        assert_eq!(result[0].id, "low");
+    }
+
+    #[test]
+    fn auto_fallback_only_for_anthropic() {
+        let strategy = SessionStrategy::default();
+        let mut zai = make_account("zai", "zai", 1);
+        zai.auto_fallback_enabled = true;
+        zai.rate_limit_reset = Some(NOW - 2000);
+
+        let other = make_account("other", "zai", 5);
+
+        let (result, _) = strategy.select(&[zai, other], &default_meta(), NOW);
+        // Non-Anthropic accounts don't get auto-fallback treatment
+        // Falls through to normal priority ordering
+        assert_eq!(result[0].id, "zai");
+        assert_eq!(result[1].id, "other");
+    }
+
+    #[test]
+    fn force_account_header() {
+        let strategy = SessionStrategy::default();
+        let a = make_account("a", "zai", 1);
+        let b = make_account("b", "zai", 5);
+
+        let meta = SelectionMeta {
+            force_account_id: Some("b".to_string()),
+            bypass_session: false,
+        };
+
+        let (result, _) = strategy.select(&[a, b], &meta, NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "b");
+    }
+
+    #[test]
+    fn force_account_not_found_falls_through() {
+        let strategy = SessionStrategy::default();
+        let a = make_account("a", "zai", 1);
+
+        let meta = SelectionMeta {
+            force_account_id: Some("nonexistent".to_string()),
+            bypass_session: false,
+        };
+
+        let (result, _) = strategy.select(&[a], &meta, NOW);
+        // Should fall through to normal selection
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "a");
+    }
+
+    #[test]
+    fn round_robin_within_same_priority_tier() {
+        let strategy = SessionStrategy::default();
+        let accounts = vec![
+            make_account("a", "zai", 1),
+            make_account("b", "zai", 1),
+            make_account("c", "zai", 1),
+        ];
+
+        // Call select multiple times and track which account is chosen first
+        let mut first_picks = Vec::new();
+        for _ in 0..6 {
+            let (result, _) = strategy.select(&accounts, &default_meta(), NOW);
+            first_picks.push(result[0].id.clone());
+        }
+
+        // Should cycle through a, b, c (round-robin)
+        assert_eq!(first_picks[0], "a");
+        assert_eq!(first_picks[1], "b");
+        assert_eq!(first_picks[2], "c");
+        assert_eq!(first_picks[3], "a"); // Wraps around
+    }
+
+    #[test]
+    fn empty_accounts_returns_empty() {
+        let strategy = SessionStrategy::default();
+        let (result, resets) = strategy.select(&[], &default_meta(), NOW);
+        assert!(result.is_empty());
+        assert!(resets.is_empty());
+    }
+
+    #[test]
+    fn all_paused_returns_empty() {
+        let strategy = SessionStrategy::default();
+        let mut a = make_account("a", "zai", 1);
+        a.paused = true;
+        let mut b = make_account("b", "zai", 2);
+        b.paused = true;
+
+        let (result, _) = strategy.select(&[a, b], &default_meta(), NOW);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn session_reset_returns_reset_info() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 1);
+        // No session started yet — should trigger a reset
+        anthropic.session_start = None;
+
+        let (result, resets) = strategy.select(&[anthropic], &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(resets.len(), 1);
+        assert_eq!(resets[0].account_id, "oauth");
+        assert_eq!(resets[0].new_session_start, NOW);
+    }
+
+    #[test]
+    fn bypass_session_skips_reset() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 1);
+        anthropic.session_start = None; // Would normally trigger reset
+
+        let meta = SelectionMeta {
+            force_account_id: None,
+            bypass_session: true,
+        };
+
+        let (result, resets) = strategy.select(&[anthropic], &meta, NOW);
+        assert_eq!(result.len(), 1);
+        assert!(resets.is_empty()); // No resets when bypassing
+    }
+
+    #[test]
+    fn mixed_tiers_respects_priority() {
+        let strategy = SessionStrategy::default();
+        let accounts = vec![
+            make_account("p1a", "zai", 1),
+            make_account("p1b", "zai", 1),
+            make_account("p5", "minimax", 5),
+            make_account("p10", "anthropic-compatible", 10),
+        ];
+
+        let (result, _) = strategy.select(&accounts, &default_meta(), NOW);
+        assert_eq!(result.len(), 4);
+        // First should be from tier 1 (round-robin), rest by priority
+        assert!(result[0].priority == 1);
+        assert!(result[1].priority == 1);
+        assert_eq!(result[2].id, "p5");
+        assert_eq!(result[3].id, "p10");
+    }
+
+    #[test]
+    fn rate_limit_window_reset_triggers_session_reset() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 1);
+        anthropic.session_start = Some(NOW - time::HOUR); // Active session, 1hr in
+        anthropic.rate_limit_reset = Some(NOW - 2000); // Window reset 2s ago
+
+        let (result, resets) = strategy.select(&[anthropic], &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        // Should reset session because rate limit window reset
+        assert_eq!(resets.len(), 1);
+        assert_eq!(resets[0].new_session_start, NOW);
+    }
+
+    #[test]
+    fn is_account_available_checks() {
+        let available = make_account("a", "zai", 1);
+        assert!(is_account_available(&available, NOW));
+
+        let mut paused = make_account("b", "zai", 1);
+        paused.paused = true;
+        assert!(!is_account_available(&paused, NOW));
+
+        let mut rate_limited = make_account("c", "zai", 1);
+        rate_limited.rate_limited_until = Some(NOW + 1000);
+        assert!(!is_account_available(&rate_limited, NOW));
+
+        let mut expired_rl = make_account("d", "zai", 1);
+        expired_rl.rate_limited_until = Some(NOW - 1000);
+        assert!(is_account_available(&expired_rl, NOW));
+    }
+}
