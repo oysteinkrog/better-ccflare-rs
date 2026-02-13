@@ -8,7 +8,9 @@ bccf-core = { workspace = true }
 bccf-providers = { workspace = true }
 bccf-load-balancer = { workspace = true }
 async-trait = { workspace = true }
+bytes = "1"
 dashmap = { workspace = true }
+uuid = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
