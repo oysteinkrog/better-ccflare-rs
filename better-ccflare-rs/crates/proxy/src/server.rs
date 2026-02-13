@@ -169,6 +169,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         // Health endpoint (exempt from auth)
         .route("/health", get(api::health))
+        // Prometheus metrics (exempt from auth, optional — returns 503 if not enabled)
+        .route("/metrics", get(crate::prometheus::metrics_handler))
         // Dashboard (exempt from auth, not under /api/)
         .merge(dashboard_routes)
         // API routes (with auth middleware)
@@ -194,7 +196,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 ///
 /// Binds to the configured address, runs startup maintenance in the background,
 /// and serves requests until a shutdown signal is received.
-pub async fn start(state: Arc<AppState>, server_config: ServerConfig) -> Result<(), ServerError> {
+///
+/// When a shutdown signal arrives, axum stops accepting new connections and
+/// drains in-flight requests. Once the server returns, the provided
+/// [`ShutdownCoordinator`] executes registered shutdown steps (flushing the
+/// database, stopping background services, etc.) in order with per-step
+/// timeouts.
+pub async fn start(
+    state: Arc<AppState>,
+    server_config: ServerConfig,
+    coordinator: crate::shutdown::ShutdownCoordinator,
+) -> Result<(), ServerError> {
     let addr: SocketAddr = format!("{}:{}", server_config.host, server_config.port)
         .parse()
         .map_err(|e| ServerError::Bind(format!("Invalid address: {e}")))?;
@@ -219,6 +231,10 @@ pub async fn start(state: Arc<AppState>, server_config: ServerConfig) -> Result<
         .with_graceful_shutdown(crate::shutdown::shutdown_signal())
         .await
         .map_err(|e| ServerError::Serve(e.to_string()))?;
+
+    // Run ordered shutdown steps (flush DB, stop services, etc.)
+    info!("Running shutdown coordinator...");
+    coordinator.execute().await;
 
     info!("Server shut down gracefully");
     Ok(())

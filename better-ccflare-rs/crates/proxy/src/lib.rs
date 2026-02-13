@@ -10,6 +10,7 @@ pub mod handler;
 pub mod handlers;
 pub mod post_processor;
 pub mod pricing;
+pub mod prometheus;
 pub mod server;
 pub mod shutdown;
 pub mod streaming;

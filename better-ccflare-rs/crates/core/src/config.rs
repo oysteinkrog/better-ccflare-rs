@@ -47,6 +47,9 @@ pub struct ConfigData {
     pub db_retry_backoff: Option<f64>,
     #[serde(default)]
     pub db_retry_max_delay_ms: Option<u64>,
+    // Monitoring
+    #[serde(default)]
+    pub metrics_enabled: Option<bool>,
 }
 
 /// Runtime configuration with resolved defaults.
@@ -188,6 +191,11 @@ impl Config {
             .unwrap_or_else(|| crate::models::DEFAULT_AGENT_MODEL.to_string())
     }
 
+    pub fn set_default_agent_model(&mut self, model: String) {
+        self.data.default_agent_model = Some(model);
+        self.save();
+    }
+
     pub fn get_data_retention_days(&self) -> u32 {
         if let Ok(env_val) = std::env::var("DATA_RETENTION_DAYS") {
             if let Ok(n) = env_val.parse::<u32>() {
@@ -195,6 +203,16 @@ impl Config {
             }
         }
         self.data.data_retention_days.unwrap_or(7).clamp(1, 365)
+    }
+
+    /// Whether the Prometheus /metrics endpoint is enabled.
+    /// Disabled by default. Set `METRICS_ENABLED=true` env var or
+    /// `"metrics_enabled": true` in config.json.
+    pub fn is_metrics_enabled(&self) -> bool {
+        if let Ok(v) = std::env::var("METRICS_ENABLED") {
+            return v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        self.data.metrics_enabled.unwrap_or(false)
     }
 
     pub fn get_request_retention_days(&self) -> u32 {
