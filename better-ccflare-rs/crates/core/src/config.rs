@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Config data persisted to `config.json`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfigData {
     #[serde(default)]
     pub lb_strategy: Option<StrategyName>,

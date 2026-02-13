@@ -16,4 +16,9 @@ uuid = { workspace = true }
 dotenvy = { workspace = true }
 dirs = { workspace = true }
 arc-swap = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

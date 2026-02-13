@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_watcher;
 pub mod constants;
 pub mod errors;
 pub mod events;
@@ -15,6 +16,7 @@ pub mod version;
 
 // Re-exports for convenience
 pub use config::{Config, ConfigData, RuntimeConfig};
+pub use config_watcher::ConfigWatcher;
 pub use errors::AppError;
 pub use events::{Event, TokenUsage, EVENT_BUS_CAPACITY};
 pub use logging::init_logging;

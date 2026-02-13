@@ -46,6 +46,13 @@ pub enum Event {
         model: Option<String>,
     },
 
+    /// Emitted when config.json is successfully reloaded from disk.
+    ConfigChanged {
+        timestamp: i64,
+        /// Human-readable summary of what changed (e.g. "lb_strategy, retry_attempts").
+        changed_fields: Vec<String>,
+    },
+
     /// Emitted for real-time log entries displayed in the dashboard.
     LogEntry {
         level: String,
@@ -67,6 +74,7 @@ impl Event {
         match self {
             Event::RequestStart { .. } => "request_start",
             Event::RequestSummary { .. } => "request_summary",
+            Event::ConfigChanged { .. } => "config_changed",
             Event::LogEntry { .. } => "log_entry",
         }
     }
