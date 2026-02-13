@@ -12,6 +12,8 @@ serde = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

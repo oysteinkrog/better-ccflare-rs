@@ -233,6 +233,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
