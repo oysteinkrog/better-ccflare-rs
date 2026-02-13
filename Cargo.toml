@@ -54,6 +54,9 @@ anyhow = "1"
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+dotenvy = "0.15"
+dirs = "6"
+tempfile = "3"
 
 # Internal crates
 bccf-core = { path = "crates/core" }
