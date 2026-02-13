@@ -1,19 +1,11 @@
-use clap::Parser;
+//! CLI crate — clap-based command-line interface for better-ccflare.
+//!
+//! Handles account management (add, remove, list, pause, resume, set-priority,
+//! reauthenticate) and other administrative commands. Flag names match the
+//! TypeScript CLI for backwards compatibility.
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "better-ccflare",
-    version,
-    about = "Load balancer proxy for Claude"
-)]
-pub struct Cli {
-    /// Enable verbose logging
-    #[arg(short, long)]
-    pub verbose: bool,
-}
+pub mod args;
+pub mod commands;
+pub mod levenshtein;
 
-impl Cli {
-    pub fn parse_args() -> Self {
-        Self::parse()
-    }
-}
+pub use args::Cli;

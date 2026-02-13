@@ -207,9 +207,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bccf-core",
+ "bccf-database",
+ "bccf-providers",
+ "chrono",
  "clap",
+ "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
