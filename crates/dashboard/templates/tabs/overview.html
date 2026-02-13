@@ -1,0 +1,27 @@
+<h2>Overview</h2>
+<div class="grid">
+  <article>
+    <header>Total Requests</header>
+    <p hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="this" hx-select=".total-requests" hx-swap="innerHTML">
+      Loading...
+    </p>
+  </article>
+  <article>
+    <header>Active Accounts</header>
+    <p hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="this" hx-select=".active-accounts" hx-swap="innerHTML">
+      Loading...
+    </p>
+  </article>
+  <article>
+    <header>Success Rate</header>
+    <p hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="this" hx-select=".success-rate" hx-swap="innerHTML">
+      Loading...
+    </p>
+  </article>
+</div>
+<article>
+  <header>System Status</header>
+  <div hx-get="/dashboard/partials/system-status" hx-trigger="load, every 30s" hx-swap="innerHTML">
+    <p>Loading system status...</p>
+  </div>
+</article>

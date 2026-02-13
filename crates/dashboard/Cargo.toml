@@ -5,7 +5,11 @@ edition.workspace = true
 
 [dependencies]
 bccf-core = { workspace = true }
+bccf-database = { workspace = true }
+askama = { workspace = true }
 axum = { workspace = true }
+http = { workspace = true }
+tower = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
