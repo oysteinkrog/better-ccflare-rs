@@ -17,3 +17,4 @@ base64 = { workspace = true }
 rand = { workspace = true }
 http = { workspace = true }
 chrono = { workspace = true }
+dashmap = { workspace = true }
