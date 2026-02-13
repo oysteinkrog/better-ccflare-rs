@@ -54,6 +54,17 @@ anyhow = "1"
 # Atomic config swap
 arc-swap = "1"
 
+# Async trait
+async-trait = "0.1"
+
+# Crypto / encoding
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.9"
+
+# HTTP types
+http = "1"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
