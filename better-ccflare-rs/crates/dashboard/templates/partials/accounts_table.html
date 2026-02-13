@@ -1,0 +1,85 @@
+{% if accounts.is_empty() %}
+<p>No accounts configured. Use the CLI to add accounts:</p>
+<pre><code>better-ccflare --add-account my-account --mode claude-oauth --priority 0</code></pre>
+{% else %}
+<figure>
+<table role="grid">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Provider</th>
+      <th>Priority</th>
+      <th>Status</th>
+      <th>Session</th>
+      <th>Requests</th>
+      <th>Last Used</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for acct in accounts %}
+    <tr id="acct-row-{{ acct.id }}">
+      <td>
+        <strong>{{ acct.name }}</strong>
+        {% if let Some(ep) = acct.custom_endpoint %}
+        <br><small class="secondary">{{ ep }}</small>
+        {% endif %}
+      </td>
+      <td><kbd>{{ acct.provider }}</kbd></td>
+      <td>
+        <span>{{ acct.priority }}</span>
+      </td>
+      <td>
+        {% if acct.paused %}
+          <mark style="--pico-background-color: var(--pico-color-yellow-500, #f0ad4e); --pico-color: #000;">Paused</mark>
+        {% else if acct.rate_limit_status != "OK" %}
+          <mark style="--pico-background-color: var(--pico-color-red-500, #d9534f); --pico-color: #fff;">{{ acct.rate_limit_status }}</mark>
+        {% else if acct.token_status_str == "valid" %}
+          <mark style="--pico-background-color: var(--pico-color-green-500, #5cb85c); --pico-color: #fff;">Active</mark>
+        {% else %}
+          <mark>Expired</mark>
+        {% endif %}
+      </td>
+      <td>{{ acct.session_info }}</td>
+      <td>
+        <span>{{ acct.total_requests }}</span>
+        {% if acct.request_count > 0 %}
+        <br><small class="secondary">({{ acct.request_count }} session)</small>
+        {% endif %}
+      </td>
+      <td>
+        {% match acct.last_used_relative %}
+          {% when Some with (val) %}
+            <small>{{ val }}</small>
+          {% when None %}
+            <small class="secondary">Never</small>
+        {% endmatch %}
+      </td>
+      <td>
+        {% if acct.paused %}
+        <button class="outline secondary"
+                hx-post="/api/accounts/{{ acct.id }}/resume"
+                hx-target="#acct-row-{{ acct.id }}"
+                hx-swap="outerHTML"
+                hx-trigger="click"
+                style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
+          Resume
+        </button>
+        {% else %}
+        <button class="outline secondary"
+                hx-post="/api/accounts/{{ acct.id }}/pause"
+                hx-target="#acct-row-{{ acct.id }}"
+                hx-swap="outerHTML"
+                hx-trigger="click"
+                style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
+          Pause
+        </button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</figure>
+<small class="secondary">{{ accounts.len() }} account(s) &middot; Auto-refreshes every 30s</small>
+{% endif %}
