@@ -89,9 +89,7 @@ pub fn transform_body_model(body: &[u8], account: Option<&Account>) -> Option<Ve
 /// Returns `None` if the body isn't valid JSON with a model field.
 pub fn transform_body_model_force(body: &[u8], target_model: &str) -> Option<Vec<u8>> {
     let mut json: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if json.get("model").is_none() {
-        return None;
-    }
+    json.get("model")?;
     json["model"] = serde_json::Value::String(target_model.to_string());
     serde_json::to_vec(&json).ok()
 }
