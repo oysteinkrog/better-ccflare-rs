@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::middleware;
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -20,6 +20,7 @@ use bccf_core::constants::network;
 use bccf_core::AppState;
 use bccf_database::DbPool;
 
+use crate::accounts;
 use crate::api;
 use crate::auth;
 
@@ -93,6 +94,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/config/retention",
             get(api::get_retention).post(api::set_retention),
+        )
+        // Account management
+        .route("/api/accounts", get(accounts::list_accounts))
+        .route("/api/accounts/{id}/pause", post(accounts::pause_account))
+        .route("/api/accounts/{id}/resume", post(accounts::resume_account))
+        .route("/api/accounts/{id}/reload", post(accounts::reload_account))
+        .route(
+            "/api/accounts/{id}/priority",
+            post(accounts::update_priority),
+        )
+        .route("/api/accounts/{id}/rename", post(accounts::rename_account))
+        .route("/api/accounts/{id}", delete(accounts::delete_account))
+        .route(
+            "/api/accounts/{id}/auto-fallback",
+            post(accounts::set_auto_fallback),
         );
 
     // Combine all routes

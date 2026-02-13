@@ -1,6 +1,7 @@
 //! Proxy crate — HTTP proxy layer for Anthropic API requests.
 //! Handles request forwarding, streaming, server, and response processing.
 
+pub mod accounts;
 pub mod api;
 pub mod auth;
 pub mod auto_refresh;
