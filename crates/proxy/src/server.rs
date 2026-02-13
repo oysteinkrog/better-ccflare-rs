@@ -11,7 +11,6 @@ use axum::middleware;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use tokio::net::TcpListener;
-use tokio::signal;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
@@ -23,6 +22,7 @@ use bccf_database::DbPool;
 use crate::accounts;
 use crate::api;
 use crate::auth;
+use crate::handlers;
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -109,12 +109,68 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/accounts/{id}/auto-fallback",
             post(accounts::set_auto_fallback),
+        )
+        // Request history & payload
+        .route("/api/requests", get(handlers::requests::list_requests))
+        .route(
+            "/api/requests/{id}/payload",
+            get(handlers::requests::get_request_payload),
+        )
+        // SSE streams
+        .route(
+            "/api/requests/stream",
+            get(handlers::streams::request_events_stream),
+        )
+        .route("/api/logs/stream", get(handlers::logs::logs_stream))
+        // Stats & analytics
+        .route("/api/stats", get(handlers::stats::get_stats))
+        .route("/api/analytics", get(handlers::analytics::get_analytics))
+        // Logs history
+        .route("/api/logs", get(handlers::logs::logs_history))
+        // Token health
+        .route(
+            "/api/token-health",
+            get(handlers::token_health::get_token_health),
+        )
+        .route(
+            "/api/token-health/reauth",
+            get(handlers::token_health::get_reauth_needed),
+        )
+        .route(
+            "/api/token-health/{account_name}",
+            get(handlers::token_health::get_account_token_health),
+        )
+        // API key management
+        .route(
+            "/api/keys",
+            get(handlers::api_keys::list_keys).post(handlers::api_keys::generate_key),
+        )
+        .route("/api/keys/stats", get(handlers::api_keys::key_stats))
+        .route("/api/keys/{id}", delete(handlers::api_keys::delete_key))
+        .route(
+            "/api/keys/{id}/enable",
+            post(handlers::api_keys::enable_key),
+        )
+        .route(
+            "/api/keys/{id}/disable",
+            post(handlers::api_keys::disable_key),
+        )
+        // Agent preferences
+        .route("/api/agents", get(handlers::agents::list_agents))
+        .route(
+            "/api/agents/{id}/model",
+            post(handlers::agents::update_agent_model),
         );
+
+    // Dashboard routes (exempt from API auth — served under /dashboard)
+    let dashboard_routes = bccf_dashboard::routes::router();
 
     // Combine all routes
     Router::new()
         // Health endpoint (exempt from auth)
         .route("/health", get(api::health))
+        // Dashboard (exempt from auth, not under /api/)
+        .merge(dashboard_routes)
         // API routes (with auth middleware)
         .merge(api_routes)
         // Fallback for unmatched routes
@@ -160,7 +216,7 @@ pub async fn start(state: Arc<AppState>, server_config: ServerConfig) -> Result<
     info!("Server listening on http://{addr}");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(crate::shutdown::shutdown_signal())
         .await
         .map_err(|e| ServerError::Serve(e.to_string()))?;
 
@@ -224,31 +280,6 @@ fn clear_expired_oauth_sessions(pool: &DbPool, now: i64) -> Result<usize, String
         [now],
     )
     .map_err(|e| e.to_string())
-}
-
-/// Listen for shutdown signals (SIGTERM, SIGINT).
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("Received SIGINT, shutting down..."),
-        () = terminate => info!("Received SIGTERM, shutting down..."),
-    }
 }
 
 // ---------------------------------------------------------------------------
