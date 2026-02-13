@@ -10,8 +10,10 @@ pub mod retry;
 pub mod schema;
 
 pub mod repositories;
+pub mod retention;
 
 // Re-exports
 pub use async_writer::{spawn as spawn_writer, AsyncDbWriter, WriteOp, WriterTask};
 pub use error::DbError;
 pub use pool::{DbPool, PoolConfig};
+pub use retention::{spawn as spawn_retention, RetentionConfig, RetentionTask};
