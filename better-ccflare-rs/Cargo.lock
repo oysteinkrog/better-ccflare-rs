@@ -311,6 +311,7 @@ dependencies = [
  "bccf-core",
  "bccf-load-balancer",
  "bccf-providers",
+ "bytes",
  "dashmap",
  "reqwest",
  "serde",
@@ -318,6 +319,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
