@@ -5,7 +5,12 @@ edition.workspace = true
 
 [dependencies]
 bccf-core = { workspace = true }
+bccf-database = { workspace = true }
+bccf-providers = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
