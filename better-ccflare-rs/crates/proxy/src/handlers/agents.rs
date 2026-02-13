@@ -23,7 +23,6 @@ use bccf_database::DbPool;
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::result_large_err)]
-#[allow(clippy::result_large_err)]
 fn get_conn(
     state: &AppState,
 ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, Response> {
