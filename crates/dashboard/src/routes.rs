@@ -3,18 +3,20 @@
 //! Routes:
 //! - `GET /dashboard` — redirect to overview
 //! - `GET /dashboard/{tab}` — full page or HTMX fragment
+//! - `GET /dashboard/partials/overview` — overview stats partial (HTMX refresh)
 //! - `GET /dashboard/assets/{file}` — embedded static assets
 
 use std::sync::Arc;
 
 use askama::Template;
-use axum::extract::Path;
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
 
 use bccf_core::AppState;
+use bccf_database::DbPool;
 
 use crate::templates::*;
 
@@ -33,6 +35,11 @@ const HTMX_JS: &str = include_str!("../assets/htmx.min.js");
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/dashboard", get(dashboard_root))
+        .route("/dashboard/partials/overview", get(overview_partial))
+        .route(
+            "/dashboard/partials/accounts-table",
+            get(accounts_table_partial),
+        )
         .route("/dashboard/{tab}", get(dashboard_tab))
         .route("/dashboard/assets/{file}", get(serve_asset))
 }
@@ -50,13 +57,17 @@ async fn dashboard_root() -> Redirect {
 ///
 /// If the request has an `HX-Request` header (HTMX), return just the tab
 /// fragment. Otherwise, return the full page with the tab content embedded.
-async fn dashboard_tab(Path(tab): Path<String>, headers: HeaderMap) -> Response {
+async fn dashboard_tab(
+    State(state): State<Arc<AppState>>,
+    Path(tab): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     let is_htmx = headers.contains_key("hx-request");
     let version = bccf_core::get_version();
 
     // Render the tab fragment
     let tab_html = match tab.as_str() {
-        "overview" => OverviewTab.render(),
+        "overview" => build_overview(&state).render(),
         "accounts" => AccountsTab.render(),
         "requests" => RequestsTab.render(),
         "analytics" => AnalyticsTab.render(),
@@ -103,6 +114,220 @@ async fn dashboard_tab(Path(tab): Path<String>, headers: HeaderMap) -> Response 
                 Html("Template error".to_string()),
             )
                 .into_response()
+        }
+    }
+}
+
+/// GET /dashboard/partials/overview — HTMX auto-refresh partial for overview.
+async fn overview_partial(State(state): State<Arc<AppState>>) -> Response {
+    let tpl = build_overview(&state);
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Overview partial render error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Error loading overview".to_string()),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Build an OverviewTab template struct by querying the database.
+fn build_overview(state: &AppState) -> OverviewTab {
+    let version = bccf_core::get_version().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return overview_defaults(version);
+    };
+    let Ok(conn) = pool.get() else {
+        return overview_defaults(version);
+    };
+
+    // Aggregated stats
+    let aggregated = bccf_database::repositories::stats::get_aggregated_stats(&conn)
+        .unwrap_or(bccf_database::repositories::stats::AggregatedStats {
+            total_requests: 0,
+            successful_requests: 0,
+            avg_response_time: 0.0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            avg_tokens_per_second: None,
+        });
+
+    let success_rate = if aggregated.total_requests > 0 {
+        (aggregated.successful_requests as f64 / aggregated.total_requests as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // Account health
+    let accounts = bccf_database::repositories::account::find_all(&conn).unwrap_or_default();
+    let total_accounts = accounts.len();
+    let active_accounts =
+        bccf_database::repositories::stats::get_active_account_count(&conn).unwrap_or(0);
+    let paused_accounts = accounts.iter().filter(|a| a.paused).count();
+    let rate_limited_accounts = accounts
+        .iter()
+        .filter(|a| a.rate_limited_until.map(|rl| rl > now).unwrap_or(false))
+        .count();
+    let healthy_accounts = total_accounts - paused_accounts - rate_limited_accounts;
+
+    // Top models
+    let top_models = bccf_database::repositories::stats::get_top_models(&conn, 5)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| OverviewModel {
+            name: m.model,
+            count: m.count,
+            percentage: m.percentage,
+        })
+        .collect();
+
+    // Recent errors
+    let recent_errors =
+        bccf_database::repositories::stats::get_recent_errors(&conn, 5).unwrap_or_default();
+
+    OverviewTab {
+        total_requests: aggregated.total_requests,
+        success_rate,
+        avg_response_time: aggregated.avg_response_time,
+        total_cost_usd: aggregated.total_cost_usd,
+        avg_tokens_per_second: aggregated.avg_tokens_per_second.unwrap_or(0.0),
+        input_tokens: aggregated.input_tokens,
+        output_tokens: aggregated.output_tokens,
+        cache_read_tokens: aggregated.cache_read_input_tokens,
+        cache_creation_tokens: aggregated.cache_creation_input_tokens,
+        total_tokens: aggregated.total_tokens,
+        total_accounts,
+        active_accounts,
+        paused_accounts,
+        rate_limited_accounts,
+        healthy_accounts,
+        recent_errors,
+        top_models,
+        version,
+    }
+}
+
+/// Default empty overview when DB is unavailable.
+fn overview_defaults(version: String) -> OverviewTab {
+    OverviewTab {
+        total_requests: 0,
+        success_rate: 0.0,
+        avg_response_time: 0.0,
+        total_cost_usd: 0.0,
+        avg_tokens_per_second: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_tokens: 0,
+        total_accounts: 0,
+        active_accounts: 0,
+        paused_accounts: 0,
+        rate_limited_accounts: 0,
+        healthy_accounts: 0,
+        recent_errors: Vec::new(),
+        top_models: Vec::new(),
+        version,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accounts table partial
+// ---------------------------------------------------------------------------
+
+/// GET /dashboard/partials/accounts-table — render the accounts table.
+async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response {
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let accounts = match state.db_pool::<DbPool>() {
+        Some(pool) => match pool.get() {
+            Ok(conn) => bccf_database::repositories::account::find_all(&conn).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+
+    let rows: Vec<AccountRow> = accounts
+        .iter()
+        .map(|a| {
+            let token_status_str = match a.expires_at {
+                Some(exp) if exp > now => "valid".to_string(),
+                Some(_) => "expired".to_string(),
+                None => {
+                    if a.api_key.is_some() {
+                        "valid".to_string()
+                    } else {
+                        "expired".to_string()
+                    }
+                }
+            };
+
+            let rate_limit_status = if let Some(until) = a.rate_limited_until {
+                if until > now {
+                    let minutes_left = ((until - now) as f64 / 60000.0).ceil() as i64;
+                    format!("Rate limited ({minutes_left}m)")
+                } else {
+                    "OK".to_string()
+                }
+            } else {
+                a.rate_limit_status
+                    .clone()
+                    .unwrap_or_else(|| "OK".to_string())
+            };
+
+            let session_info = match a.session_start {
+                Some(start) if (now - start) < 5 * 60 * 60 * 1000 => {
+                    format!("Active: {} reqs", a.session_request_count)
+                }
+                _ => "-".to_string(),
+            };
+
+            let last_used_relative = a.last_used.map(|ts| {
+                let diff_ms = now - ts;
+                let secs = diff_ms / 1000;
+                if secs < 60 {
+                    "just now".to_string()
+                } else if secs < 3600 {
+                    format!("{}m ago", secs / 60)
+                } else if secs < 86400 {
+                    format!("{}h ago", secs / 3600)
+                } else {
+                    format!("{}d ago", secs / 86400)
+                }
+            });
+
+            AccountRow {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                provider: a.provider.clone(),
+                priority: a.priority,
+                paused: a.paused,
+                token_status_str,
+                rate_limit_status,
+                session_info,
+                request_count: a.request_count,
+                total_requests: a.total_requests,
+                last_used_relative,
+                custom_endpoint: a.custom_endpoint.clone(),
+            }
+        })
+        .collect();
+
+    let tpl = AccountsTablePartial { accounts: rows };
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Accounts table render error: {e}");
+            Html("<p>Error rendering accounts table</p>".to_string()).into_response()
         }
     }
 }

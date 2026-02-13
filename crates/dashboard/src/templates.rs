@@ -66,9 +66,82 @@ pub struct BasePage<'a> {
 // Tab fragment templates (HTMX partial responses)
 // ---------------------------------------------------------------------------
 
+/// Overview tab data — server-rendered stats cards.
 #[derive(Template)]
 #[template(path = "tabs/overview.html")]
-pub struct OverviewTab;
+pub struct OverviewTab {
+    pub total_requests: i64,
+    pub success_rate: f64,
+    pub avg_response_time: f64,
+    pub total_cost_usd: f64,
+    pub avg_tokens_per_second: f64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub total_tokens: i64,
+    pub total_accounts: usize,
+    pub active_accounts: i64,
+    pub paused_accounts: usize,
+    pub rate_limited_accounts: usize,
+    pub healthy_accounts: usize,
+    pub recent_errors: Vec<String>,
+    pub top_models: Vec<OverviewModel>,
+    pub version: String,
+}
+
+/// Model entry for the overview tab.
+pub struct OverviewModel {
+    pub name: String,
+    pub count: i64,
+    pub percentage: f64,
+}
+
+impl OverviewTab {
+    /// Format an integer with comma separators (e.g. 1234 → "1,234").
+    pub fn fmt_int(&self, n: &i64) -> String {
+        let s = n.to_string();
+        let bytes = s.as_bytes();
+        let mut result = String::with_capacity(s.len() + s.len() / 3);
+        for (i, &b) in bytes.iter().enumerate() {
+            if i > 0 && (bytes.len() - i) % 3 == 0 {
+                result.push(',');
+            }
+            result.push(b as char);
+        }
+        result
+    }
+
+    /// Format a percentage to 1 decimal place (e.g. 95.5).
+    pub fn fmt_pct(&self, v: &f64) -> String {
+        format!("{v:.1}")
+    }
+
+    /// Format milliseconds (e.g. "245ms" or "1.2s").
+    pub fn fmt_ms(&self, v: &f64) -> String {
+        if *v >= 1000.0 {
+            format!("{:.1}s", v / 1000.0)
+        } else {
+            format!("{:.0}ms", v)
+        }
+    }
+
+    /// Format USD cost (e.g. "12.50" or "0.0015").
+    pub fn fmt_usd(&self, v: &f64) -> String {
+        if *v >= 1.0 {
+            format!("{v:.2}")
+        } else if *v >= 0.01 {
+            format!("{v:.4}")
+        } else {
+            format!("{v:.6}")
+        }
+    }
+
+    /// Format tokens/second speed.
+    pub fn fmt_speed(&self, v: &f64) -> String {
+        format!("{v:.1}")
+    }
+}
 
 #[derive(Template)]
 #[template(path = "tabs/accounts.html")]
@@ -98,6 +171,33 @@ pub struct AgentsTab;
 #[template(path = "tabs/api_keys.html")]
 pub struct ApiKeysTab;
 
+// ---------------------------------------------------------------------------
+// Partial templates (HTMX partials for dynamic content)
+// ---------------------------------------------------------------------------
+
+/// A single account row in the accounts table partial.
+pub struct AccountRow {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub priority: i64,
+    pub paused: bool,
+    pub token_status_str: String,
+    pub rate_limit_status: String,
+    pub session_info: String,
+    pub request_count: i64,
+    pub total_requests: i64,
+    pub last_used_relative: Option<String>,
+    pub custom_endpoint: Option<String>,
+}
+
+/// Accounts table partial — rendered by `/dashboard/partials/accounts-table`.
+#[derive(Template)]
+#[template(path = "partials/accounts_table.html")]
+pub struct AccountsTablePartial {
+    pub accounts: Vec<AccountRow>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,9 +209,34 @@ mod tests {
 
     #[test]
     fn overview_renders() {
-        let tpl = OverviewTab;
+        let tpl = OverviewTab {
+            total_requests: 1234,
+            success_rate: 95.5,
+            avg_response_time: 245.3,
+            total_cost_usd: 12.50,
+            avg_tokens_per_second: 33.5,
+            input_tokens: 5000,
+            output_tokens: 3000,
+            cache_read_tokens: 1000,
+            cache_creation_tokens: 500,
+            total_tokens: 9500,
+            total_accounts: 5,
+            active_accounts: 4,
+            paused_accounts: 1,
+            rate_limited_accounts: 0,
+            healthy_accounts: 4,
+            recent_errors: vec!["Test error".to_string()],
+            top_models: vec![OverviewModel {
+                name: "claude-3-opus".to_string(),
+                count: 100,
+                percentage: 75.0,
+            }],
+            version: "1.0.0".to_string(),
+        };
         let html = tpl.render().unwrap();
         assert!(html.contains("Overview"));
+        assert!(html.contains("1,234"));
+        assert!(html.contains("95.5"));
     }
 
     #[test]
