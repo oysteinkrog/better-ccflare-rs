@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS api_keys (
     usage_count INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS strategies (
+    name TEXT PRIMARY KEY,
+    config TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+);
 "#;
 
 /// Performance indexes — matches the TypeScript performance-indexes.ts.
@@ -143,6 +149,9 @@ CREATE INDEX IF NOT EXISTS idx_oauth_sessions_expires ON oauth_sessions(expires_
 -- API key indexes
 CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hashed ON api_keys(hashed_key);
+
+-- Agent preference indexes
+CREATE INDEX IF NOT EXISTS idx_agent_preferences_agent ON agent_preferences(agent_id);
 "#;
 
 #[cfg(test)]
@@ -168,6 +177,7 @@ mod tests {
         assert!(tables.contains(&"oauth_sessions".to_string()));
         assert!(tables.contains(&"agent_preferences".to_string()));
         assert!(tables.contains(&"api_keys".to_string()));
+        assert!(tables.contains(&"strategies".to_string()));
     }
 
     #[test]
