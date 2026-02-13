@@ -14,6 +14,7 @@ pub mod token_health;
 pub mod token_manager;
 pub mod traits;
 pub mod types;
+pub mod usage_polling;
 
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -25,3 +26,4 @@ pub use token_health::{HealthStatus, TokenHealthReport, TokenHealthStatus};
 pub use token_manager::TokenManager;
 pub use traits::{OAuthProvider, Provider, UsageFetcher};
 pub use types::{AuthType, RateLimitInfo, TokenRefreshResult, UsageInfo};
+pub use usage_polling::{UsageCache, UsagePollingService};
