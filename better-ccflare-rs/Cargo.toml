@@ -51,8 +51,12 @@ clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 anyhow = "1"
 
+# Atomic config swap
+arc-swap = "1"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
 uuid = { version = "1", features = ["v4", "serde"] }
 dotenvy = "0.15"
 dirs = "6"
