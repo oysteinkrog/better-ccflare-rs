@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod auto_refresh;
 pub mod handler;
 pub mod post_processor;
 pub mod pricing;
