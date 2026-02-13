@@ -5,6 +5,7 @@
 //! implementations (Claude OAuth, Console, etc.) are added in US-006/007/008.
 
 pub mod error;
+pub mod impls;
 pub mod model_mapping;
 pub mod pkce;
 pub mod registry;
