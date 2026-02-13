@@ -84,15 +84,15 @@ impl AnthropicCompatibleProvider {
     }
 
     /// Get the effective endpoint for a specific account (custom or default).
-    fn effective_endpoint<'a>(&'a self, account: Option<&'a Account>) -> &'a str {
+    fn effective_endpoint(&self, account: Option<&Account>) -> String {
         if let Some(acc) = account {
             if let Some(ref custom) = acc.custom_endpoint {
                 if !custom.is_empty() {
-                    return custom.as_str();
+                    return custom.clone();
                 }
             }
         }
-        &self.config.endpoint
+        self.config.endpoint.clone()
     }
 }
 
