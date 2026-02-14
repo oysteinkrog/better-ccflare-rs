@@ -63,11 +63,21 @@ async fn run(cli: Cli) -> Result<()> {
     let session_duration_ms = config.get_runtime().session_duration_ms;
     let load_balancer = bccf_load_balancer::SessionStrategy::new(session_duration_ms);
 
+    // Build token manager for OAuth token refresh
+    let client_id = config.get_runtime().client_id.clone();
+    let token_manager = bccf_proxy::token_manager::TokenManager::new(client_id);
+
+    // Spawn post-processor for request analytics recording
+    let db_receiver = bccf_proxy::post_processor::DbSummaryReceiver::new(pool.clone());
+    let post_processor = bccf_proxy::post_processor::spawn_post_processor(db_receiver);
+
     let state = Arc::new(
         AppStateBuilder::new(config)
             .db_pool(pool)
             .provider_registry(registry)
             .load_balancer(load_balancer)
+            .token_manager(token_manager)
+            .async_writer(post_processor)
             .build(),
     );
 
@@ -101,8 +111,10 @@ fn create_provider_registry() -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
 
     // Claude OAuth (Anthropic OAuth flow)
+    // Registered as both "claude-oauth" and "anthropic" for TS DB compatibility
     let claude_oauth = Arc::new(ClaudeOAuthProvider::claude_oauth());
-    registry.register_oauth(claude_oauth);
+    registry.register_oauth(claude_oauth.clone());
+    registry.register_as("anthropic", claude_oauth);
 
     // Console (API key via OAuth create_api_key endpoint)
     let console = Arc::new(ClaudeOAuthProvider::console());

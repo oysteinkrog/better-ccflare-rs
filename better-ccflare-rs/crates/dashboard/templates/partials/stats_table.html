@@ -7,20 +7,20 @@
 {# Summary row #}
 <div class="grid">
   <article>
-    <header>Total Requests</header>
-    <p><strong>{{ fmt_int(total_requests) }}</strong></p>
+    <header><span class="metric-label">Total Requests</span></header>
+    <p class="metric-value">{{ fmt_int(total_requests) }}</p>
   </article>
   <article>
-    <header>Success Rate</header>
-    <p><strong>{{ fmt_pct(success_rate) }}%</strong></p>
+    <header><span class="metric-label">Success Rate</span></header>
+    <p class="metric-value">{{ fmt_pct(success_rate) }}%</p>
   </article>
   <article>
-    <header>Avg Response</header>
-    <p><strong>{{ fmt_ms(avg_response_time) }}</strong></p>
+    <header><span class="metric-label">Avg Response</span></header>
+    <p class="metric-value">{{ fmt_ms(avg_response_time) }}</p>
   </article>
   <article>
-    <header>Total Cost</header>
-    <p><strong>${{ fmt_usd(total_cost_usd) }}</strong></p>
+    <header><span class="metric-label">Total Cost</span></header>
+    <p class="metric-value">${{ fmt_usd(total_cost_usd) }}</p>
   </article>
 </div>
 
@@ -44,11 +44,11 @@
         <td>{{ acct.request_count }}</td>
         <td>
           {% if acct.success_rate >= 95.0 %}
-            <mark style="--pico-background-color: var(--pico-color-green-500, #5cb85c); --pico-color: #fff;">{{ fmt_pct(acct.success_rate) }}%</mark>
+            <span class="badge badge-success">{{ fmt_pct(acct.success_rate) }}%</span>
           {% else if acct.success_rate >= 80.0 %}
-            <mark style="--pico-background-color: var(--pico-color-yellow-500, #f0ad4e); --pico-color: #000;">{{ fmt_pct(acct.success_rate) }}%</mark>
+            <span class="badge badge-warning">{{ fmt_pct(acct.success_rate) }}%</span>
           {% else %}
-            <mark style="--pico-background-color: var(--pico-color-red-500, #d9534f); --pico-color: #fff;">{{ fmt_pct(acct.success_rate) }}%</mark>
+            <span class="badge badge-danger">{{ fmt_pct(acct.success_rate) }}%</span>
           {% endif %}
         </td>
       </tr>
@@ -91,8 +91,8 @@
 <article>
   <header><strong>Recent Errors</strong></header>
   {% for err in recent_errors %}
-  <div style="padding: 0.5rem; margin-bottom: 0.25rem; background: var(--pico-del-color, rgba(217,83,79,0.1)); border-radius: 4px;">
-    <small style="color: var(--pico-color-red-500, #d9534f);">{{ err }}</small>
+  <div style="padding: 0.5rem; margin-bottom: 0.25rem; background: var(--bccf-danger-bg); border-radius: 4px;">
+    <small style="color: var(--bccf-danger);">{{ err }}</small>
   </div>
   {% endfor %}
 </article>

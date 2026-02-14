@@ -202,6 +202,7 @@ pub struct AccountRow {
     pub usage_7d_cost: f64,
     pub usage_7d_pct: i64,
     pub usage_7d_class: String,
+    pub is_oauth: bool,
 }
 
 impl AccountRow {

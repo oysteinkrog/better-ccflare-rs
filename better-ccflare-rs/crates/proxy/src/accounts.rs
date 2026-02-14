@@ -12,10 +12,16 @@ use http::StatusCode;
 use serde_json::json;
 use tracing::{debug, warn};
 
+use bccf_core::providers::Provider;
 use bccf_core::types::{Account, AccountResponse, TokenStatus};
 use bccf_core::AppState;
 use bccf_database::repositories::account as account_repo;
 use bccf_database::DbPool;
+
+/// Check if a provider uses API keys (not OAuth).
+fn is_api_key_provider(provider: &str) -> bool {
+    Provider::from_str_loose(provider).is_some_and(|p| p.uses_api_key())
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,9 +32,13 @@ const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
 
 /// Convert an `Account` to the API response format.
 fn account_to_response(account: &Account, now: i64) -> AccountResponse {
-    let token_status = match account.expires_at {
-        Some(exp) if exp > now => TokenStatus::Valid,
-        _ => TokenStatus::Expired,
+    let token_status = if is_api_key_provider(&account.provider) {
+        TokenStatus::ApiKey
+    } else {
+        match account.expires_at {
+            Some(exp) if exp > now => TokenStatus::Valid,
+            _ => TokenStatus::Expired,
+        }
     };
 
     let token_expires_at = account.expires_at.map(millis_to_iso);

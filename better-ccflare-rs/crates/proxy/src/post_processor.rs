@@ -281,6 +281,66 @@ pub fn spawn_post_processor<R: SummaryReceiver>(receiver: R) -> PostProcessorHan
 }
 
 // ---------------------------------------------------------------------------
+// DB-backed summary receiver
+// ---------------------------------------------------------------------------
+
+/// Writes `RequestSummary` records to the `requests` table via a connection pool.
+pub struct DbSummaryReceiver {
+    pool: bccf_database::pool::DbPool,
+}
+
+impl DbSummaryReceiver {
+    pub fn new(pool: bccf_database::pool::DbPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl SummaryReceiver for DbSummaryReceiver {
+    fn on_summary(&self, summary: RequestSummary) {
+        let conn = match self.pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "Failed to get DB connection for request recording");
+                return;
+            }
+        };
+
+        let req = bccf_core::types::ProxyRequest {
+            id: summary.request_id.clone(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            method: "POST".to_string(),
+            path: summary.path.clone(),
+            account_used: summary.account_id.clone(),
+            status_code: Some(summary.status_code as i64),
+            success: summary.success,
+            error_message: None,
+            response_time_ms: Some(summary.response_time_ms as i64),
+            failover_attempts: summary.failover_attempts as i64,
+            model: summary.model.clone(),
+            prompt_tokens: summary.input_tokens,
+            completion_tokens: summary.output_tokens,
+            total_tokens: summary.total_tokens,
+            cost_usd: summary.cost_usd,
+            input_tokens: summary.input_tokens,
+            cache_read_input_tokens: summary.cache_read_input_tokens,
+            cache_creation_input_tokens: summary.cache_creation_input_tokens,
+            output_tokens: summary.output_tokens,
+            agent_used: summary.agent_used.clone(),
+            tokens_per_second: summary.tokens_per_second,
+            project: summary.project.clone(),
+            api_key_id: summary.api_key_id.clone(),
+            api_key_name: summary.api_key_name.clone(),
+        };
+
+        if let Err(e) = bccf_database::repositories::request::save(&conn, &req) {
+            warn!(request_id = %summary.request_id, error = %e, "Failed to save request to DB");
+        } else {
+            debug!(request_id = %summary.request_id, model = ?summary.model, success = summary.success, "Recorded request to DB");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

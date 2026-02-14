@@ -93,6 +93,7 @@ pub trait OAuthProvider: Provider {
     async fn exchange_code(
         &self,
         code: &str,
+        state: &str,
         verifier: &str,
         client_id: &str,
     ) -> Result<TokenRefreshResult, ProviderError>;

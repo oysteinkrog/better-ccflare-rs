@@ -106,6 +106,9 @@ pub struct AppState {
 
     /// Token manager (US-010).
     token_manager: Option<Box<dyn std::any::Any + Send + Sync>>,
+
+    /// OAuth store for pending re-auth flows.
+    oauth_store: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl AppState {
@@ -119,6 +122,7 @@ impl AppState {
             provider_registry: None,
             load_balancer: None,
             token_manager: None,
+            oauth_store: None,
         }
     }
 
@@ -169,6 +173,13 @@ impl AppState {
     /// Get the token manager, downcasting from the type-erased box.
     pub fn token_manager<T: 'static + Send + Sync>(&self) -> Option<&T> {
         self.token_manager
+            .as_ref()
+            .and_then(|b| b.downcast_ref::<T>())
+    }
+
+    /// Get the OAuth store, downcasting from the type-erased box.
+    pub fn oauth_store<T: 'static + Send + Sync>(&self) -> Option<&T> {
+        self.oauth_store
             .as_ref()
             .and_then(|b| b.downcast_ref::<T>())
     }
@@ -226,6 +237,12 @@ impl AppStateBuilder {
         self
     }
 
+    /// Set the OAuth store (type-erased).
+    pub fn oauth_store<T: 'static + Send + Sync>(mut self, store: T) -> Self {
+        self.state.oauth_store = Some(Box::new(store));
+        self
+    }
+
     /// Build the final `AppState`.
     pub fn build(self) -> AppState {
         self.state
@@ -246,6 +263,7 @@ impl std::fmt::Debug for AppState {
             .field("provider_registry", &self.provider_registry.is_some())
             .field("load_balancer", &self.load_balancer.is_some())
             .field("token_manager", &self.token_manager.is_some())
+            .field("oauth_store", &self.oauth_store.is_some())
             .finish()
     }
 }
