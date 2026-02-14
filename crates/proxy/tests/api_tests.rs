@@ -98,6 +98,20 @@ fn setup() -> Router {
     build_test_router(state)
 }
 
+/// Setup with the full server router (includes proxy routes, API keys, agents).
+fn setup_with_proxy() -> Router {
+    let pool = create_memory_pool(&PoolConfig::default()).expect("Failed to create test DB pool");
+    seed_test_data(&pool);
+
+    let config = Config::load(Some(std::path::PathBuf::from(
+        "/tmp/bccf-integ-test-nonexistent/config.json",
+    )))
+    .unwrap();
+
+    let state = Arc::new(AppStateBuilder::new(config).db_pool(pool).build());
+    bccf_proxy::server::build_router(state)
+}
+
 fn seed_test_data(pool: &DbPool) {
     let conn = pool.get().unwrap();
 
@@ -386,14 +400,8 @@ async fn requests_returns_paginated() {
     let (status, body) = get_json(app, "/api/requests?page=1&limit=5").await;
     assert_eq!(status, 200);
 
-    let requests = body["requests"].as_array().unwrap();
+    let requests = body.as_array().unwrap();
     assert_eq!(requests.len(), 5);
-
-    let pagination = &body["pagination"];
-    assert_eq!(pagination["page"], 1);
-    assert_eq!(pagination["limit"], 5);
-    assert_eq!(pagination["total"], 10);
-    assert_eq!(pagination["totalPages"], 2);
 
     let req = &requests[0];
     assert!(req.get("id").is_some());
@@ -407,7 +415,7 @@ async fn requests_page_2() {
     let app = setup();
     let (status, body) = get_json(app, "/api/requests?page=2&limit=5").await;
     assert_eq!(status, 200);
-    assert_eq!(body["requests"].as_array().unwrap().len(), 5);
+    assert_eq!(body.as_array().unwrap().len(), 5);
 }
 
 #[tokio::test]
@@ -480,9 +488,11 @@ async fn token_health_returns_report() {
     let app = setup();
     let (status, body) = get_json(app, "/api/token-health").await;
     assert_eq!(status, 200);
-    assert!(body.get("accounts").is_some());
-    assert!(body.get("summary").is_some());
-    assert_eq!(body["summary"]["total"], 2);
+    assert_eq!(body["success"], true);
+    let data = &body["data"];
+    assert!(data.get("accounts").is_some());
+    assert!(data.get("summary").is_some());
+    assert_eq!(data["summary"]["total"], 2);
 }
 
 #[tokio::test]
@@ -500,7 +510,7 @@ async fn token_health_by_name() {
     let app = setup();
     let (status, body) = get_json(app, "/api/token-health/Test%20Account%201").await;
     assert_eq!(status, 200);
-    assert_eq!(body["account_name"], "Test Account 1");
+    assert_eq!(body["accountName"], "Test Account 1");
 }
 
 #[tokio::test]
@@ -568,4 +578,66 @@ async fn unknown_route_returns_404() {
     let (status, body) = get_json(app, "/api/nonexistent").await;
     assert_eq!(status, 404);
     assert!(body.get("error").is_some());
+}
+
+// --- Proxy route completeness ---
+
+/// POST /v1/messages should not return 404 (it's wired up).
+/// It will return 503 "no available accounts" since there's no provider
+/// registry, but the route itself exists.
+#[tokio::test]
+async fn proxy_v1_messages_returns_non_404() {
+    let app = setup_with_proxy();
+    let (status, _body) = post_json(
+        app,
+        "/v1/messages",
+        &serde_json::json!({
+            "model": "claude-sonnet-4-5-20250929",
+            "messages": [{"role": "user", "content": "test"}],
+            "max_tokens": 10
+        }),
+    )
+    .await;
+    // Should NOT be 404. Likely 503 (no provider registry / no accounts) or 401.
+    assert_ne!(status, 404, "POST /v1/messages must be a registered route");
+}
+
+/// Verify all expected routes are registered (none return 404).
+#[tokio::test]
+async fn all_expected_routes_registered() {
+    let get_routes = vec![
+        "/health",
+        "/api/version",
+        "/api/system/info",
+        "/api/config",
+        "/api/config/strategy",
+        "/api/config/strategies",
+        "/api/config/retention",
+        "/api/accounts",
+        "/api/requests",
+        "/api/requests/stream",
+        "/api/logs/stream",
+        "/api/stats",
+        "/api/analytics",
+        "/api/logs",
+        "/api/token-health",
+        "/api/token-health/reauth",
+        "/api/keys",
+        "/api/keys/stats",
+        "/api/agents",
+    ];
+
+    for route in get_routes {
+        let app = setup_with_proxy();
+        let req = Request::builder()
+            .uri(route)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status().as_u16(),
+            404,
+            "GET {route} should be registered (got 404)"
+        );
+    }
 }

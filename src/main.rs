@@ -13,6 +13,7 @@ use bccf_core::state::AppStateBuilder;
 use bccf_database::paths::{ensure_db_dir, resolve_db_path};
 use bccf_database::pool::{create_pool, PoolConfig};
 use bccf_database::schema;
+use bccf_providers::ProviderRegistry;
 
 fn main() {
     let cli = Cli::parse();
@@ -55,7 +56,20 @@ async fn run(cli: Cli) -> Result<()> {
     // No command matched — start the HTTP server
     tracing::info!("Starting better-ccflare server");
 
-    let state = Arc::new(AppStateBuilder::new(config).db_pool(pool).build());
+    // Build provider registry
+    let registry = create_provider_registry();
+
+    // Build load balancer
+    let session_duration_ms = config.get_runtime().session_duration_ms;
+    let load_balancer = bccf_load_balancer::SessionStrategy::new(session_duration_ms);
+
+    let state = Arc::new(
+        AppStateBuilder::new(config)
+            .db_pool(pool)
+            .provider_registry(registry)
+            .load_balancer(load_balancer)
+            .build(),
+    );
 
     let mut server_config = bccf_proxy::server::ServerConfig::from_env(&state);
 
@@ -75,4 +89,50 @@ async fn run(cli: Cli) -> Result<()> {
     bccf_proxy::server::start(state, server_config, coordinator).await?;
 
     Ok(())
+}
+
+/// Create a provider registry with all known provider implementations.
+fn create_provider_registry() -> ProviderRegistry {
+    use std::sync::Arc;
+    use bccf_providers::impls::*;
+    use bccf_providers::impls::anthropic_compatible::AnthropicCompatibleConfig;
+    use bccf_providers::impls::openai_compatible::OpenAiCompatibleConfig;
+
+    let mut registry = ProviderRegistry::new();
+
+    // Claude OAuth (Anthropic OAuth flow)
+    let claude_oauth = Arc::new(ClaudeOAuthProvider::claude_oauth());
+    registry.register_oauth(claude_oauth);
+
+    // Console (API key via OAuth create_api_key endpoint)
+    let console = Arc::new(ClaudeOAuthProvider::console());
+    registry.register_oauth(console);
+
+    // Zai (Zhipu AI — Anthropic-compatible)
+    registry.register(Arc::new(ZaiProvider::new()));
+
+    // Minimax (Anthropic-compatible)
+    registry.register(Arc::new(MinimaxProvider::new()));
+
+    // NanoGPT
+    registry.register(Arc::new(NanoGptProvider::new()));
+
+    // Anthropic-compatible (generic)
+    registry.register(Arc::new(AnthropicCompatibleProvider::new(
+        AnthropicCompatibleConfig::default(),
+    )));
+
+    // OpenAI-compatible
+    registry.register(Arc::new(OpenAiCompatibleProvider::new(
+        OpenAiCompatibleConfig::default(),
+    )));
+
+    // Vertex AI
+    registry.register(Arc::new(VertexAiProvider::new()));
+
+    tracing::info!(
+        providers = ?registry.list(),
+        "Provider registry initialized"
+    );
+    registry
 }

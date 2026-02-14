@@ -33,12 +33,12 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     });
 
     let config = state.config();
-    let strategy = format!("{:?}", config.get_strategy());
+    let strategy = config.get_strategy().as_str();
 
     Json(json!({
         "status": "ok",
         "accounts": account_count,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "timestamp": timestamp_iso(),
         "strategy": strategy
     }))
 }
@@ -74,8 +74,17 @@ pub async fn system_info() -> impl IntoResponse {
         "arch": arch,
         "isDocker": is_docker,
         "execPath": exec_path,
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": timestamp_iso(),
+        "packageManager": null,
+        "nodeVersion": null,
+        "bunVersion": null,
+        "isBinary": true
     }))
+}
+
+/// ISO 8601 timestamp with millisecond precision and Z suffix (matches JS `new Date().toISOString()`).
+fn timestamp_iso() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
 /// Detect if running inside a Docker container.
@@ -111,7 +120,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> impl IntoResponse
     let runtime = config.get_runtime();
 
     Json(json!({
-        "lb_strategy": format!("{:?}", config.get_strategy()),
+        "lb_strategy": config.get_strategy().as_str(),
         "port": runtime.port,
         "sessionDurationMs": runtime.session_duration_ms,
         "default_agent_model": DEFAULT_AGENT_MODEL,
@@ -124,7 +133,7 @@ pub async fn get_strategy(State(state): State<Arc<AppState>>) -> impl IntoRespon
     let config = state.config();
 
     Json(json!({
-        "strategy": format!("{:?}", config.get_strategy())
+        "strategy": config.get_strategy().as_str()
     }))
 }
 

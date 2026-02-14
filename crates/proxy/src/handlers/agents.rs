@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
-use bccf_core::models::{is_valid_model_id, ALL_MODEL_IDS, DEFAULT_AGENT_MODEL};
+use bccf_core::models::{is_valid_model_id, ALL_MODEL_IDS};
 use bccf_core::AppState;
 use bccf_database::repositories::agent_preference;
 use bccf_database::DbPool;
@@ -67,7 +67,7 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> Response {
                         "id": p.agent_id,
                         "model": p.preferred_model,
                         "updatedAt": chrono::DateTime::from_timestamp_millis(p.updated_at)
-                            .map(|dt| dt.to_rfc3339())
+                            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
                             .unwrap_or_default()
                     })
                 })
@@ -75,7 +75,9 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> Response {
 
             Json(json!({
                 "agents": agents,
-                "defaultModel": DEFAULT_AGENT_MODEL
+                "globalAgents": agents,
+                "workspaceAgents": [],
+                "workspaces": [],
             }))
             .into_response()
         }

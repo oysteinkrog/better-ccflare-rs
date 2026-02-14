@@ -9,6 +9,7 @@ pub mod crypto;
 pub mod handler;
 pub mod handlers;
 pub mod post_processor;
+pub mod proxy;
 pub mod pricing;
 pub mod prometheus;
 pub mod server;

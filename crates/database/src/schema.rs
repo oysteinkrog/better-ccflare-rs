@@ -130,6 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);
 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_account ON requests(timestamp, account_used);
 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_success ON requests(timestamp, success);
 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_model ON requests(timestamp, model);
+CREATE INDEX IF NOT EXISTS idx_requests_account_timestamp ON requests(account_used, timestamp);
 CREATE INDEX IF NOT EXISTS idx_requests_agent_used ON requests(agent_used);
 CREATE INDEX IF NOT EXISTS idx_requests_project ON requests(project);
 CREATE INDEX IF NOT EXISTS idx_requests_api_key_id ON requests(api_key_id);

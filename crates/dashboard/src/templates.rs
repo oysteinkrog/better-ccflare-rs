@@ -182,6 +182,7 @@ pub struct AccountRow {
     pub provider: String,
     pub priority: i64,
     pub paused: bool,
+    pub auto_fallback_enabled: bool,
     pub token_status_str: String,
     pub rate_limit_status: String,
     pub session_info: String,
@@ -189,6 +190,46 @@ pub struct AccountRow {
     pub total_requests: i64,
     pub last_used_relative: Option<String>,
     pub custom_endpoint: Option<String>,
+    pub usage_5h_tokens: i64,
+    pub usage_5h_cost: f64,
+    pub usage_5h_pct: i64,
+    pub usage_5h_class: String,
+    pub usage_24h_tokens: i64,
+    pub usage_24h_cost: f64,
+    pub usage_24h_pct: i64,
+    pub usage_24h_class: String,
+    pub usage_7d_tokens: i64,
+    pub usage_7d_cost: f64,
+    pub usage_7d_pct: i64,
+    pub usage_7d_class: String,
+}
+
+impl AccountRow {
+    /// Format token count with K/M suffixes.
+    pub fn fmt_tokens(&self, n: &i64) -> String {
+        let n = *n;
+        if n >= 1_000_000 {
+            format!("{:.1}M", n as f64 / 1_000_000.0)
+        } else if n >= 1_000 {
+            format!("{:.0}K", n as f64 / 1_000.0)
+        } else {
+            n.to_string()
+        }
+    }
+
+    /// Format USD cost.
+    pub fn fmt_cost(&self, v: &f64) -> String {
+        if *v >= 1.0 {
+            format!("${v:.2}")
+        } else if *v >= 0.01 {
+            format!("${v:.3}")
+        } else if *v > 0.0 {
+            format!("${v:.4}")
+        } else {
+            "$0".to_string()
+        }
+    }
+
 }
 
 /// Accounts table partial — rendered by `/dashboard/partials/accounts-table`.

@@ -454,6 +454,8 @@ dependencies = [
  "bccf-cli",
  "bccf-core",
  "bccf-database",
+ "bccf-load-balancer",
+ "bccf-providers",
  "bccf-proxy",
  "clap",
  "tokio",

@@ -209,16 +209,14 @@ pub async fn list_requests(
     match result {
         Ok(requests) => {
             let total_pages = (total + limit - 1) / limit;
-            Json(json!({
-                "requests": requests,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "total": total,
-                    "totalPages": total_pages,
-                }
-            }))
-            .into_response()
+            (
+                [
+                    ("X-Total-Count", total.to_string()),
+                    ("X-Total-Pages", total_pages.to_string()),
+                ],
+                Json(json!(requests)),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to fetch requests: {e}");
