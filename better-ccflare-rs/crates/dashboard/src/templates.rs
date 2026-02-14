@@ -198,6 +198,144 @@ pub struct AccountsTablePartial {
     pub accounts: Vec<AccountRow>,
 }
 
+/// A single account stats entry for the stats table partial.
+pub struct StatsAccountRow {
+    pub name: String,
+    pub request_count: i64,
+    pub success_rate: f64,
+}
+
+/// A top model entry for the stats table partial.
+pub struct StatsModelRow {
+    pub name: String,
+    pub count: i64,
+    pub percentage: f64,
+}
+
+/// Stats table partial — rendered by `/dashboard/partials/stats-table`.
+#[derive(Template)]
+#[template(path = "partials/stats_table.html")]
+pub struct StatsTablePartial {
+    pub total_requests: i64,
+    pub success_rate: f64,
+    pub avg_response_time: f64,
+    pub total_cost_usd: f64,
+    pub accounts: Vec<StatsAccountRow>,
+    pub top_models: Vec<StatsModelRow>,
+    pub recent_errors: Vec<String>,
+}
+
+impl StatsTablePartial {
+    pub fn fmt_int(&self, n: &i64) -> String {
+        let s = n.to_string();
+        let bytes = s.as_bytes();
+        let mut result = String::with_capacity(s.len() + s.len() / 3);
+        for (i, &b) in bytes.iter().enumerate() {
+            if i > 0 && (bytes.len() - i) % 3 == 0 {
+                result.push(',');
+            }
+            result.push(b as char);
+        }
+        result
+    }
+
+    pub fn fmt_pct(&self, v: &f64) -> String {
+        format!("{v:.1}")
+    }
+
+    pub fn fmt_ms(&self, v: &f64) -> String {
+        if *v >= 1000.0 {
+            format!("{:.1}s", v / 1000.0)
+        } else {
+            format!("{:.0}ms", v)
+        }
+    }
+
+    pub fn fmt_usd(&self, v: &f64) -> String {
+        if *v >= 1.0 {
+            format!("{v:.2}")
+        } else if *v >= 0.01 {
+            format!("{v:.4}")
+        } else {
+            format!("{v:.6}")
+        }
+    }
+}
+
+/// Logs stream partial — rendered by `/dashboard/partials/logs-stream`.
+#[derive(Template)]
+#[template(path = "partials/logs_stream.html")]
+pub struct LogsStreamPartial;
+
+/// A single request row in the requests table partial.
+pub struct RequestRow {
+    pub id: String,
+    pub timestamp_relative: String,
+    pub account_name: String,
+    pub model_short: String,
+    pub status_code: i64,
+    pub success: bool,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub response_time_display: Option<String>,
+    pub cost_display: Option<String>,
+}
+
+/// Requests table partial — rendered by `/dashboard/partials/requests-table`.
+#[derive(Template)]
+#[template(path = "partials/requests_table.html")]
+pub struct RequestsTablePartial {
+    pub requests: Vec<RequestRow>,
+    pub page: i64,
+    pub total_pages: i64,
+    pub total: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Agents table partial
+// ---------------------------------------------------------------------------
+
+/// A single agent row in the agents table partial.
+pub struct AgentRow {
+    pub agent_id: String,
+    pub preferred_model: String,
+    pub updated_at_relative: String,
+}
+
+/// Agents table partial — rendered by `/dashboard/partials/agents-table`.
+#[derive(Template)]
+#[template(path = "partials/agents_table.html")]
+pub struct AgentsTablePartial {
+    pub agents: Vec<AgentRow>,
+    pub all_models: Vec<String>,
+    pub default_model: String,
+}
+
+// ---------------------------------------------------------------------------
+// API Keys table partial
+// ---------------------------------------------------------------------------
+
+/// A single API key row in the API keys table partial.
+pub struct ApiKeyRow {
+    pub id: String,
+    pub name: String,
+    pub prefix_last_8: String,
+    pub created_at_relative: String,
+    pub last_used_relative: Option<String>,
+    pub usage_count: i64,
+    pub is_active: bool,
+}
+
+/// API Keys table partial — rendered by `/dashboard/partials/api-keys-table`.
+#[derive(Template)]
+#[template(path = "partials/api_keys_table.html")]
+pub struct ApiKeysTablePartial {
+    pub keys: Vec<ApiKeyRow>,
+    pub total: i64,
+    pub active: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

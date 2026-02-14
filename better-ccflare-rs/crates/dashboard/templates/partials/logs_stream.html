@@ -1,0 +1,153 @@
+<div id="logs-controls" style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+  <button id="logs-pause-btn" class="outline secondary" onclick="toggleLogPause()"
+          style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">
+    Pause
+  </button>
+  <button class="outline secondary" onclick="clearLogs()"
+          style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">
+    Clear
+  </button>
+  <label style="display: flex; align-items: center; gap: 0.3rem; margin-left: auto; font-size: 0.85rem;">
+    <input type="checkbox" id="logs-autoscroll" checked
+           style="margin: 0;" onchange="logsAutoScroll = this.checked">
+    Auto-scroll
+  </label>
+</div>
+
+<div id="logs-container"
+     style="max-height: 500px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; background: var(--pico-code-background-color); border-radius: 4px; padding: 0.75rem;">
+  <div id="logs-output">
+    <p class="secondary"><em>Connecting to log stream...</em></p>
+  </div>
+  <div id="logs-end"></div>
+</div>
+
+<small class="secondary" id="logs-status">Streaming</small>
+
+<script>
+(function() {
+  var logsPaused = false;
+  var logsAutoScroll = true;
+  var logsBuffer = [];
+  var MAX_LOGS = 1000;
+  var evtSource = null;
+
+  window.logsAutoScroll = true;
+
+  function getLogColor(level) {
+    switch ((level || '').toUpperCase()) {
+      case 'ERROR': return 'var(--pico-color-red-500, #d9534f)';
+      case 'WARN': return 'var(--pico-color-yellow-500, #f0ad4e)';
+      case 'INFO': return 'var(--pico-color-green-500, #5cb85c)';
+      case 'DEBUG': return 'var(--pico-secondary-color, #888)';
+      default: return 'inherit';
+    }
+  }
+
+  function formatTs(ts) {
+    try {
+      return new Date(ts).toLocaleTimeString();
+    } catch(e) {
+      return '';
+    }
+  }
+
+  function appendLog(entry) {
+    var output = document.getElementById('logs-output');
+    if (!output) return;
+
+    // Remove the "Connecting..." placeholder on first log
+    var placeholder = output.querySelector('p.secondary');
+    if (placeholder) placeholder.remove();
+
+    var div = document.createElement('div');
+    div.style.display = 'flex';
+    div.style.gap = '0.5rem';
+    div.style.lineHeight = '1.4';
+
+    var ts = document.createElement('span');
+    ts.style.color = 'var(--pico-secondary-color, #888)';
+    ts.style.flexShrink = '0';
+    ts.textContent = formatTs(entry.ts || entry.timestamp);
+
+    var lvl = document.createElement('span');
+    lvl.style.fontWeight = '600';
+    lvl.style.color = getLogColor(entry.level);
+    lvl.style.flexShrink = '0';
+    lvl.textContent = '[' + (entry.level || 'LOG').toUpperCase() + ']';
+
+    var msg = document.createElement('span');
+    msg.style.flex = '1';
+    msg.style.wordBreak = 'break-all';
+    msg.textContent = entry.msg || entry.message || '';
+
+    div.appendChild(ts);
+    div.appendChild(lvl);
+    div.appendChild(msg);
+    output.appendChild(div);
+
+    // Trim old entries
+    while (output.children.length > MAX_LOGS) {
+      output.removeChild(output.firstChild);
+    }
+
+    // Auto-scroll
+    if (window.logsAutoScroll) {
+      var end = document.getElementById('logs-end');
+      if (end) end.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+
+  function startStream() {
+    if (evtSource) evtSource.close();
+    evtSource = new EventSource('/api/logs/stream');
+
+    evtSource.onmessage = function(e) {
+      if (logsPaused) return;
+      try {
+        var data = JSON.parse(e.data);
+        if (data.connected) {
+          var status = document.getElementById('logs-status');
+          if (status) status.textContent = 'Connected — streaming';
+          return;
+        }
+        // Handle log_entry events
+        if (data.type === 'log_entry' && data.payload) {
+          appendLog(data.payload);
+        } else if (data.msg || data.message) {
+          appendLog(data);
+        }
+      } catch(err) {
+        // Skip malformed events
+      }
+    };
+
+    evtSource.onerror = function() {
+      var status = document.getElementById('logs-status');
+      if (status) status.textContent = 'Disconnected — will retry...';
+    };
+  }
+
+  window.toggleLogPause = function() {
+    logsPaused = !logsPaused;
+    var btn = document.getElementById('logs-pause-btn');
+    if (btn) btn.textContent = logsPaused ? 'Resume' : 'Pause';
+    var status = document.getElementById('logs-status');
+    if (status) status.textContent = logsPaused ? 'Paused' : 'Streaming';
+  };
+
+  window.clearLogs = function() {
+    var output = document.getElementById('logs-output');
+    if (output) output.innerHTML = '<p class="secondary"><em>Logs cleared</em></p>';
+  };
+
+  // Start on load
+  startStream();
+
+  // Cleanup when HTMX replaces this content
+  document.body.addEventListener('htmx:beforeSwap', function cleanupLogs(e) {
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    document.body.removeEventListener('htmx:beforeSwap', cleanupLogs);
+  }, { once: false });
+})();
+</script>

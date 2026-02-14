@@ -1,5 +1,376 @@
 <h2>Analytics</h2>
-<p>Analytics charts will be loaded here. This tab requires the analytics API endpoints.</p>
-<div hx-get="/dashboard/partials/analytics-charts" hx-trigger="load" hx-swap="innerHTML">
-  <p aria-busy="true">Loading analytics...</p>
+
+<div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.5rem;flex-wrap:wrap;">
+  <strong style="font-size:0.9rem;">Time range:</strong>
+  <div role="group" id="range-selector" style="display:flex;gap:0;">
+    <button class="range-btn" data-range="1h">1h</button>
+    <button class="range-btn" data-range="6h">6h</button>
+    <button class="range-btn active" data-range="24h">24h</button>
+    <button class="range-btn" data-range="7d">7d</button>
+    <button class="range-btn" data-range="30d">30d</button>
+  </div>
+  <span id="analytics-status" style="font-size:0.8rem;opacity:0.6;"></span>
 </div>
+
+<style>
+  .range-btn {
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--pico-muted-border-color);
+    background: var(--pico-background-color);
+    color: var(--pico-color);
+    cursor: pointer;
+    font-size: 0.85rem;
+    margin: 0;
+    transition: background 0.15s, color 0.15s;
+  }
+  .range-btn:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+  .range-btn:last-child { border-radius: 0 0.375rem 0.375rem 0; }
+  .range-btn:not(:first-child) { border-left: 0; }
+  .range-btn:hover { background: var(--pico-muted-border-color); }
+  .range-btn.active {
+    background: var(--bccf-orange);
+    color: white;
+    border-color: var(--bccf-orange);
+  }
+  .chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 1.25rem;
+  }
+  .chart-card {
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    background: var(--pico-card-background-color, var(--pico-background-color));
+  }
+  .chart-card h3 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .chart-card canvas {
+    width: 100% !important;
+    max-height: 280px;
+  }
+  .totals-bar {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 0.5rem;
+    background: var(--pico-card-background-color, var(--pico-background-color));
+  }
+  .totals-bar .stat { text-align: center; }
+  .totals-bar .stat-value { font-size: 1.3rem; font-weight: 700; }
+  .totals-bar .stat-label { font-size: 0.75rem; opacity: 0.6; }
+  .no-data-msg {
+    text-align: center;
+    padding: 3rem;
+    opacity: 0.5;
+    font-style: italic;
+  }
+</style>
+
+<!-- Totals summary bar -->
+<div class="totals-bar" id="totals-bar">
+  <div class="stat"><div class="stat-value" id="t-requests">-</div><div class="stat-label">Requests</div></div>
+  <div class="stat"><div class="stat-value" id="t-success">-</div><div class="stat-label">Success Rate</div></div>
+  <div class="stat"><div class="stat-value" id="t-resp-time">-</div><div class="stat-label">Avg Response</div></div>
+  <div class="stat"><div class="stat-value" id="t-tokens">-</div><div class="stat-label">Total Tokens</div></div>
+  <div class="stat"><div class="stat-value" id="t-cost">-</div><div class="stat-label">Cost (USD)</div></div>
+  <div class="stat"><div class="stat-value" id="t-speed">-</div><div class="stat-label">Avg tok/s</div></div>
+</div>
+
+<!-- Chart grid -->
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>Request Volume</h3>
+    <canvas id="chart-requests"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Response Time</h3>
+    <canvas id="chart-response-time"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Token Usage</h3>
+    <canvas id="chart-tokens"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Cost</h3>
+    <canvas id="chart-cost"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Token Speed</h3>
+    <canvas id="chart-speed"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Model Distribution</h3>
+    <canvas id="chart-models"></canvas>
+  </div>
+</div>
+
+<script src="/dashboard/assets/chart.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  // --- Theme-aware colors ---
+  function isDark() {
+    return document.documentElement.getAttribute('data-theme') === 'dark';
+  }
+  function gridColor() { return isDark() ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'; }
+  function textColor() { return isDark() ? '#ccc' : '#555'; }
+
+  const COLORS = {
+    orange: '#f38020',
+    blue: '#3b82f6',
+    green: '#22c55e',
+    red: '#ef4444',
+    purple: '#8b5cf6',
+    cyan: '#06b6d4',
+    pink: '#ec4899',
+    yellow: '#eab308',
+    indigo: '#6366f1',
+    teal: '#14b8a6',
+  };
+  const PALETTE = Object.values(COLORS);
+
+  // --- Chart instances ---
+  const charts = {};
+  let currentRange = '24h';
+
+  // --- Common chart options ---
+  function baseOpts(title) {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { mode: 'index', intersect: false },
+      },
+      scales: {
+        x: {
+          grid: { color: gridColor() },
+          ticks: { color: textColor(), maxTicksLimit: 12, font: { size: 11 } },
+        },
+        y: {
+          grid: { color: gridColor() },
+          ticks: { color: textColor(), font: { size: 11 } },
+          beginAtZero: true,
+        },
+      },
+    };
+  }
+
+  // --- Format helpers ---
+  function fmtNum(n) {
+    if (n == null) return '-';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return n.toLocaleString();
+  }
+  function fmtMs(ms) {
+    if (ms == null) return '-';
+    return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms';
+  }
+  function fmtUsd(v) {
+    if (v == null) return '-';
+    if (v >= 1) return '$' + v.toFixed(2);
+    if (v >= 0.01) return '$' + v.toFixed(4);
+    return '$' + v.toFixed(6);
+  }
+  function fmtPct(v) { return v == null ? '-' : v.toFixed(1) + '%'; }
+  function fmtSpeed(v) { return v == null ? '-' : v.toFixed(1); }
+
+  function tsLabel(ts, range) {
+    var d = new Date(ts);
+    if (range === '30d' || range === '7d') {
+      return (d.getMonth() + 1) + '/' + d.getDate();
+    }
+    return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+  }
+
+  // --- Create or update a chart ---
+  function makeChart(id, type, data, options) {
+    if (charts[id]) {
+      charts[id].data = data;
+      charts[id].options = options;
+      charts[id].update();
+      return;
+    }
+    var ctx = document.getElementById(id);
+    if (!ctx) return;
+    charts[id] = new Chart(ctx, { type: type, data: data, options: options });
+  }
+
+  // --- Render all charts from API data ---
+  function renderCharts(data) {
+    var ts = data.timeSeries || [];
+    var totals = data.totals || {};
+    var modelDist = data.modelDistribution || [];
+    var range = currentRange;
+
+    // Totals bar
+    document.getElementById('t-requests').textContent = fmtNum(totals.requests);
+    document.getElementById('t-success').textContent = fmtPct(totals.successRate);
+    document.getElementById('t-resp-time').textContent = fmtMs(totals.avgResponseTime);
+    document.getElementById('t-tokens').textContent = fmtNum(totals.totalTokens);
+    document.getElementById('t-cost').textContent = fmtUsd(totals.totalCostUsd);
+    document.getElementById('t-speed').textContent = fmtSpeed(totals.avgTokensPerSecond);
+
+    if (ts.length === 0 && modelDist.length === 0) {
+      document.getElementById('analytics-status').textContent = 'No data for this range';
+    } else {
+      document.getElementById('analytics-status').textContent = ts.length + ' data points';
+    }
+
+    var labels = ts.map(function(p) { return tsLabel(p.ts, range); });
+
+    // 1. Request Volume (bar)
+    var reqOpts = baseOpts();
+    makeChart('chart-requests', 'bar', {
+      labels: labels,
+      datasets: [{
+        label: 'Requests',
+        data: ts.map(function(p) { return p.requests; }),
+        backgroundColor: COLORS.orange + 'cc',
+        borderRadius: 3,
+      }]
+    }, reqOpts);
+
+    // 2. Response Time (line)
+    var rtOpts = baseOpts();
+    rtOpts.scales.y.ticks.callback = function(v) { return fmtMs(v); };
+    makeChart('chart-response-time', 'line', {
+      labels: labels,
+      datasets: [{
+        label: 'Avg Response Time',
+        data: ts.map(function(p) { return p.avgResponseTime; }),
+        borderColor: COLORS.blue,
+        backgroundColor: COLORS.blue + '22',
+        fill: true,
+        tension: 0.3,
+        pointRadius: ts.length > 50 ? 0 : 2,
+      }]
+    }, rtOpts);
+
+    // 3. Token Usage (stacked bar) — use tokenBreakdown from timeSeries
+    var tokenOpts = baseOpts();
+    tokenOpts.scales.y.stacked = true;
+    tokenOpts.scales.x.stacked = true;
+    tokenOpts.plugins.legend = { display: true, position: 'bottom', labels: { color: textColor(), boxWidth: 12, font: { size: 11 } } };
+    makeChart('chart-tokens', 'bar', {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Input',
+          data: ts.map(function(p) { return p.tokens; }),
+          backgroundColor: COLORS.blue + 'cc',
+          borderRadius: 2,
+        },
+      ]
+    }, tokenOpts);
+
+    // 4. Cost (line)
+    var costOpts = baseOpts();
+    costOpts.scales.y.ticks.callback = function(v) { return fmtUsd(v); };
+    makeChart('chart-cost', 'line', {
+      labels: labels,
+      datasets: [{
+        label: 'Cost (USD)',
+        data: ts.map(function(p) { return p.costUsd; }),
+        borderColor: COLORS.green,
+        backgroundColor: COLORS.green + '22',
+        fill: true,
+        tension: 0.3,
+        pointRadius: ts.length > 50 ? 0 : 2,
+      }]
+    }, costOpts);
+
+    // 5. Token Speed (line)
+    var speedOpts = baseOpts();
+    speedOpts.scales.y.title = { display: true, text: 'tok/s', color: textColor(), font: { size: 11 } };
+    makeChart('chart-speed', 'line', {
+      labels: labels,
+      datasets: [{
+        label: 'Tokens/sec',
+        data: ts.map(function(p) { return p.avgTokensPerSecond; }),
+        borderColor: COLORS.purple,
+        backgroundColor: COLORS.purple + '22',
+        fill: true,
+        tension: 0.3,
+        pointRadius: ts.length > 50 ? 0 : 2,
+      }]
+    }, speedOpts);
+
+    // 6. Model Distribution (horizontal bar)
+    var modelLabels = modelDist.map(function(m) {
+      var parts = m.model.split('-');
+      return parts.length > 2 ? parts.slice(0, 3).join('-') : m.model;
+    });
+    var modelOpts = baseOpts();
+    modelOpts.indexAxis = 'y';
+    modelOpts.scales.x.beginAtZero = true;
+    modelOpts.scales.y.ticks.font = { size: 11 };
+    makeChart('chart-models', 'bar', {
+      labels: modelLabels,
+      datasets: [{
+        label: 'Requests',
+        data: modelDist.map(function(m) { return m.count; }),
+        backgroundColor: modelDist.map(function(_, i) { return PALETTE[i % PALETTE.length] + 'cc'; }),
+        borderRadius: 3,
+      }]
+    }, modelOpts);
+  }
+
+  // --- Fetch data from API ---
+  function fetchAnalytics(range) {
+    currentRange = range;
+    document.getElementById('analytics-status').textContent = 'Loading...';
+
+    fetch('/api/analytics?range=' + range)
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(data) {
+        renderCharts(data);
+      })
+      .catch(function(err) {
+        document.getElementById('analytics-status').textContent = 'Error: ' + err.message;
+      });
+  }
+
+  // --- Range selector buttons ---
+  document.querySelectorAll('.range-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.range-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      fetchAnalytics(btn.getAttribute('data-range'));
+    });
+  });
+
+  // --- Theme change: update chart colors ---
+  var observer = new MutationObserver(function() {
+    Object.keys(charts).forEach(function(id) {
+      var c = charts[id];
+      if (c.options.scales && c.options.scales.x) {
+        c.options.scales.x.grid.color = gridColor();
+        c.options.scales.x.ticks.color = textColor();
+      }
+      if (c.options.scales && c.options.scales.y) {
+        c.options.scales.y.grid.color = gridColor();
+        c.options.scales.y.ticks.color = textColor();
+      }
+      c.update();
+    });
+  });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // --- Initial load ---
+  fetchAnalytics(currentRange);
+})();
+</script>

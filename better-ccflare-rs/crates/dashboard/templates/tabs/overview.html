@@ -1,27 +1,117 @@
 <h2>Overview</h2>
-<div class="grid">
+
+<!-- Metric cards: auto-refresh every 30s -->
+<div hx-get="/dashboard/partials/overview" hx-trigger="every 30s" hx-swap="innerHTML" id="overview-metrics">
+  <div class="grid">
+    <article>
+      <header>Total Requests</header>
+      <p style="font-size:2rem;font-weight:700;margin:0">{{ self.fmt_int(total_requests) }}</p>
+    </article>
+    <article>
+      <header>Success Rate</header>
+      <p style="font-size:2rem;font-weight:700;margin:0;color:{% if success_rate >= 95.0 %}var(--pico-ins-color){% elif success_rate >= 80.0 %}var(--bccf-orange){% else %}var(--pico-del-color){% endif %}">{{ self.fmt_pct(success_rate) }}%</p>
+    </article>
+    <article>
+      <header>Avg Response Time</header>
+      <p style="font-size:2rem;font-weight:700;margin:0">{{ self.fmt_ms(avg_response_time) }}</p>
+    </article>
+  </div>
+
+  <div class="grid">
+    <article>
+      <header>Total Cost (USD)</header>
+      <p style="font-size:2rem;font-weight:700;margin:0">${{ self.fmt_usd(total_cost_usd) }}</p>
+    </article>
+    <article>
+      <header>Output Speed</header>
+      <p style="font-size:2rem;font-weight:700;margin:0">{{ self.fmt_speed(avg_tokens_per_second) }} tok/s</p>
+    </article>
+    <article>
+      <header>Total Tokens</header>
+      <p style="font-size:2rem;font-weight:700;margin:0">{{ self.fmt_int(total_tokens) }}</p>
+    </article>
+  </div>
+
+  <!-- Account Health -->
   <article>
-    <header>Total Requests</header>
-    <p hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="this" hx-select=".total-requests" hx-swap="innerHTML">
-      Loading...
-    </p>
+    <header>Account Health</header>
+    <div class="grid">
+      <div>
+        <small>Total</small>
+        <p style="font-size:1.5rem;font-weight:600;margin:0">{{ total_accounts }}</p>
+      </div>
+      <div>
+        <small>Healthy</small>
+        <p style="font-size:1.5rem;font-weight:600;margin:0;color:var(--pico-ins-color)">{{ healthy_accounts }}</p>
+      </div>
+      <div>
+        <small>Rate Limited</small>
+        <p style="font-size:1.5rem;font-weight:600;margin:0;color:var(--bccf-orange)">{{ rate_limited_accounts }}</p>
+      </div>
+      <div>
+        <small>Paused</small>
+        <p style="font-size:1.5rem;font-weight:600;margin:0;color:var(--pico-muted-color)">{{ paused_accounts }}</p>
+      </div>
+    </div>
   </article>
+
+  <!-- Token Breakdown -->
   <article>
-    <header>Active Accounts</header>
-    <p hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="this" hx-select=".active-accounts" hx-swap="innerHTML">
-      Loading...
-    </p>
+    <header>Token Breakdown</header>
+    <div class="grid">
+      <div>
+        <small>Input</small>
+        <p style="font-weight:600;margin:0">{{ self.fmt_int(input_tokens) }}</p>
+      </div>
+      <div>
+        <small>Output</small>
+        <p style="font-weight:600;margin:0">{{ self.fmt_int(output_tokens) }}</p>
+      </div>
+      <div>
+        <small>Cache Read</small>
+        <p style="font-weight:600;margin:0">{{ self.fmt_int(cache_read_tokens) }}</p>
+      </div>
+      <div>
+        <small>Cache Create</small>
+        <p style="font-weight:600;margin:0">{{ self.fmt_int(cache_creation_tokens) }}</p>
+      </div>
+    </div>
   </article>
+
+  <!-- Top Models -->
+  {% if !top_models.is_empty() %}
   <article>
-    <header>Success Rate</header>
-    <p hx-get="/api/stats" hx-trigger="load, every 30s" hx-target="this" hx-select=".success-rate" hx-swap="innerHTML">
-      Loading...
-    </p>
+    <header>Top Models</header>
+    <table role="grid">
+      <thead>
+        <tr><th>Model</th><th>Requests</th><th>%</th></tr>
+      </thead>
+      <tbody>
+        {% for m in top_models %}
+        <tr>
+          <td>{{ m.name }}</td>
+          <td>{{ self.fmt_int(m.count) }}</td>
+          <td>{{ self.fmt_pct(m.percentage) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+  {% endif %}
+
+  <!-- System Status -->
+  <article>
+    <header>System Status</header>
+    {% if recent_errors.is_empty() %}
+    <p style="color:var(--pico-ins-color);font-weight:600">All Systems Operational</p>
+    {% else %}
+    <p style="color:var(--pico-del-color);font-weight:600">{{ recent_errors.len() }} Recent Error{% if recent_errors.len() != 1 %}s{% endif %}</p>
+    <ul>
+      {% for err in recent_errors %}
+      <li><small>{{ err }}</small></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <small>Version {{ version }}</small>
   </article>
 </div>
-<article>
-  <header>System Status</header>
-  <div hx-get="/dashboard/partials/system-status" hx-trigger="load, every 30s" hx-swap="innerHTML">
-    <p>Loading system status...</p>
-  </div>
-</article>
