@@ -15,25 +15,17 @@
     {% for agent in agents %}
     <tr id="agent-row-{{ agent.agent_id }}">
       <td><strong>{{ agent.agent_id }}</strong></td>
-      <td id="agent-model-{{ agent.agent_id }}">
-        <form hx-post="/api/agents/{{ agent.agent_id }}/model"
-              hx-target="#agent-model-{{ agent.agent_id }}"
-              hx-swap="innerHTML"
-              style="display: inline; margin: 0;">
-          <select name="model"
-                  hx-post="/api/agents/{{ agent.agent_id }}/model"
-                  hx-target="closest tr"
-                  hx-swap="outerHTML"
-                  hx-trigger="change"
-                  hx-vals='{"source": "dashboard"}'
-                  style="margin: 0; padding: 0.25rem 0.5rem; font-size: 0.85rem; width: auto; display: inline-block;">
-            {% for m in all_models %}
-            <option value="{{ m }}"{% if m.as_str() == agent.preferred_model.as_str() %} selected{% endif %}>
-              {{ m }}{% if m.as_str() == default_model.as_str() %} (default){% endif %}
-            </option>
-            {% endfor %}
-          </select>
-        </form>
+      <td>
+        <select name="model"
+                hx-post="/api/agents/{{ agent.agent_id }}/model"
+                hx-target="closest tr"
+                hx-swap="outerHTML"
+                hx-trigger="change"
+                style="margin: 0; padding: 0.25rem 0.5rem; font-size: 0.85rem; width: auto; display: inline-block;">
+          {% for opt in agent.model_options %}
+          <option value="{{ opt.id }}"{% if opt.selected %} selected{% endif %}>{{ opt.id }}{% if opt.is_default %} (default){% endif %}</option>
+          {% endfor %}
+        </select>
       </td>
       <td><small>{{ agent.updated_at_relative }}</small></td>
       <td>
