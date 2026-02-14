@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 bccf-core = { workspace = true }
 bccf-database = { workspace = true }
+bccf-providers = { workspace = true }
 askama = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }

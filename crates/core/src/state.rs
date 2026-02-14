@@ -109,6 +109,9 @@ pub struct AppState {
 
     /// OAuth store for pending re-auth flows.
     oauth_store: Option<Box<dyn std::any::Any + Send + Sync>>,
+
+    /// Usage cache for account utilization data (from provider APIs).
+    usage_cache: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl AppState {
@@ -123,6 +126,7 @@ impl AppState {
             load_balancer: None,
             token_manager: None,
             oauth_store: None,
+            usage_cache: None,
         }
     }
 
@@ -180,6 +184,13 @@ impl AppState {
     /// Get the OAuth store, downcasting from the type-erased box.
     pub fn oauth_store<T: 'static + Send + Sync>(&self) -> Option<&T> {
         self.oauth_store
+            .as_ref()
+            .and_then(|b| b.downcast_ref::<T>())
+    }
+
+    /// Get the usage cache, downcasting from the type-erased box.
+    pub fn usage_cache<T: 'static + Send + Sync>(&self) -> Option<&T> {
+        self.usage_cache
             .as_ref()
             .and_then(|b| b.downcast_ref::<T>())
     }
@@ -243,6 +254,12 @@ impl AppStateBuilder {
         self
     }
 
+    /// Set the usage cache (type-erased).
+    pub fn usage_cache<T: 'static + Send + Sync>(mut self, cache: T) -> Self {
+        self.state.usage_cache = Some(Box::new(cache));
+        self
+    }
+
     /// Build the final `AppState`.
     pub fn build(self) -> AppState {
         self.state
@@ -264,6 +281,7 @@ impl std::fmt::Debug for AppState {
             .field("load_balancer", &self.load_balancer.is_some())
             .field("token_manager", &self.token_manager.is_some())
             .field("oauth_store", &self.oauth_store.is_some())
+            .field("usage_cache", &self.usage_cache.is_some())
             .finish()
     }
 }

@@ -5,138 +5,122 @@
   <pre><code>better-ccflare --add-account my-account --mode claude-oauth --priority 0</code></pre>
 </details>
 {% else %}
-<figure>
-<table role="grid">
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Provider</th>
-      <th>Priority</th>
-      <th>Status</th>
-      <th>Usage (5h / 24h / 7d)</th>
-      <th>Fallback</th>
-      <th>Session</th>
-      <th>Requests</th>
-      <th>Last Used</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for acct in accounts %}
-    <tr id="acct-row-{{ acct.id }}">
-      <td>
-        <strong class="acct-name"
-                style="cursor: pointer;"
-                title="Click to rename"
-                onclick="startRename(this, '{{ acct.id }}', '{{ acct.name }}')">{{ acct.name }}</strong>
+<div class="acct-list">
+  {% for acct in accounts %}
+  <div class="acct-card{% if acct.is_next %} acct-active{% endif %}" id="acct-row-{{ acct.id }}">
+    <div class="acct-grid">
+      <div class="acct-g-name">
+        <div style="display:flex;align-items:center;gap:0.4rem;">
+          <strong class="acct-name acct-editable"
+                  title="Click to rename"
+                  onclick="startRename(this, '{{ acct.id }}', '{{ acct.name }}')">{{ acct.name }}</strong>
+          <div class="acct-badges">
+            {% if acct.is_next %}<span class="badge badge-primary">Next</span>{% endif %}
+            {% if acct.paused %}
+              <span class="badge badge-warning">Paused</span>
+            {% else if acct.rate_limit_status != "OK" %}
+              <span class="badge badge-danger">{{ acct.rate_limit_status }}</span>
+            {% else if acct.token_status_str == "valid" %}
+              <span class="badge badge-success">Active</span>
+            {% else %}
+              <span class="badge badge-muted">Expired</span>
+            {% endif %}
+          </div>
+        </div>
         {% if let Some(ep) = acct.custom_endpoint %}
-        <br><small class="secondary">{{ ep }}</small>
+        <small style="color:var(--pico-muted-color);font-size:0.75rem;display:block;">{{ ep }}</small>
         {% endif %}
-      </td>
-      <td><kbd>{{ acct.provider }}</kbd></td>
-      <td>
-        <input type="number" min="0" max="100" value="{{ acct.priority }}"
-               style="width: 4.5rem; padding: 0.15rem 0.3rem; font-size: 0.85rem; margin: 0;"
-               onchange="updatePriority('{{ acct.id }}', this.value)">
-      </td>
-      <td>
-        {% if acct.paused %}
-          <span class="badge badge-warning">Paused</span>
-        {% else if acct.rate_limit_status != "OK" %}
-          <span class="badge badge-danger">{{ acct.rate_limit_status }}</span>
-        {% else if acct.token_status_str == "valid" %}
-          <span class="badge badge-success">Active</span>
-        {% else %}
-          <span class="badge badge-muted">Expired</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if acct.usage_7d_tokens == 0 %}
-        <div style="min-width:170px;" class="usage-zero">
-          <small style="color:var(--pico-muted-color);font-size:0.75rem">No usage</small>
-        </div>
-        {% else %}
-        <div style="display:flex;flex-direction:column;gap:3px;min-width:170px;">
-          <div class="mini-gauge">
-            <small style="width:26px;font-weight:600;font-size:0.7rem;color:var(--pico-muted-color)">5h</small>
-            <div class="usage-bar"><div class="usage-fill {{ acct.usage_5h_class }}" style="width:{{ acct.usage_5h_pct }}%"></div></div>
-            <small style="font-size:0.7rem;min-width:48px;text-align:right">{{ acct.fmt_tokens(acct.usage_5h_tokens) }}</small>
-          </div>
-          <div class="mini-gauge">
-            <small style="width:26px;font-weight:600;font-size:0.7rem;color:var(--pico-muted-color)">24h</small>
-            <div class="usage-bar"><div class="usage-fill {{ acct.usage_24h_class }}" style="width:{{ acct.usage_24h_pct }}%"></div></div>
-            <small style="font-size:0.7rem;min-width:48px;text-align:right">{{ acct.fmt_tokens(acct.usage_24h_tokens) }}</small>
-          </div>
-          <div class="mini-gauge">
-            <small style="width:26px;font-weight:600;font-size:0.7rem;color:var(--pico-muted-color)">7d</small>
-            <div class="usage-bar"><div class="usage-fill {{ acct.usage_7d_class }}" style="width:{{ acct.usage_7d_pct }}%"></div></div>
-            <small style="font-size:0.7rem;min-width:48px;text-align:right">{{ acct.fmt_tokens(acct.usage_7d_tokens) }}</small>
-          </div>
-          <small style="font-size:0.65rem;color:var(--pico-muted-color);text-align:right">{{ acct.fmt_cost(acct.usage_5h_cost) }} / {{ acct.fmt_cost(acct.usage_24h_cost) }} / {{ acct.fmt_cost(acct.usage_7d_cost) }}</small>
-        </div>
-        {% endif %}
-      </td>
-      <td>
+      </div>
+      <div class="acct-g-provider"><kbd>{{ acct.provider }}</kbd></div>
+      <div class="acct-g-cell">
+        <span class="acct-g-label">Priority</span>
+        <span class="acct-editable"
+              title="Click to edit"
+              onclick="startEditPriority(this, '{{ acct.id }}', {{ acct.priority }})">{{ acct.priority }}</span>
+      </div>
+      <div class="acct-g-cell">
+        <span class="acct-g-label">Requests</span>
+        <span>{{ acct.total_requests }}{% if acct.request_count > 0 %} <small style="color:var(--pico-muted-color)">({{ acct.request_count }} session)</small>{% endif %}</span>
+      </div>
+      <div class="acct-g-cell">
+        <span class="acct-g-label">Last used</span>
+        <span>{% match acct.last_used_relative %}{% when Some with (val) %}{{ val }}{% when None %}<span style="color:var(--pico-muted-color)">Never</span>{% endmatch %}</span>
+      </div>
+      <div class="acct-g-cell">
+        <span class="acct-g-label">Session</span>
+        <span>{{ acct.session_info }}</span>
+      </div>
+      <div class="acct-g-cell">
+        <span class="acct-g-label">Fallback</span>
         <input type="checkbox"
                role="switch"
                {% if acct.auto_fallback_enabled %}checked{% endif %}
-               style="margin: 0;"
+               style="margin:0;"
                onchange="toggleFallback('{{ acct.id }}', this.checked)">
-      </td>
-      <td>{{ acct.session_info }}</td>
-      <td>
-        <span>{{ acct.total_requests }}</span>
-        {% if acct.request_count > 0 %}
-        <br><small class="secondary">({{ acct.request_count }} session)</small>
-        {% endif %}
-      </td>
-      <td>
-        {% match acct.last_used_relative %}
-          {% when Some with (val) %}
-            <small>{{ val }}</small>
-          {% when None %}
-            <small class="secondary">Never</small>
-        {% endmatch %}
-      </td>
-      <td style="white-space: nowrap;">
+      </div>
+      <div class="acct-g-actions">
         {% if acct.paused %}
         <button class="outline secondary"
                 hx-post="/api/accounts/{{ acct.id }}/resume"
                 hx-swap="none"
                 hx-on::after-request="refreshAccounts()"
-                style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
-          Resume
-        </button>
+                style="padding:0.2rem 0.5rem;font-size:0.75rem;">Resume</button>
         {% else %}
         <button class="outline secondary"
                 hx-post="/api/accounts/{{ acct.id }}/pause"
                 hx-swap="none"
                 hx-on::after-request="refreshAccounts()"
-                style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
-          Pause
-        </button>
+                style="padding:0.2rem 0.5rem;font-size:0.75rem;">Pause</button>
         {% endif %}
         {% if acct.is_oauth && acct.token_status_str == "expired" %}
         <button class="outline"
-                style="padding: 0.25rem 0.5rem; font-size: 0.8rem; --pico-color: var(--bccf-info, #3b82f6);"
-                onclick="startReauth('{{ acct.id }}', '{{ acct.name }}')">
-          Re-auth
-        </button>
+                style="padding:0.2rem 0.5rem;font-size:0.75rem;--pico-color:var(--bccf-info,#3b82f6);"
+                onclick="startReauth('{{ acct.id }}', '{{ acct.name }}')">Re-auth</button>
         {% endif %}
         <button class="outline"
-                style="padding: 0.25rem 0.5rem; font-size: 0.8rem; --pico-color: var(--bccf-danger);"
+                style="padding:0.2rem 0.5rem;font-size:0.75rem;--pico-color:var(--bccf-danger);"
                 hx-delete="/api/accounts/{{ acct.id }}"
                 hx-confirm="Delete account '{{ acct.name }}'? This cannot be undone."
                 hx-swap="none"
-                hx-on::after-request="refreshAccounts()">
-          Delete
-        </button>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-</figure>
+                hx-on::after-request="refreshAccounts()">Delete</button>
+      </div>
+    </div>
+
+    {% if acct.has_usage %}
+    <div class="acct-usage">
+      {% if acct.usage_windows.is_empty() %}
+      <small style="color:var(--pico-muted-color)">Polling usage data...</small>
+      {% else %}
+        {% for w in acct.usage_windows %}
+        <div class="acct-usage-window">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+            <span class="acct-usage-label">Usage ({{ w.label }})</span>
+            {% if w.pct >= 0 %}
+            <span class="acct-usage-pct">{{ w.pct }}%</span>
+            {% else %}
+            <span class="acct-usage-label">N/A</span>
+            {% endif %}
+          </div>
+          <div class="usage-bar" style="height:8px;border-radius:4px;">
+            {% if w.pct >= 0 %}
+            <div class="usage-fill {{ w.css_class }}" style="width:{{ w.pct }}%;border-radius:4px;transition:width 700ms ease-out;"></div>
+            {% else %}
+            <div class="usage-fill" style="width:0%;border-radius:4px;"></div>
+            {% endif %}
+          </div>
+          {% if !w.reset_text.is_empty() %}
+          <div style="display:flex;justify-content:space-between;margin-top:3px;">
+            <span class="acct-usage-reset">{{ w.reset_text }} until refresh</span>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
 <small class="secondary">{{ accounts.len() }} account(s)</small>
 {% endif %}
 
@@ -258,6 +242,34 @@ function submitReauthCode() {
       btn.disabled = false;
       btn.textContent = 'Submit';
     });
+}
+
+function startEditPriority(el, id, currentVal) {
+  var input = document.createElement('input');
+  input.type = 'number';
+  input.min = '0';
+  input.max = '100';
+  input.value = currentVal;
+  input.style.cssText = 'width:3.5rem;padding:0.1rem 0.25rem;font-size:0.8rem;margin:0;';
+
+  function commit() {
+    var v = parseInt(input.value);
+    if (!isNaN(v) && v !== currentVal) {
+      apiPost('/api/accounts/' + id + '/priority', {priority: v}).then(refreshAccounts);
+    } else {
+      refreshAccounts();
+    }
+  }
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { refreshAccounts(); }
+  });
+
+  el.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 function startRename(el, id, currentName) {

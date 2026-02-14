@@ -337,6 +337,7 @@ dependencies = [
  "axum",
  "bccf-core",
  "bccf-database",
+ "bccf-providers",
  "chrono",
  "http",
  "rusqlite",
@@ -458,6 +459,7 @@ dependencies = [
  "bccf-providers",
  "bccf-proxy",
  "clap",
+ "reqwest",
  "tokio",
  "tracing",
 ]

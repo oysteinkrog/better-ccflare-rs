@@ -13,6 +13,7 @@ use bccf_core::state::AppStateBuilder;
 use bccf_database::paths::{ensure_db_dir, resolve_db_path};
 use bccf_database::pool::{create_pool, PoolConfig};
 use bccf_database::schema;
+use bccf_providers::usage_polling::{AccountSource, PollableAccount, UsageCache, UsagePollingService};
 use bccf_providers::ProviderRegistry;
 
 fn main() {
@@ -71,6 +72,15 @@ async fn run(cli: Cli) -> Result<()> {
     let db_receiver = bccf_proxy::post_processor::DbSummaryReceiver::new(pool.clone());
     let post_processor = bccf_proxy::post_processor::spawn_post_processor(db_receiver);
 
+    // Start usage polling service (fetches utilization from provider APIs)
+    let usage_cache = UsageCache::new();
+    let account_source = Arc::new(DbAccountSource { pool: pool.clone() });
+    let _usage_polling = UsagePollingService::start(
+        account_source,
+        usage_cache.clone(),
+        reqwest::Client::new(),
+    );
+
     let state = Arc::new(
         AppStateBuilder::new(config)
             .db_pool(pool)
@@ -78,6 +88,7 @@ async fn run(cli: Cli) -> Result<()> {
             .load_balancer(load_balancer)
             .token_manager(token_manager)
             .async_writer(post_processor)
+            .usage_cache(usage_cache)
             .build(),
     );
 
@@ -99,6 +110,38 @@ async fn run(cli: Cli) -> Result<()> {
     bccf_proxy::server::start(state, server_config, coordinator).await?;
 
     Ok(())
+}
+
+/// Database-backed account source for usage polling.
+struct DbAccountSource {
+    pool: bccf_database::DbPool,
+}
+
+impl AccountSource for DbAccountSource {
+    fn get_pollable_accounts(&self) -> Vec<PollableAccount> {
+        let Ok(conn) = self.pool.get() else {
+            return Vec::new();
+        };
+        let accounts = bccf_database::repositories::account::find_all(&conn).unwrap_or_default();
+        accounts
+            .into_iter()
+            .filter(|a| !a.paused)
+            .filter(|a| supports_usage_tracking(&a.provider))
+            .map(|a| PollableAccount {
+                id: a.id,
+                provider: a.provider,
+                access_token: a.access_token,
+                api_key: a.api_key,
+                custom_endpoint: a.custom_endpoint,
+                paused: a.paused,
+            })
+            .collect()
+    }
+}
+
+/// Check if a provider supports usage tracking.
+fn supports_usage_tracking(provider: &str) -> bool {
+    matches!(provider, "claude-oauth" | "anthropic" | "nanogpt" | "zai")
 }
 
 /// Create a provider registry with all known provider implementations.
