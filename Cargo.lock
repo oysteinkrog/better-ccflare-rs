@@ -339,6 +339,7 @@ dependencies = [
  "bccf-database",
  "chrono",
  "http",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

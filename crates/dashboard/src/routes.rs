@@ -9,11 +9,12 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
+use serde::Deserialize;
 
 use bccf_core::AppState;
 use bccf_database::DbPool;
@@ -26,6 +27,7 @@ use crate::templates::*;
 
 const PICO_CSS: &str = include_str!("../assets/pico.min.css");
 const HTMX_JS: &str = include_str!("../assets/htmx.min.js");
+const CHART_JS: &str = include_str!("../assets/chart.min.js");
 
 // ---------------------------------------------------------------------------
 // Router
@@ -43,6 +45,14 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/dashboard/partials/requests-table",
             get(requests_table_partial),
+        )
+        .route(
+            "/dashboard/partials/agents-table",
+            get(agents_table_partial),
+        )
+        .route(
+            "/dashboard/partials/api-keys-table",
+            get(api_keys_table_partial),
         )
         .route("/dashboard/{tab}", get(dashboard_tab))
         .route("/dashboard/assets/{file}", get(serve_asset))
@@ -337,26 +347,107 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
     }
 }
 
-/// GET /dashboard/partials/requests-table — requests table HTMX partial.
-async fn requests_table_partial(State(state): State<Arc<AppState>>) -> Response {
+/// Query parameters for the requests table partial.
+#[derive(Debug, Deserialize)]
+struct RequestsTableQuery {
+    #[serde(default = "default_page")]
+    page: i64,
+    account: Option<String>,
+    model: Option<String>,
+    project: Option<String>,
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+const REQUESTS_PER_PAGE: i64 = 50;
+
+/// GET /dashboard/partials/requests-table — paginated, filterable requests table.
+async fn requests_table_partial(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RequestsTableQuery>,
+) -> Response {
     let now = chrono::Utc::now().timestamp_millis();
 
-    let requests = match state.db_pool::<DbPool>() {
-        Some(pool) => match pool.get() {
-            Ok(conn) => {
-                bccf_database::repositories::request::get_recent(&conn, 50).unwrap_or_default()
-            }
-            Err(_) => Vec::new(),
-        },
-        None => Vec::new(),
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return render_empty_requests();
+    };
+    let Ok(conn) = pool.get() else {
+        return render_empty_requests();
     };
 
-    let total = requests.len() as i64;
+    // Build dynamic WHERE clause for filters
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1;
 
-    let rows: Vec<RequestRow> = requests
-        .iter()
-        .map(|r| {
-            let diff_ms = now - r.timestamp;
+    if let Some(ref acct) = query.account {
+        if !acct.is_empty() {
+            conditions.push(format!(
+                "r.account_used IN (SELECT id FROM accounts WHERE name LIKE ?{idx})"
+            ));
+            params.push(Box::new(format!("%{acct}%")));
+            idx += 1;
+        }
+    }
+    if let Some(ref model) = query.model {
+        if !model.is_empty() {
+            conditions.push(format!("r.model LIKE ?{idx}"));
+            params.push(Box::new(format!("%{model}%")));
+            idx += 1;
+        }
+    }
+    if let Some(ref project) = query.project {
+        if !project.is_empty() {
+            conditions.push(format!("r.project LIKE ?{idx}"));
+            params.push(Box::new(format!("%{project}%")));
+            idx += 1;
+        }
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    // Count total matching rows
+    let count_sql = format!("SELECT COUNT(*) FROM requests r {where_clause}");
+    let total: i64 = match conn.query_row(
+        &count_sql,
+        rusqlite::params_from_iter(params.iter()),
+        |row| row.get(0),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to count requests: {e}");
+            return render_empty_requests();
+        }
+    };
+
+    let page = query.page.max(1);
+    let total_pages = ((total + REQUESTS_PER_PAGE - 1) / REQUESTS_PER_PAGE).max(1);
+    let offset = (page - 1) * REQUESTS_PER_PAGE;
+
+    // Fetch page with account name join
+    let select_sql = format!(
+        "SELECT r.*, COALESCE(a.name, r.account_used) as account_name
+         FROM requests r
+         LEFT JOIN accounts a ON a.id = r.account_used
+         {where_clause}
+         ORDER BY r.timestamp DESC
+         LIMIT ?{idx} OFFSET ?{}",
+        idx + 1
+    );
+    params.push(Box::new(REQUESTS_PER_PAGE));
+    params.push(Box::new(offset));
+
+    let result: Result<Vec<RequestRow>, rusqlite::Error> = (|| {
+        let mut stmt = conn.prepare(&select_sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            let timestamp: i64 = row.get("timestamp")?;
+            let diff_ms = now - timestamp;
             let secs = diff_ms / 1000;
             let timestamp_relative = if secs < 60 {
                 "just now".to_string()
@@ -368,50 +459,213 @@ async fn requests_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 format!("{}d ago", secs / 86400)
             };
 
-            let model_short = r
-                .model
+            let model_full: Option<String> = row.get("model")?;
+            let model_short = model_full
                 .as_deref()
                 .map(bccf_core::models::get_model_short_name)
                 .unwrap_or("unknown")
                 .to_string();
 
-            let response_time_display = r.response_time_ms.map(|ms| {
+            let response_time_ms: Option<i64> = row.get("response_time_ms")?;
+            let response_time_display = response_time_ms.map(|ms| {
                 if ms >= 1000 {
                     format!("{:.1}s", ms as f64 / 1000.0)
                 } else {
-                    format!("{}ms", ms)
+                    format!("{ms}ms")
                 }
             });
 
-            let cost_display = r.cost_usd.map(|c| format!("${:.4}", c));
+            let cost_usd: Option<f64> = row.get("cost_usd")?;
+            let cost_display = cost_usd.map(|c| {
+                if c >= 0.01 {
+                    format!("{c:.4}")
+                } else {
+                    format!("{c:.6}")
+                }
+            });
 
-            RequestRow {
-                id: r.id.clone(),
+            let account_name: Option<String> = row.get("account_name")?;
+
+            Ok(RequestRow {
+                id: row.get("id")?,
                 timestamp_relative,
-                account_name: r.account_used.clone().unwrap_or_default(),
+                account_name: account_name.unwrap_or_default(),
                 model_short,
-                status_code: r.status_code.unwrap_or(0),
-                success: r.success,
-                input_tokens: r.input_tokens.unwrap_or(0),
-                output_tokens: r.output_tokens.unwrap_or(0),
-                total_tokens: r.total_tokens.unwrap_or(0),
+                status_code: row.get::<_, Option<i64>>("status_code")?.unwrap_or(0),
+                success: row.get::<_, i64>("success")? != 0,
+                input_tokens: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
+                output_tokens: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
+                total_tokens: row.get::<_, Option<i64>>("total_tokens")?.unwrap_or(0),
                 response_time_display,
                 cost_display,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    })();
+
+    match result {
+        Ok(rows) => {
+            let tpl = RequestsTablePartial {
+                requests: rows,
+                page,
+                total_pages,
+                total,
+            };
+            match tpl.render() {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => {
+                    tracing::error!("Requests table render error: {e}");
+                    Html("<p>Error rendering requests table</p>".to_string()).into_response()
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch requests: {e}");
+            render_empty_requests()
+        }
+    }
+}
+
+/// Render an empty requests table when DB is unavailable.
+fn render_empty_requests() -> Response {
+    let tpl = RequestsTablePartial {
+        requests: Vec::new(),
+        page: 1,
+        total_pages: 1,
+        total: 0,
+    };
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => Html("<p>No requests recorded yet.</p>".to_string()).into_response(),
+    }
+}
+
+/// GET /dashboard/partials/agents-table — HTMX partial for agents table.
+async fn agents_table_partial(State(state): State<Arc<AppState>>) -> Response {
+    let now = chrono::Utc::now().timestamp_millis();
+    let default_model = bccf_core::DEFAULT_AGENT_MODEL.to_string();
+    let all_models: Vec<String> = bccf_core::models::ALL_MODEL_IDS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let agents = match state.db_pool::<DbPool>() {
+        Some(pool) => match pool.get() {
+            Ok(conn) => bccf_database::repositories::agent_preference::get_all_preferences(&conn)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+
+    let rows: Vec<AgentRow> = agents
+        .into_iter()
+        .map(|a| {
+            let updated_relative = {
+                let diff_ms = now - a.updated_at;
+                let secs = diff_ms / 1000;
+                if secs < 60 {
+                    "just now".to_string()
+                } else if secs < 3600 {
+                    format!("{}m ago", secs / 60)
+                } else if secs < 86400 {
+                    format!("{}h ago", secs / 3600)
+                } else {
+                    format!("{}d ago", secs / 86400)
+                }
+            };
+            AgentRow {
+                agent_id: a.agent_id,
+                preferred_model: a.preferred_model,
+                updated_at_relative: updated_relative,
             }
         })
         .collect();
 
-    let tpl = RequestsTablePartial {
-        requests: rows,
-        page: 1,
-        total_pages: 1,
-        total,
+    let tpl = AgentsTablePartial {
+        agents: rows,
+        all_models,
+        default_model,
     };
     match tpl.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
-            tracing::error!("Requests table render error: {e}");
-            Html("<p>Error rendering requests table</p>".to_string()).into_response()
+            tracing::error!("Agents table render error: {e}");
+            Html("<p>Error rendering agents table</p>".to_string()).into_response()
+        }
+    }
+}
+
+/// GET /dashboard/partials/api-keys-table — HTMX partial for API keys table.
+async fn api_keys_table_partial(State(state): State<Arc<AppState>>) -> Response {
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let keys_data = match state.db_pool::<DbPool>() {
+        Some(pool) => match pool.get() {
+            Ok(conn) => bccf_database::repositories::api_key::find_all(&conn).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+
+    let total = keys_data.len() as i64;
+    let active = keys_data.iter().filter(|k| k.is_active).count() as i64;
+
+    let rows: Vec<ApiKeyRow> = keys_data
+        .into_iter()
+        .map(|k| {
+            let created_relative = {
+                let diff_ms = now - k.created_at;
+                let secs = diff_ms / 1000;
+                if secs < 60 {
+                    "just now".to_string()
+                } else if secs < 3600 {
+                    format!("{}m ago", secs / 60)
+                } else if secs < 86400 {
+                    format!("{}h ago", secs / 3600)
+                } else {
+                    format!("{}d ago", secs / 86400)
+                }
+            };
+            let last_used_relative = k.last_used.map(|ts| {
+                let diff_ms = now - ts;
+                let secs = diff_ms / 1000;
+                if secs < 60 {
+                    "just now".to_string()
+                } else if secs < 3600 {
+                    format!("{}m ago", secs / 60)
+                } else if secs < 86400 {
+                    format!("{}h ago", secs / 3600)
+                } else {
+                    format!("{}d ago", secs / 86400)
+                }
+            });
+            ApiKeyRow {
+                id: k.id,
+                name: k.name,
+                prefix_last_8: k.prefix_last_8,
+                created_at_relative: created_relative,
+                last_used_relative,
+                usage_count: k.usage_count,
+                is_active: k.is_active,
+            }
+        })
+        .collect();
+
+    let tpl = ApiKeysTablePartial {
+        keys: rows,
+        total,
+        active,
+    };
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("API keys table render error: {e}");
+            Html("<p>Error rendering API keys table</p>".to_string()).into_response()
         }
     }
 }
@@ -435,6 +689,15 @@ async fn serve_asset(Path(file): Path<String>) -> Response {
                 (header::CACHE_CONTROL, "public, max-age=86400"),
             ],
             HTMX_JS,
+        )
+            .into_response(),
+        "chart.min.js" => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/javascript"),
+                (header::CACHE_CONTROL, "public, max-age=86400"),
+            ],
+            CHART_JS,
         )
             .into_response(),
         _ => (StatusCode::NOT_FOUND, "Not found").into_response(),
@@ -493,7 +756,7 @@ mod tests {
 
     #[tokio::test]
     async fn overview_full_page() {
-        let state = test_state();
+        let state = test_state_with_db();
         let app = router().with_state(state);
 
         let req = Request::builder()

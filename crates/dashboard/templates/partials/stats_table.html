@@ -1,0 +1,102 @@
+{% if accounts.is_empty() && top_models.is_empty() && recent_errors.is_empty() %}
+<article>
+  <p>No statistics available yet. Start sending requests through the proxy to see data here.</p>
+</article>
+{% else %}
+
+{# Summary row #}
+<div class="grid">
+  <article>
+    <header>Total Requests</header>
+    <p><strong>{{ fmt_int(total_requests) }}</strong></p>
+  </article>
+  <article>
+    <header>Success Rate</header>
+    <p><strong>{{ fmt_pct(success_rate) }}%</strong></p>
+  </article>
+  <article>
+    <header>Avg Response</header>
+    <p><strong>{{ fmt_ms(avg_response_time) }}</strong></p>
+  </article>
+  <article>
+    <header>Total Cost</header>
+    <p><strong>${{ fmt_usd(total_cost_usd) }}</strong></p>
+  </article>
+</div>
+
+{# Account performance #}
+{% if !accounts.is_empty() %}
+<article>
+  <header><strong>Account Performance</strong></header>
+  <figure>
+  <table role="grid">
+    <thead>
+      <tr>
+        <th>Account</th>
+        <th>Requests</th>
+        <th>Success Rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for acct in accounts %}
+      <tr>
+        <td><strong>{{ acct.name }}</strong></td>
+        <td>{{ acct.request_count }}</td>
+        <td>
+          {% if acct.success_rate >= 95.0 %}
+            <mark style="--pico-background-color: var(--pico-color-green-500, #5cb85c); --pico-color: #fff;">{{ fmt_pct(acct.success_rate) }}%</mark>
+          {% else if acct.success_rate >= 80.0 %}
+            <mark style="--pico-background-color: var(--pico-color-yellow-500, #f0ad4e); --pico-color: #000;">{{ fmt_pct(acct.success_rate) }}%</mark>
+          {% else %}
+            <mark style="--pico-background-color: var(--pico-color-red-500, #d9534f); --pico-color: #fff;">{{ fmt_pct(acct.success_rate) }}%</mark>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </figure>
+</article>
+{% endif %}
+
+{# Top models #}
+{% if !top_models.is_empty() %}
+<article>
+  <header><strong>Top Models</strong></header>
+  <figure>
+  <table role="grid">
+    <thead>
+      <tr>
+        <th>Model</th>
+        <th>Requests</th>
+        <th>Share</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in top_models %}
+      <tr>
+        <td><kbd>{{ m.name }}</kbd></td>
+        <td>{{ m.count }}</td>
+        <td>{{ fmt_pct(m.percentage) }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </figure>
+</article>
+{% endif %}
+
+{# Recent errors #}
+{% if !recent_errors.is_empty() %}
+<article>
+  <header><strong>Recent Errors</strong></header>
+  {% for err in recent_errors %}
+  <div style="padding: 0.5rem; margin-bottom: 0.25rem; background: var(--pico-del-color, rgba(217,83,79,0.1)); border-radius: 4px;">
+    <small style="color: var(--pico-color-red-500, #d9534f);">{{ err }}</small>
+  </div>
+  {% endfor %}
+</article>
+{% endif %}
+
+{% endif %}
+<small class="secondary">Auto-refreshes every 30s</small>

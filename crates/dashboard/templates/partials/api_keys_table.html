@@ -1,0 +1,100 @@
+<div style="display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap;">
+  <article style="flex: 1; min-width: 120px; padding: 0.75rem; margin: 0;">
+    <small class="secondary">Total Keys</small>
+    <p style="font-size: 1.5rem; margin: 0;"><strong>{{ total }}</strong></p>
+  </article>
+  <article style="flex: 1; min-width: 120px; padding: 0.75rem; margin: 0;">
+    <small class="secondary">Active</small>
+    <p style="font-size: 1.5rem; margin: 0;"><strong>{{ active }}</strong></p>
+  </article>
+  <article style="flex: 1; min-width: 120px; padding: 0.75rem; margin: 0;">
+    <small class="secondary">Inactive</small>
+    <p style="font-size: 1.5rem; margin: 0;"><strong>{{ total - active }}</strong></p>
+  </article>
+</div>
+
+<div style="margin-bottom: 1rem;">
+  <button id="generate-key-btn"
+          hx-post="/api/keys"
+          hx-vals='{"name": "dashboard-key"}'
+          hx-target="#key-result"
+          hx-swap="innerHTML"
+          class="outline"
+          style="font-size: 0.85rem;">
+    Generate New Key
+  </button>
+  <div id="key-result" style="margin-top: 0.5rem;"></div>
+</div>
+
+{% if keys.is_empty() %}
+<p>No API keys configured. Click "Generate New Key" to create one.</p>
+{% else %}
+<figure>
+<table role="grid">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Key (suffix)</th>
+      <th>Status</th>
+      <th>Usage</th>
+      <th>Last Used</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for key in keys %}
+    <tr id="key-row-{{ key.id }}">
+      <td><strong>{{ key.name }}</strong></td>
+      <td><code>...{{ key.prefix_last_8 }}</code></td>
+      <td>
+        {% if key.is_active %}
+          <mark style="--pico-background-color: var(--pico-color-green-500, #5cb85c); --pico-color: #fff;">Active</mark>
+        {% else %}
+          <mark style="--pico-background-color: var(--pico-color-yellow-500, #f0ad4e); --pico-color: #000;">Disabled</mark>
+        {% endif %}
+      </td>
+      <td>{{ key.usage_count }}</td>
+      <td>
+        {% match key.last_used_relative %}
+          {% when Some with (val) %}
+            <small>{{ val }}</small>
+          {% when None %}
+            <small class="secondary">Never</small>
+        {% endmatch %}
+      </td>
+      <td><small>{{ key.created_at_relative }}</small></td>
+      <td style="white-space: nowrap;">
+        {% if key.is_active %}
+        <button class="outline secondary"
+                hx-post="/api/keys/{{ key.id }}/disable"
+                hx-target="#key-row-{{ key.id }}"
+                hx-swap="outerHTML"
+                style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
+          Disable
+        </button>
+        {% else %}
+        <button class="outline secondary"
+                hx-post="/api/keys/{{ key.id }}/enable"
+                hx-target="#key-row-{{ key.id }}"
+                hx-swap="outerHTML"
+                style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
+          Enable
+        </button>
+        {% endif %}
+        <button class="outline secondary"
+                hx-delete="/api/keys/{{ key.id }}"
+                hx-target="#key-row-{{ key.id }}"
+                hx-swap="outerHTML"
+                hx-confirm="Delete this API key? This cannot be undone."
+                style="padding: 0.25rem 0.5rem; font-size: 0.8rem; --pico-color: var(--pico-color-red-500, #d9534f);">
+          Delete
+        </button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</figure>
+<small class="secondary">{{ keys.len() }} key(s) &middot; Auto-refreshes every 30s</small>
+{% endif %}
