@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -28,18 +28,55 @@
       --bccf-transition-base: 250ms ease;
     }
     [data-theme="dark"] {
-      --bccf-bg: #1a1a2e;
       --bccf-success: #4ade80;
-      --bccf-success-bg: rgba(74,222,128,0.1);
+      --bccf-success-bg: rgba(74,222,128,0.12);
       --bccf-warning: #facc15;
-      --bccf-warning-bg: rgba(250,204,21,0.1);
+      --bccf-warning-bg: rgba(250,204,21,0.12);
       --bccf-danger: #f87171;
-      --bccf-danger-bg: rgba(248,113,113,0.1);
+      --bccf-danger-bg: rgba(248,113,113,0.12);
       --bccf-info: #60a5fa;
-      --bccf-info-bg: rgba(96,165,250,0.1);
-      --bccf-shadow-sm: 0 1px 2px rgba(0,0,0,0.2);
-      --bccf-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-      --bccf-shadow-md: 0 4px 6px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2);
+      --bccf-info-bg: rgba(96,165,250,0.12);
+      --bccf-shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+      --bccf-shadow: 0 2px 4px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+      --bccf-shadow-md: 0 4px 8px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
+      --bccf-surface: #1e1e2e;
+      --bccf-surface-raised: #262637;
+      --bccf-border: #333350;
+    }
+    /* Dark mode Pico overrides for richer look */
+    [data-theme="dark"] article {
+      background: var(--bccf-surface-raised);
+      border: 1px solid var(--bccf-border);
+    }
+    [data-theme="dark"] .sidebar {
+      background: var(--bccf-surface);
+      border-color: var(--bccf-border);
+    }
+    [data-theme="dark"] table thead th {
+      border-color: var(--bccf-border);
+    }
+    [data-theme="dark"] table tbody tr:hover {
+      background: rgba(255,255,255,0.03);
+    }
+    [data-theme="dark"] kbd {
+      background: var(--bccf-surface);
+      border-color: var(--bccf-border);
+      color: var(--bccf-orange);
+    }
+    [data-theme="dark"] .theme-toggle {
+      border-color: var(--bccf-border);
+    }
+    [data-theme="dark"] .sidebar nav a:hover {
+      background: rgba(255,255,255,0.06);
+    }
+    [data-theme="dark"] input, [data-theme="dark"] select {
+      border-color: var(--bccf-border);
+    }
+    [data-theme="dark"] .usage-bar {
+      background: rgba(255,255,255,0.08);
+    }
+    [data-theme="dark"] figure {
+      border-color: var(--bccf-border);
     }
     /* Layout */
     body { margin: 0; display: flex; min-height: 100vh; }
@@ -178,6 +215,9 @@
     /* Metric card styling */
     .metric-value { font-size: 2rem; font-weight: 700; margin: 0; line-height: 1.2; }
     .metric-label { font-size: 0.8rem; color: var(--pico-muted-color); margin: 0; text-transform: uppercase; letter-spacing: 0.03em; }
+    /* Zero-state muted display for usage */
+    .usage-zero { opacity: 0.35; }
+    .usage-zero .usage-fill { width: 0 !important; }
     /* Tab content loading indicator */
     .htmx-request #tab-content { opacity: 0.6; transition: opacity var(--bccf-transition-fast); }
     /* Mobile */
@@ -256,14 +296,13 @@
       localStorage.setItem('bccf-theme', next);
       document.getElementById('theme-icon').textContent = next === 'dark' ? '☀️' : '🌙';
     }
-    // Restore theme
+    // Restore theme (default: dark, respect saved preference or system)
     (function() {
-      const saved = localStorage.getItem('bccf-theme');
-      if (saved) {
-        document.documentElement.setAttribute('data-theme', saved);
-        const icon = document.getElementById('theme-icon');
-        if (icon) icon.textContent = saved === 'dark' ? '☀️' : '🌙';
-      }
+      var saved = localStorage.getItem('bccf-theme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+      var icon = document.getElementById('theme-icon');
+      if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
     })();
     // Active tab highlight
     function setActiveTab(el) {

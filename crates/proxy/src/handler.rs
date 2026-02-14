@@ -279,7 +279,7 @@ pub async fn try_accounts_in_order<F, Fut>(
     meta: &RequestMeta,
     body: &Bytes,
     try_account: F,
-) -> Option<Response>
+) -> Option<(Response, String)>
 where
     F: Fn(Account, RequestMeta, Bytes, usize) -> Fut,
     Fut: std::future::Future<Output = AccountResult>,
@@ -301,7 +301,7 @@ where
                     attempt = attempt,
                     "Request succeeded"
                 );
-                return Some(response);
+                return Some((response, account.id.clone()));
             }
             AccountResult::RateLimited(rate_info) => {
                 warn!(
@@ -330,7 +330,7 @@ where
         }
     }
 
-    None // All accounts failed
+    None // All accounts exhausted
 }
 
 // ---------------------------------------------------------------------------
@@ -588,7 +588,8 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_some());
+        let (_, account_id) = result.unwrap();
+        assert_eq!(account_id, "a2"); // second account succeeded, not the first
     }
 
     #[tokio::test]

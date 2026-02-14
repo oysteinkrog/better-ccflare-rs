@@ -51,6 +51,11 @@
         {% endif %}
       </td>
       <td>
+        {% if acct.usage_7d_tokens == 0 %}
+        <div style="min-width:170px;" class="usage-zero">
+          <small style="color:var(--pico-muted-color);font-size:0.75rem">No usage</small>
+        </div>
+        {% else %}
         <div style="display:flex;flex-direction:column;gap:3px;min-width:170px;">
           <div class="mini-gauge">
             <small style="width:26px;font-weight:600;font-size:0.7rem;color:var(--pico-muted-color)">5h</small>
@@ -69,6 +74,7 @@
           </div>
           <small style="font-size:0.65rem;color:var(--pico-muted-color);text-align:right">{{ acct.fmt_cost(acct.usage_5h_cost) }} / {{ acct.fmt_cost(acct.usage_24h_cost) }} / {{ acct.fmt_cost(acct.usage_7d_cost) }}</small>
         </div>
+        {% endif %}
       </td>
       <td>
         <input type="checkbox"
@@ -110,6 +116,13 @@
           Pause
         </button>
         {% endif %}
+        {% if acct.is_oauth && acct.token_status_str == "expired" %}
+        <button class="outline"
+                style="padding: 0.25rem 0.5rem; font-size: 0.8rem; --pico-color: var(--bccf-info, #3b82f6);"
+                onclick="startReauth('{{ acct.id }}', '{{ acct.name }}')">
+          Re-auth
+        </button>
+        {% endif %}
         <button class="outline"
                 style="padding: 0.25rem 0.5rem; font-size: 0.8rem; --pico-color: var(--bccf-danger);"
                 hx-delete="/api/accounts/{{ acct.id }}"
@@ -148,6 +161,103 @@ function updatePriority(id, value) {
 function toggleFallback(id, checked) {
   apiPost('/api/accounts/' + id + '/auto-fallback', {enabled: checked})
     .then(refreshAccounts);
+}
+
+function startReauth(id, name) {
+  fetch('/api/oauth/init/' + id, { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { alert('Re-auth failed: ' + data.error); return; }
+      if (data.url) { showReauthDialog(name, data.url); }
+    })
+    .catch(function(e) { alert('Re-auth error: ' + e); });
+}
+
+function showReauthDialog(name, authUrl) {
+  var existing = document.getElementById('reauth-dialog');
+  if (existing) existing.remove();
+
+  var dialog = document.createElement('dialog');
+  dialog.id = 'reauth-dialog';
+  dialog.setAttribute('open', '');
+  dialog.innerHTML =
+    '<article style="max-width:540px;margin:0;padding:1.5rem;">' +
+      '<header style="padding:0 0 1rem;margin-bottom:0;">' +
+        '<strong>Re-authenticate: ' + name + '</strong>' +
+        '<button rel="prev" style="border:0;background:0;float:right;cursor:pointer;font-size:1.2rem;padding:0;margin:0;line-height:1;" onclick="closeReauthDialog()">&times;</button>' +
+      '</header>' +
+      '<p style="font-size:0.85rem;color:var(--pico-muted-color);margin:0 0 0.75rem;">1. Copy or open the auth URL below, then log in.</p>' +
+      '<div style="display:flex;gap:0.5rem;margin-bottom:1rem;">' +
+        '<input id="reauth-url" type="text" value="' + authUrl.replace(/"/g, '&quot;') + '" readonly ' +
+          'style="font-size:0.75rem;padding:0.3rem 0.5rem;margin:0;flex:1;font-family:monospace;cursor:text;" ' +
+          'onclick="this.select()">' +
+        '<button class="outline" style="padding:0.3rem 0.6rem;font-size:0.8rem;margin:0;white-space:nowrap;" ' +
+          'onclick="navigator.clipboard.writeText(document.getElementById(\'reauth-url\').value);this.textContent=\'Copied!\';var b=this;setTimeout(function(){b.textContent=\'Copy\'},1500)">Copy</button>' +
+        '<button style="padding:0.3rem 0.6rem;font-size:0.8rem;margin:0;white-space:nowrap;" ' +
+          'onclick="window.open(document.getElementById(\'reauth-url\').value,\'_blank\')">Open</button>' +
+      '</div>' +
+      '<p style="font-size:0.85rem;color:var(--pico-muted-color);margin:0 0 0.75rem;">2. After authorizing, paste the auth code here.</p>' +
+      '<div style="display:flex;gap:0.5rem;">' +
+        '<input id="reauth-code" type="text" placeholder="Paste auth code or callback URL here..." ' +
+          'style="font-size:0.8rem;padding:0.3rem 0.5rem;margin:0;flex:1;">' +
+        '<button id="reauth-submit" style="padding:0.3rem 0.8rem;font-size:0.8rem;margin:0;white-space:nowrap;" ' +
+          'onclick="submitReauthCode()">Submit</button>' +
+      '</div>' +
+      '<p id="reauth-status" style="font-size:0.8rem;margin:0.75rem 0 0;display:none;"></p>' +
+    '</article>';
+
+  document.body.appendChild(dialog);
+  document.getElementById('reauth-code').focus();
+
+  document.getElementById('reauth-code').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); submitReauthCode(); }
+    if (e.key === 'Escape') { closeReauthDialog(); }
+  });
+}
+
+function closeReauthDialog() {
+  var d = document.getElementById('reauth-dialog');
+  if (d) d.remove();
+}
+
+function submitReauthCode() {
+  var input = document.getElementById('reauth-code');
+  var code = input ? input.value.trim() : '';
+  if (!code) return;
+
+  var btn = document.getElementById('reauth-submit');
+  var status = document.getElementById('reauth-status');
+  btn.disabled = true;
+  btn.textContent = 'Exchanging...';
+  status.style.display = 'none';
+
+  fetch('/api/oauth/complete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({code: code})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(result) {
+      if (result.error) {
+        status.textContent = 'Error: ' + result.error;
+        status.style.color = 'var(--bccf-danger, #ef4444)';
+        status.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Submit';
+      } else {
+        status.textContent = result.message || 'Re-authenticated!';
+        status.style.color = 'var(--bccf-success, #22c55e)';
+        status.style.display = 'block';
+        setTimeout(function() { closeReauthDialog(); refreshAccounts(); }, 1500);
+      }
+    })
+    .catch(function(e) {
+      status.textContent = 'Error: ' + e;
+      status.style.color = 'var(--bccf-danger, #ef4444)';
+      status.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Submit';
+    });
 }
 
 function startRename(el, id, currentName) {

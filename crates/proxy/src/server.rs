@@ -23,6 +23,7 @@ use crate::accounts;
 use crate::api;
 use crate::auth;
 use crate::handlers;
+use crate::token_manager::{TokenManager, TokenPersister, TokenRefresher};
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -84,6 +85,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Health (also mounted at root level, exempt from auth)
         .route("/api/version", get(api::version))
         .route("/api/system/info", get(api::system_info))
+        .route("/api/system", get(api::system_info))
         // Config
         .route("/api/config", get(api::get_config))
         .route(
@@ -215,6 +217,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/agents/bulk-preference",
             post(handlers::agents::bulk_agent_preference),
         )
+        // OAuth re-authentication
+        .route("/api/oauth/init/{id}", post(crate::oauth::oauth_init))
+        .route("/api/oauth/callback", get(crate::oauth::oauth_callback))
+        .route("/api/oauth/complete", post(crate::oauth::oauth_complete))
         // Proxy routes — core /v1/messages endpoint
         .route("/v1/messages", post(crate::proxy::proxy_handler))
         .route("/v1/{*rest}", any(crate::proxy::proxy_handler));
@@ -326,37 +332,138 @@ async fn run_startup_maintenance(state: &AppState) {
         Err(e) => warn!("Failed to clear expired rate limits: {e}"),
     }
 
-    // Clear expired OAuth sessions (tokens past expiry)
-    match clear_expired_oauth_sessions(pool, now) {
-        Ok(count) => {
-            if count > 0 {
-                info!("Cleared {count} expired OAuth sessions");
-            }
-        }
-        Err(e) => warn!("Failed to clear expired OAuth sessions: {e}"),
-    }
+    // Proactively refresh expired OAuth tokens
+    refresh_expired_tokens(state, pool, now).await;
 
     info!("Startup maintenance complete");
 }
 
-/// Clear rate_limited_until entries that are in the past.
-fn clear_expired_rate_limits(pool: &DbPool, now: i64) -> Result<usize, String> {
+/// Clear ALL rate_limited_until entries on startup.
+///
+/// Rate limit state is ephemeral and should be re-discovered from actual
+/// upstream responses. Persisting it across restarts causes stale rate limits
+/// (e.g., from a different proxy version) to block accounts that are actually
+/// available.
+fn clear_expired_rate_limits(pool: &DbPool, _now: i64) -> Result<usize, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE accounts SET rate_limited_until = NULL WHERE rate_limited_until IS NOT NULL AND rate_limited_until < ?1",
-        [now],
+        "UPDATE accounts SET rate_limited_until = NULL, rate_limit_status = NULL, rate_limit_reset = NULL WHERE rate_limited_until IS NOT NULL OR rate_limit_status IS NOT NULL",
+        [],
     )
     .map_err(|e| e.to_string())
 }
 
-/// Clear expired OAuth sessions (where expires_at < now and provider is OAuth).
-fn clear_expired_oauth_sessions(pool: &DbPool, now: i64) -> Result<usize, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE accounts SET access_token = NULL, expires_at = NULL WHERE expires_at IS NOT NULL AND expires_at < ?1 AND provider IN ('claude-oauth', 'console')",
-        [now],
-    )
-    .map_err(|e| e.to_string())
+/// Proactively refresh expired OAuth tokens on startup.
+///
+/// Loads all OAuth accounts with refresh tokens and attempts to refresh any
+/// that have expired or missing access tokens. This prevents the dashboard
+/// from showing accounts as "expired" when they have valid refresh tokens.
+async fn refresh_expired_tokens(state: &AppState, pool: &DbPool, now: i64) {
+    use bccf_database::repositories::account as account_repo;
+    use bccf_providers::ProviderRegistry;
+
+    let Some(tm) = state.token_manager::<TokenManager>() else {
+        return;
+    };
+    let Some(registry) = state.provider_registry::<ProviderRegistry>() else {
+        return;
+    };
+
+    let accounts = match pool.get() {
+        Ok(conn) => match account_repo::find_all(&conn) {
+            Ok(accs) => accs,
+            Err(e) => {
+                warn!("Failed to load accounts for token refresh: {e}");
+                return;
+            }
+        },
+        Err(e) => {
+            warn!("Failed to get DB connection for token refresh: {e}");
+            return;
+        }
+    };
+
+    let mut refreshed = 0u32;
+    for account in accounts {
+        // Skip accounts without refresh tokens or non-OAuth providers
+        if account.refresh_token.is_empty() {
+            continue;
+        }
+        if account.provider != "anthropic" && account.provider != "claude-oauth" && account.provider != "console" {
+            continue;
+        }
+        // Skip if token is still valid
+        if let Some(expires_at) = account.expires_at {
+            if expires_at > now {
+                continue;
+            }
+        }
+
+        // Token is expired or missing — attempt refresh
+        let Some(provider) = registry.get(&account.provider) else {
+            continue;
+        };
+
+        let refresher = StartupRefresher { provider };
+        let persister = StartupPersister { pool };
+        let mut account = account;
+        match tm.get_valid_access_token(&mut account, &refresher, &persister, now).await {
+            Ok(_) => {
+                info!(account = %account.name, "Refreshed token on startup");
+                refreshed += 1;
+            }
+            Err(e) => {
+                warn!(account = %account.name, error = %e, "Failed to refresh token on startup");
+            }
+        }
+    }
+
+    if refreshed > 0 {
+        info!("Refreshed {refreshed} OAuth tokens on startup");
+    }
+}
+
+/// Token refresher for startup use.
+struct StartupRefresher {
+    provider: Arc<dyn bccf_providers::traits::Provider>,
+}
+
+#[async_trait::async_trait]
+impl TokenRefresher for StartupRefresher {
+    async fn refresh_token(
+        &self,
+        account: &bccf_core::types::Account,
+        client_id: &str,
+    ) -> Result<bccf_providers::types::TokenRefreshResult, bccf_providers::error::ProviderError> {
+        self.provider.refresh_token(account, client_id).await
+    }
+}
+
+/// Token persister for startup use.
+struct StartupPersister<'a> {
+    pool: &'a DbPool,
+}
+
+impl TokenPersister for StartupPersister<'_> {
+    fn persist_tokens(
+        &self,
+        account_id: &str,
+        access_token: &str,
+        expires_at: i64,
+        refresh_token: &str,
+    ) {
+        let Ok(conn) = self.pool.get() else { return };
+        let _ = conn.execute(
+            "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3 WHERE id = ?4",
+            rusqlite::params![access_token, expires_at, refresh_token, account_id],
+        );
+    }
+
+    fn load_account(&self, account_id: &str) -> Option<bccf_core::types::Account> {
+        use bccf_database::repositories::account as account_repo;
+        let conn = self.pool.get().ok()?;
+        account_repo::find_by_id(&conn, account_id).ok().flatten()
+    }
 }
 
 // ---------------------------------------------------------------------------

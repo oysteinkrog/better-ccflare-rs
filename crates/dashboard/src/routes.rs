@@ -358,6 +358,7 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 usage_7d_cost: usage.map(|u| u.cost_7d).unwrap_or(0.0),
                 usage_7d_pct: usage_bar_pct(usage.map(|u| u.tokens_7d).unwrap_or(0), 20_000_000),
                 usage_7d_class: usage_bar_class(usage.map(|u| u.tokens_7d).unwrap_or(0), 2_000_000, 10_000_000),
+                is_oauth: a.provider == "anthropic" || a.provider == "claude-oauth" || a.provider == "console",
             }
         })
         .collect();
@@ -574,7 +575,9 @@ fn usage_bar_pct(tokens: i64, max_ref: i64) -> i64 {
     if max_ref == 0 || tokens == 0 {
         return 0;
     }
-    ((tokens as f64 / max_ref as f64) * 100.0).min(100.0) as i64
+    let pct = ((tokens as f64 / max_ref as f64) * 100.0).min(100.0) as i64;
+    // Ensure any non-zero usage shows at least a 3% bar for visibility
+    if pct == 0 { 3 } else { pct }
 }
 
 /// CSS class for usage severity.

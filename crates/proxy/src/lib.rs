@@ -8,6 +8,7 @@ pub mod auto_refresh;
 pub mod crypto;
 pub mod handler;
 pub mod handlers;
+pub mod oauth;
 pub mod post_processor;
 pub mod proxy;
 pub mod pricing;

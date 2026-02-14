@@ -25,7 +25,7 @@ use crate::types::{RateLimitInfo, TokenRefreshResult, UsageInfo};
 /// OAuth token endpoint (always console.anthropic.com).
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 
-/// OAuth redirect URI (Anthropic's callback page, redirects to local server).
+/// OAuth redirect URI (Anthropic's registered callback — may redirect to platform.claude.com).
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 
 /// Default API endpoint.
@@ -37,8 +37,8 @@ const SCOPES: &str = "org:create_api_key user:profile user:inference";
 /// Required beta header for OAuth access tokens.
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 
-/// CSRF state replay protection window (5 minutes).
-const STATE_MAX_AGE_MS: i64 = 300_000;
+/// CSRF state replay protection window (10 minutes — allows time for manual login).
+const STATE_MAX_AGE_MS: i64 = 600_000;
 
 /// Rate limit header names (unified Anthropic format).
 const HEADER_UNIFIED_STATUS: &str = "anthropic-ratelimit-unified-status";
@@ -176,8 +176,10 @@ impl ClaudeOAuthProvider {
 
         match self.mode {
             ClaudeOAuthMode::ClaudeOAuth => {
+                let return_to = format!("/oauth/authorize?{params}");
+                let encoded = percent_encode(&return_to);
                 format!(
-                    "https://claude.ai/login?selectAccount=true&returnTo=/oauth/authorize?{params}"
+                    "https://claude.ai/login?selectAccount=true&returnTo={encoded}"
                 )
             }
             ClaudeOAuthMode::Console => {
@@ -190,6 +192,7 @@ impl ClaudeOAuthProvider {
     async fn token_exchange(
         &self,
         code: &str,
+        state: &str,
         verifier: &str,
         client_id: &str,
     ) -> Result<TokenRefreshResult, ProviderError> {
@@ -198,11 +201,20 @@ impl ClaudeOAuthProvider {
 
         let body = serde_json::json!({
             "code": actual_code,
+            "state": state,
             "grant_type": "authorization_code",
             "client_id": client_id,
             "redirect_uri": REDIRECT_URI,
             "code_verifier": verifier,
         });
+
+        debug!(
+            code_len = actual_code.len(),
+            client_id = %client_id,
+            redirect_uri = REDIRECT_URI,
+            verifier_len = verifier.len(),
+            "Token exchange request"
+        );
 
         let resp = self
             .http_client
@@ -476,11 +488,34 @@ impl OAuthProvider for ClaudeOAuthProvider {
     async fn exchange_code(
         &self,
         code: &str,
+        state: &str,
         verifier: &str,
         client_id: &str,
     ) -> Result<TokenRefreshResult, ProviderError> {
-        self.token_exchange(code, verifier, client_id).await
+        self.token_exchange(code, state, verifier, client_id).await
     }
+}
+
+// ---------------------------------------------------------------------------
+// Percent-encoding helper (avoids adding `urlencoding` crate dependency)
+// ---------------------------------------------------------------------------
+
+/// Percent-encode a string for use in a URL query parameter value.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(hex::HEX_CHARS[(b >> 4) as usize] as char);
+                out.push(hex::HEX_CHARS[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +523,7 @@ impl OAuthProvider for ClaudeOAuthProvider {
 // ---------------------------------------------------------------------------
 
 mod hex {
-    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+    pub(super) const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
     pub fn encode(bytes: &[u8]) -> String {
         let mut s = String::with_capacity(bytes.len() * 2);
@@ -641,12 +676,14 @@ mod tests {
         let p = ClaudeOAuthProvider::claude_oauth();
         let url = p.build_authorize_url("test-state", "test-client", "test-challenge");
         assert!(url.starts_with("https://claude.ai/login?selectAccount=true&returnTo="));
-        assert!(url.contains("client_id=test-client"));
-        assert!(url.contains("code_challenge=test-challenge"));
-        assert!(url.contains("state=test-state"));
-        assert!(
-            url.contains("scope=org%3Acreate_api_key") || url.contains("scope=org:create_api_key")
-        );
+        // returnTo is percent-encoded, so params appear encoded (lowercase hex)
+        assert!(url.contains("client_id%3dtest-client"), "url: {url}");
+        assert!(url.contains("code_challenge%3dtest-challenge"), "url: {url}");
+        assert!(url.contains("state%3dtest-state"), "url: {url}");
+        // Only two top-level query params: selectAccount and returnTo
+        let query = url.split('?').nth(1).unwrap();
+        let top_params: Vec<&str> = query.split('&').collect();
+        assert_eq!(top_params.len(), 2, "Should only have selectAccount and returnTo as top-level params, got: {top_params:?}");
     }
 
     #[test]

@@ -34,6 +34,11 @@ impl ProviderRegistry {
         self.oauth_providers.insert(name, provider);
     }
 
+    /// Register a provider under an explicit alias name (different from `provider.name()`).
+    pub fn register_as(&mut self, alias: &str, provider: Arc<dyn Provider>) {
+        self.providers.insert(alias.to_string(), provider);
+    }
+
     /// Look up a provider by name.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Provider>> {
         self.providers.get(name).cloned()

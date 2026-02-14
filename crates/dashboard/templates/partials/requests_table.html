@@ -51,9 +51,9 @@
       <td><small>{{ req.model_short }}</small></td>
       <td>
         {% if req.success %}
-          <mark style="--pico-background-color: var(--pico-color-green-500, #5cb85c); --pico-color: #fff;">{{ req.status_code }}</mark>
+          <span class="badge badge-success">{{ req.status_code }}</span>
         {% else %}
-          <mark style="--pico-background-color: var(--pico-color-red-500, #d9534f); --pico-color: #fff;">{{ req.status_code }}</mark>
+          <span class="badge badge-danger">{{ req.status_code }}</span>
         {% endif %}
       </td>
       <td>

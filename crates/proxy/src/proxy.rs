@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use bytes::Bytes;
 use futures::StreamExt;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use bccf_core::AppState;
 use bccf_database::repositories::account as account_repo;
@@ -30,6 +30,7 @@ use crate::handler::{
 };
 use crate::post_processor::{PostProcessorHandle, PostProcessorMsg};
 use crate::streaming;
+use crate::token_manager::TokenManager;
 
 /// Maximum request body size (10 MB).
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -161,6 +162,9 @@ pub async fn proxy_handler(
     // Get post-processor handle (if available)
     let post_processor = state.async_writer::<PostProcessorHandle>().cloned();
 
+    // Shared HTTP client for all account attempts (reuses connection pool)
+    let http_client = reqwest::Client::new();
+
     // Try accounts in order
     let body = Bytes::from(body_bytes.to_vec());
     let result = handler::try_accounts_in_order(
@@ -174,6 +178,7 @@ pub async fn proxy_handler(
             let auth_info = auth_info.clone();
             let requested_model = requested_model.clone();
             let start_time = start_time;
+            let client = http_client.clone();
 
             async move {
                 // Get provider for this account
@@ -192,6 +197,24 @@ pub async fn proxy_handler(
                         account.provider
                     ));
                 };
+
+                // Refresh token if needed (OAuth accounts)
+                let mut account = account;
+                if let Some(tm) = state.token_manager::<TokenManager>() {
+                    let refresher = ProviderRefresher { provider: provider.clone() };
+                    let persister = DbPersister { pool: state.db_pool::<DbPool>() };
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    match tm.get_valid_access_token(&mut account, &refresher, &persister, now_ms).await {
+                        Ok(token) => {
+                            if !token.is_empty() {
+                                account.access_token = Some(token);
+                            }
+                        }
+                        Err(e) => {
+                            debug!(account = %account.name, error = %e, "Token refresh failed, trying with existing token");
+                        }
+                    }
+                }
 
                 // Build upstream URL
                 let url = provider.build_url(&req_meta.path, &req_meta.query, Some(&account));
@@ -238,7 +261,6 @@ pub async fn proxy_handler(
                 };
 
                 // Make upstream request
-                let client = reqwest::Client::new();
                 let upstream_req = client
                     .request(
                         reqwest::Method::from_bytes(req_meta.method.as_bytes()).unwrap_or(reqwest::Method::POST),
@@ -326,7 +348,22 @@ pub async fn proxy_handler(
                             .unwrap_or_else(|_| error_response(StatusCode::BAD_REQUEST, "Bad request"));
                         return AccountResult::Success(axum_resp);
                     }
-                    // Non-thinking error — return as-is
+                    // Non-thinking error — record and return as-is
+                    if let Some(pp) = &post_processor {
+                        pp.send(PostProcessorMsg::ResponseComplete {
+                            request_id: req_meta.id.clone(),
+                            account_id: Some(account.id.clone()),
+                            path: req_meta.path.clone(),
+                            body: resp_body.clone(),
+                            response_status: 400,
+                            start_time,
+                            agent_used: req_meta.agent_used.clone(),
+                            project: req_meta.project.clone(),
+                            api_key_id: auth_info.api_key_id.clone(),
+                            api_key_name: auth_info.api_key_name.clone(),
+                            failover_attempts: attempt,
+                        });
+                    }
                     let axum_resp = axum::response::Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .header("content-type", "application/json")
@@ -353,19 +390,17 @@ pub async fn proxy_handler(
     )
     .await;
 
-    // Update account stats
-    if let Ok(conn) = pool.get() {
-        for account in &ordered_accounts {
-            let _ = conn.execute(
-                "UPDATE accounts SET request_count = request_count + 1, total_requests = total_requests + 1, last_used = ?1 WHERE id = ?2",
-                rusqlite::params![now, account.id],
-            );
-            break; // Only increment for the first (chosen) account
-        }
-    }
-
     match result {
-        Some(response) => response,
+        Some((response, succeeded_account_id)) => {
+            // Update stats for the account that actually succeeded
+            if let Ok(conn) = pool.get() {
+                let _ = conn.execute(
+                    "UPDATE accounts SET request_count = request_count + 1, total_requests = total_requests + 1, session_request_count = session_request_count + 1, last_used = ?1 WHERE id = ?2",
+                    rusqlite::params![now, succeeded_account_id],
+                );
+            }
+            response
+        }
         None => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "All accounts failed — request could not be proxied",
@@ -546,4 +581,59 @@ fn axum_headers(headers: &reqwest::header::HeaderMap) -> HeaderMap {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Token refresh adapters
+// ---------------------------------------------------------------------------
+
+use crate::token_manager::{TokenPersister, TokenRefresher};
+use bccf_core::types::Account;
+use bccf_providers::error::ProviderError;
+use bccf_providers::traits::Provider as ProviderTrait;
+use bccf_providers::types::TokenRefreshResult;
+
+/// Delegates token refresh to the provider.
+struct ProviderRefresher {
+    provider: Arc<dyn ProviderTrait>,
+}
+
+#[async_trait::async_trait]
+impl TokenRefresher for ProviderRefresher {
+    async fn refresh_token(
+        &self,
+        account: &Account,
+        client_id: &str,
+    ) -> Result<TokenRefreshResult, ProviderError> {
+        self.provider.refresh_token(account, client_id).await
+    }
+}
+
+/// Persists tokens to the SQLite database.
+struct DbPersister<'a> {
+    pool: Option<&'a DbPool>,
+}
+
+impl TokenPersister for DbPersister<'_> {
+    fn persist_tokens(
+        &self,
+        account_id: &str,
+        access_token: &str,
+        expires_at: i64,
+        refresh_token: &str,
+    ) {
+        let Some(pool) = self.pool else { return };
+        let Ok(conn) = pool.get() else { return };
+        let _ = conn.execute(
+            "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3 WHERE id = ?4",
+            rusqlite::params![access_token, expires_at, refresh_token, account_id],
+        );
+        info!(account_id = %account_id, "Persisted refreshed token to DB");
+    }
+
+    fn load_account(&self, account_id: &str) -> Option<Account> {
+        let pool = self.pool?;
+        let conn = pool.get().ok()?;
+        account_repo::find_by_id(&conn, account_id).ok().flatten()
+    }
 }

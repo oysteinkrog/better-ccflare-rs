@@ -15,8 +15,8 @@
 <style>
   .range-btn {
     padding: 0.35rem 0.75rem;
-    border: 1px solid var(--pico-muted-border-color);
-    background: var(--pico-background-color);
+    border: 1px solid var(--bccf-border, var(--pico-muted-border-color));
+    background: var(--bccf-surface-raised, var(--pico-background-color));
     color: var(--pico-color);
     cursor: pointer;
     font-size: 0.85rem;
@@ -38,10 +38,11 @@
     gap: 1.25rem;
   }
   .chart-card {
-    border: 1px solid var(--pico-muted-border-color);
+    border: 1px solid var(--bccf-border, var(--pico-muted-border-color));
     border-radius: 0.5rem;
     padding: 1rem;
-    background: var(--pico-card-background-color, var(--pico-background-color));
+    background: var(--bccf-surface-raised, var(--pico-card-background-color, var(--pico-background-color)));
+    box-shadow: var(--bccf-shadow-sm);
   }
   .chart-card h3 {
     margin: 0 0 0.75rem 0;
@@ -58,9 +59,10 @@
     flex-wrap: wrap;
     margin-bottom: 1.5rem;
     padding: 0.75rem 1rem;
-    border: 1px solid var(--pico-muted-border-color);
+    border: 1px solid var(--bccf-border, var(--pico-muted-border-color));
     border-radius: 0.5rem;
-    background: var(--pico-card-background-color, var(--pico-background-color));
+    background: var(--bccf-surface-raised, var(--pico-card-background-color, var(--pico-background-color)));
+    box-shadow: var(--bccf-shadow-sm);
   }
   .totals-bar .stat { text-align: center; }
   .totals-bar .stat-value { font-size: 1.3rem; font-weight: 700; }

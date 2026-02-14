@@ -67,6 +67,9 @@ pub struct AccountResponse {
 pub enum TokenStatus {
     Valid,
     Expired,
+    /// API-key provider — no OAuth token management needed.
+    #[serde(rename = "api_key")]
+    ApiKey,
 }
 
 /// Account creation options.
