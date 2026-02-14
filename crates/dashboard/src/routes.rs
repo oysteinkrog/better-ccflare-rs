@@ -54,6 +54,8 @@ pub fn router() -> Router<Arc<AppState>> {
             "/dashboard/partials/api-keys-table",
             get(api_keys_table_partial),
         )
+        .route("/dashboard/partials/stats-table", get(stats_table_partial))
+        .route("/dashboard/partials/logs-stream", get(logs_stream_partial))
         .route("/dashboard/{tab}", get(dashboard_tab))
         .route("/dashboard/assets/{file}", get(serve_asset))
 }
@@ -544,14 +546,25 @@ fn render_empty_requests() -> Response {
     }
 }
 
+/// Format a timestamp as a relative time string.
+fn format_relative_time(now: i64, ts: i64) -> String {
+    let diff_ms = now - ts;
+    let secs = diff_ms / 1000;
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
 /// GET /dashboard/partials/agents-table — HTMX partial for agents table.
 async fn agents_table_partial(State(state): State<Arc<AppState>>) -> Response {
     let now = chrono::Utc::now().timestamp_millis();
     let default_model = bccf_core::DEFAULT_AGENT_MODEL.to_string();
-    let all_models: Vec<String> = bccf_core::models::ALL_MODEL_IDS
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
 
     let agents = match state.db_pool::<DbPool>() {
         Some(pool) => match pool.get() {
@@ -565,30 +578,25 @@ async fn agents_table_partial(State(state): State<Arc<AppState>>) -> Response {
     let rows: Vec<AgentRow> = agents
         .into_iter()
         .map(|a| {
-            let updated_relative = {
-                let diff_ms = now - a.updated_at;
-                let secs = diff_ms / 1000;
-                if secs < 60 {
-                    "just now".to_string()
-                } else if secs < 3600 {
-                    format!("{}m ago", secs / 60)
-                } else if secs < 86400 {
-                    format!("{}h ago", secs / 3600)
-                } else {
-                    format!("{}d ago", secs / 86400)
-                }
-            };
+            let model_options = bccf_core::models::ALL_MODEL_IDS
+                .iter()
+                .map(|&m| ModelOption {
+                    id: m.to_string(),
+                    selected: m == a.preferred_model,
+                    is_default: m == default_model,
+                })
+                .collect();
             AgentRow {
-                agent_id: a.agent_id,
+                agent_id: a.agent_id.clone(),
                 preferred_model: a.preferred_model,
-                updated_at_relative: updated_relative,
+                model_options,
+                updated_at_relative: format_relative_time(now, a.updated_at),
             }
         })
         .collect();
 
     let tpl = AgentsTablePartial {
         agents: rows,
-        all_models,
         default_model,
     };
     match tpl.render() {
@@ -618,32 +626,8 @@ async fn api_keys_table_partial(State(state): State<Arc<AppState>>) -> Response 
     let rows: Vec<ApiKeyRow> = keys_data
         .into_iter()
         .map(|k| {
-            let created_relative = {
-                let diff_ms = now - k.created_at;
-                let secs = diff_ms / 1000;
-                if secs < 60 {
-                    "just now".to_string()
-                } else if secs < 3600 {
-                    format!("{}m ago", secs / 60)
-                } else if secs < 86400 {
-                    format!("{}h ago", secs / 3600)
-                } else {
-                    format!("{}d ago", secs / 86400)
-                }
-            };
-            let last_used_relative = k.last_used.map(|ts| {
-                let diff_ms = now - ts;
-                let secs = diff_ms / 1000;
-                if secs < 60 {
-                    "just now".to_string()
-                } else if secs < 3600 {
-                    format!("{}m ago", secs / 60)
-                } else if secs < 86400 {
-                    format!("{}h ago", secs / 3600)
-                } else {
-                    format!("{}d ago", secs / 86400)
-                }
-            });
+            let created_relative = format_relative_time(now, k.created_at);
+            let last_used_relative = k.last_used.map(|ts| format_relative_time(now, ts));
             ApiKeyRow {
                 id: k.id,
                 name: k.name,
@@ -701,6 +685,116 @@ async fn serve_asset(Path(file): Path<String>) -> Response {
         )
             .into_response(),
         _ => (StatusCode::NOT_FOUND, "Not found").into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stats table partial
+// ---------------------------------------------------------------------------
+
+/// GET /dashboard/partials/stats-table — render the stats table.
+async fn stats_table_partial(State(state): State<Arc<AppState>>) -> Response {
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return render_empty_stats();
+    };
+    let Ok(conn) = pool.get() else {
+        return render_empty_stats();
+    };
+
+    let aggregated = bccf_database::repositories::stats::get_aggregated_stats(&conn).unwrap_or(
+        bccf_database::repositories::stats::AggregatedStats {
+            total_requests: 0,
+            successful_requests: 0,
+            avg_response_time: 0.0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            avg_tokens_per_second: None,
+        },
+    );
+
+    let success_rate = if aggregated.total_requests > 0 {
+        (aggregated.successful_requests as f64 / aggregated.total_requests as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let accounts: Vec<StatsAccountRow> =
+        bccf_database::repositories::stats::get_account_stats(&conn, 20)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| StatsAccountRow {
+                name: a.name,
+                request_count: a.request_count,
+                success_rate: a.success_rate,
+            })
+            .collect();
+
+    let top_models: Vec<StatsModelRow> =
+        bccf_database::repositories::stats::get_top_models(&conn, 10)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| StatsModelRow {
+                name: m.model,
+                count: m.count,
+                percentage: m.percentage,
+            })
+            .collect();
+
+    let recent_errors =
+        bccf_database::repositories::stats::get_recent_errors(&conn, 10).unwrap_or_default();
+
+    let tpl = StatsTablePartial {
+        total_requests: aggregated.total_requests,
+        success_rate,
+        avg_response_time: aggregated.avg_response_time,
+        total_cost_usd: aggregated.total_cost_usd,
+        accounts,
+        top_models,
+        recent_errors,
+    };
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Stats table render error: {e}");
+            Html("<p>Error rendering stats table</p>".to_string()).into_response()
+        }
+    }
+}
+
+/// Render an empty stats table when DB is unavailable.
+fn render_empty_stats() -> Response {
+    let tpl = StatsTablePartial {
+        total_requests: 0,
+        success_rate: 0.0,
+        avg_response_time: 0.0,
+        total_cost_usd: 0.0,
+        accounts: Vec::new(),
+        top_models: Vec::new(),
+        recent_errors: Vec::new(),
+    };
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => Html("<p>No statistics available yet.</p>".to_string()).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Logs stream partial
+// ---------------------------------------------------------------------------
+
+/// GET /dashboard/partials/logs-stream — render the logs stream UI.
+async fn logs_stream_partial() -> Response {
+    let tpl = LogsStreamPartial;
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Logs stream render error: {e}");
+            Html("<p>Error rendering log stream</p>".to_string()).into_response()
+        }
     }
 }
 

@@ -296,10 +296,18 @@ pub struct RequestsTablePartial {
 // Agents table partial
 // ---------------------------------------------------------------------------
 
+/// A model option for a select dropdown, with pre-computed flags.
+pub struct ModelOption {
+    pub id: String,
+    pub selected: bool,
+    pub is_default: bool,
+}
+
 /// A single agent row in the agents table partial.
 pub struct AgentRow {
     pub agent_id: String,
     pub preferred_model: String,
+    pub model_options: Vec<ModelOption>,
     pub updated_at_relative: String,
 }
 
@@ -308,7 +316,6 @@ pub struct AgentRow {
 #[template(path = "partials/agents_table.html")]
 pub struct AgentsTablePartial {
     pub agents: Vec<AgentRow>,
-    pub all_models: Vec<String>,
     pub default_model: String,
 }
 
