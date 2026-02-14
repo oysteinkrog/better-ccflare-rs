@@ -100,6 +100,16 @@ bccf-dashboard = { path = "crates/dashboard" }
 bccf-analytics = { path = "crates/analytics" }
 bccf-cli = { path = "crates/cli" }
 
+# ---------------------------------------------------------------------------
+# Release build optimizations
+# ---------------------------------------------------------------------------
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+opt-level = "z"  # Optimize for binary size
+
 [package]
 name = "better-ccflare"
 version.workspace = true

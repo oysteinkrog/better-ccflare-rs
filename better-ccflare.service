@@ -1,0 +1,25 @@
+[Unit]
+Description=better-ccflare - Claude API load balancer proxy
+Documentation=https://github.com/SijanC147/better-ccflare
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/better-ccflare
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/%u/.config/better-ccflare
+PrivateTmp=yes
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
