@@ -231,6 +231,45 @@ pub fn set_auto_fallback_enabled(
     Ok(())
 }
 
+/// Set auto-refresh enabled/disabled.
+pub fn set_auto_refresh_enabled(
+    conn: &Connection,
+    account_id: &str,
+    enabled: bool,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET auto_refresh_enabled = ?1 WHERE id = ?2",
+        params![enabled as i64, account_id],
+    )?;
+    Ok(())
+}
+
+/// Set custom endpoint URL (or clear with None).
+pub fn set_custom_endpoint(
+    conn: &Connection,
+    account_id: &str,
+    endpoint: Option<&str>,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET custom_endpoint = ?1 WHERE id = ?2",
+        params![endpoint, account_id],
+    )?;
+    Ok(())
+}
+
+/// Set model mappings JSON string (or clear with None).
+pub fn set_model_mappings(
+    conn: &Connection,
+    account_id: &str,
+    mappings: Option<&str>,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET model_mappings = ?1 WHERE id = ?2",
+        params![mappings, account_id],
+    )?;
+    Ok(())
+}
+
 /// Clear expired rate limits from all accounts.
 ///
 /// Returns the number of accounts that had their rate_limited_until cleared.
