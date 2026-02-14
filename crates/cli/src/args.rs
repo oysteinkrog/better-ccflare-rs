@@ -100,6 +100,10 @@ pub struct Cli {
     #[arg(long = "clear-history")]
     pub clear_history: bool,
 
+    /// Run database integrity check and optimize
+    #[arg(long = "repair-db")]
+    pub repair_db: bool,
+
     // -- API key management --------------------------------------------------
     /// Generate a new API key
     #[arg(long = "generate-api-key", value_name = "NAME")]

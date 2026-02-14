@@ -1,12 +1,14 @@
-//! CLI command handlers for account management.
+//! CLI command handlers for account management, stats, config, and API keys.
 //!
 //! Each function corresponds to a CLI flag and operates on the database pool.
 
 use anyhow::{bail, Context, Result};
 use tracing::info;
 
+use bccf_core::config::Config;
+use bccf_core::models;
 use bccf_core::types::Account;
-use bccf_database::repositories::account;
+use bccf_database::repositories::{account, api_key, stats};
 use bccf_database::DbPool;
 
 use crate::args::VALID_MODES;
@@ -407,11 +409,316 @@ pub fn clear_history(pool: &DbPool) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Analyze
+// ---------------------------------------------------------------------------
+
+/// Show detailed usage analysis (cost breakdown, model distribution, errors).
+pub fn analyze_db(pool: &DbPool) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+
+    let agg = stats::get_aggregated_stats(&conn)?;
+    let top_models = stats::get_top_models(&conn, 10)?;
+    let account_stats = stats::get_account_stats(&conn, 10)?;
+    let recent_errors = stats::get_recent_errors(&conn, 5)?;
+    let projects = stats::get_distinct_projects(&conn, 20)?;
+
+    let analysis = serde_json::json!({
+        "overview": {
+            "totalRequests": agg.total_requests,
+            "successfulRequests": agg.successful_requests,
+            "successRate": if agg.total_requests > 0 {
+                (agg.successful_requests as f64 / agg.total_requests as f64 * 100.0 * 100.0).round() / 100.0
+            } else { 0.0 },
+            "avgResponseTimeMs": (agg.avg_response_time * 100.0).round() / 100.0,
+            "avgTokensPerSecond": agg.avg_tokens_per_second.map(|v| (v * 100.0).round() / 100.0),
+        },
+        "tokens": {
+            "total": agg.total_tokens,
+            "input": agg.input_tokens,
+            "output": agg.output_tokens,
+            "cacheRead": agg.cache_read_input_tokens,
+            "cacheCreation": agg.cache_creation_input_tokens,
+        },
+        "cost": {
+            "totalUsd": (agg.total_cost_usd * 10000.0).round() / 10000.0,
+        },
+        "topModels": top_models.iter().map(|m| serde_json::json!({
+            "model": m.model,
+            "count": m.count,
+            "percentage": m.percentage,
+        })).collect::<Vec<_>>(),
+        "accountStats": account_stats.iter().map(|a| serde_json::json!({
+            "name": a.name,
+            "requestCount": a.request_count,
+            "totalRequests": a.total_requests,
+            "successRate": a.success_rate,
+        })).collect::<Vec<_>>(),
+        "recentErrors": recent_errors,
+        "projects": projects,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&analysis)?);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Repair DB
+// ---------------------------------------------------------------------------
+
+/// Run database integrity check, fix NULL values, and optimize with VACUUM.
+pub fn repair_db(pool: &DbPool) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+
+    // 1. Integrity check
+    println!("Running integrity check...");
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .context("Failed to run integrity check")?;
+
+    if integrity == "ok" {
+        println!("  Database integrity: OK");
+    } else {
+        println!("  Database integrity issues found: {}", integrity);
+    }
+
+    // 2. Fix NULL values in accounts
+    println!("Fixing NULL values...");
+    let fixed = conn.execute(
+        "UPDATE accounts SET request_count = 0 WHERE request_count IS NULL",
+        [],
+    )?;
+    if fixed > 0 {
+        println!("  Fixed {fixed} NULL request_count values");
+    }
+
+    let fixed = conn.execute(
+        "UPDATE accounts SET total_requests = 0 WHERE total_requests IS NULL",
+        [],
+    )?;
+    if fixed > 0 {
+        println!("  Fixed {fixed} NULL total_requests values");
+    }
+
+    let fixed = conn.execute(
+        "UPDATE accounts SET session_request_count = 0 WHERE session_request_count IS NULL",
+        [],
+    )?;
+    if fixed > 0 {
+        println!("  Fixed {fixed} NULL session_request_count values");
+    }
+
+    let fixed = conn.execute(
+        "UPDATE accounts SET priority = 0 WHERE priority IS NULL",
+        [],
+    )?;
+    if fixed > 0 {
+        println!("  Fixed {fixed} NULL priority values");
+    }
+
+    // 3. VACUUM to optimize
+    println!("Optimizing database (VACUUM)...");
+    conn.execute_batch("VACUUM")?;
+
+    println!("Database repair complete");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Config commands
+// ---------------------------------------------------------------------------
+
+/// Show all configuration variables.
+pub fn show_config(config: &Config) -> Result<()> {
+    let rt = config.get_runtime();
+
+    let output = serde_json::json!({
+        "configPath": config.path().to_string_lossy(),
+        "lbStrategy": config.get_strategy().as_str(),
+        "defaultAgentModel": config.get_default_agent_model(),
+        "port": rt.port,
+        "retryAttempts": rt.retry_attempts,
+        "retryDelayMs": rt.retry_delay_ms,
+        "retryBackoff": rt.retry_backoff,
+        "sessionDurationMs": rt.session_duration_ms,
+        "dataRetentionDays": config.get_data_retention_days(),
+        "requestRetentionDays": config.get_request_retention_days(),
+        "database": {
+            "walMode": rt.database.wal_mode,
+            "busyTimeoutMs": rt.database.busy_timeout_ms,
+            "cacheSize": rt.database.cache_size,
+            "synchronous": rt.database.synchronous,
+        },
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Show the current default agent model.
+pub fn get_model(config: &Config) -> Result<()> {
+    let model = config.get_default_agent_model();
+    let display = models::get_model_display_name(&model);
+    println!("{model} ({display})");
+    Ok(())
+}
+
+/// Set the default agent model.
+pub fn set_model(config: &mut Config, model: &str) -> Result<()> {
+    if !models::is_valid_model_id(model) {
+        let mut msg = format!("Invalid model: '{model}'\nValid models:");
+        for id in models::ALL_MODEL_IDS {
+            msg.push_str(&format!(
+                "\n  {id} ({})",
+                models::get_model_display_name(id)
+            ));
+        }
+        bail!("{}", msg);
+    }
+
+    config.set_default_agent_model(model.to_string());
+    println!(
+        "Default agent model set to: {} ({})",
+        model,
+        models::get_model_display_name(model)
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// API key management
+// ---------------------------------------------------------------------------
+
+/// Generate a new API key with the given name.
+pub fn generate_api_key(pool: &DbPool, name: &str) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+
+    // Check for duplicate name
+    if api_key::name_exists(&conn, name)? {
+        bail!("API key with name '{name}' already exists");
+    }
+
+    // Generate key and hash
+    let plaintext = format!("bccf_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+    let suffix = if plaintext.len() >= 8 {
+        &plaintext[plaintext.len() - 8..]
+    } else {
+        &plaintext
+    };
+    let prefix_last_8 = format!("bccf_...{suffix}");
+
+    // Hash with SHA-256 (simple, compatible with auth verification)
+    use std::fmt::Write;
+    let hash_bytes = <sha2::Sha256 as sha2::Digest>::digest(plaintext.as_bytes());
+    let mut hashed_key = String::with_capacity(64);
+    for b in hash_bytes {
+        write!(hashed_key, "{b:02x}").unwrap();
+    }
+
+    let key = bccf_core::types::ApiKey {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.to_string(),
+        hashed_key,
+        prefix_last_8,
+        created_at: chrono::Utc::now().timestamp_millis(),
+        last_used: None,
+        usage_count: 0,
+        is_active: true,
+    };
+
+    api_key::create(&conn, &key)?;
+
+    println!("API key generated successfully:");
+    println!("  Name: {name}");
+    println!("  Key:  {plaintext}");
+    println!();
+    println!("Save this key — it cannot be retrieved later.");
+
+    Ok(())
+}
+
+/// List all API keys.
+pub fn list_api_keys(pool: &DbPool) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+    let keys = api_key::find_all(&conn)?;
+
+    if keys.is_empty() {
+        println!("No API keys configured");
+        return Ok(());
+    }
+
+    println!("\nAPI Keys:");
+    for k in &keys {
+        let status = if k.is_active { "active" } else { "disabled" };
+        let last_used = k
+            .last_used
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "never".to_string());
+
+        println!(
+            "  {} [{}] — {} (used {} times, last: {})",
+            k.name, k.prefix_last_8, status, k.usage_count, last_used
+        );
+    }
+
+    let active = keys.iter().filter(|k| k.is_active).count();
+    println!("\nTotal: {} key(s) ({} active)", keys.len(), active);
+    Ok(())
+}
+
+/// Disable an API key by name.
+pub fn disable_api_key(pool: &DbPool, name: &str) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+    let key = api_key::find_by_name(&conn, name)?
+        .ok_or_else(|| anyhow::anyhow!("API key '{name}' not found"))?;
+
+    if !key.is_active {
+        println!("API key '{name}' is already disabled");
+        return Ok(());
+    }
+
+    api_key::disable(&conn, &key.id)?;
+    println!("API key '{name}' disabled");
+    Ok(())
+}
+
+/// Enable an API key by name.
+pub fn enable_api_key(pool: &DbPool, name: &str) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+    let key = api_key::find_by_name(&conn, name)?
+        .ok_or_else(|| anyhow::anyhow!("API key '{name}' not found"))?;
+
+    if key.is_active {
+        println!("API key '{name}' is already enabled");
+        return Ok(());
+    }
+
+    api_key::enable(&conn, &key.id)?;
+    println!("API key '{name}' enabled");
+    Ok(())
+}
+
+/// Delete an API key permanently by name.
+pub fn delete_api_key(pool: &DbPool, name: &str) -> Result<()> {
+    let conn = pool.get().context("Failed to get database connection")?;
+    let key = api_key::find_by_name(&conn, name)?
+        .ok_or_else(|| anyhow::anyhow!("API key '{name}' not found"))?;
+
+    api_key::delete(&conn, &key.id)?;
+    println!("API key '{name}' deleted permanently");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Command dispatcher
+// ---------------------------------------------------------------------------
+
 /// Execute the appropriate command based on CLI args.
 ///
 /// Returns `true` if a command was handled, `false` if no command matched
 /// (meaning the server should start).
-pub fn run(cli: &crate::args::Cli, pool: &DbPool) -> Result<bool> {
+pub fn run(cli: &crate::args::Cli, pool: &DbPool, config: &mut Config) -> Result<bool> {
     // Account management
     if let Some(ref name) = cli.add_account {
         let mode = cli.mode.as_deref().ok_or_else(|| {
@@ -479,7 +786,59 @@ pub fn run(cli: &crate::args::Cli, pool: &DbPool) -> Result<bool> {
         return Ok(true);
     }
 
-    // No command matched
+    if cli.analyze {
+        analyze_db(pool)?;
+        return Ok(true);
+    }
+
+    if cli.repair_db {
+        repair_db(pool)?;
+        return Ok(true);
+    }
+
+    // Config commands
+    if cli.show_config {
+        show_config(config)?;
+        return Ok(true);
+    }
+
+    if cli.get_model {
+        get_model(config)?;
+        return Ok(true);
+    }
+
+    if let Some(ref model) = cli.set_model {
+        set_model(config, model)?;
+        return Ok(true);
+    }
+
+    // API key management
+    if let Some(ref name) = cli.generate_api_key {
+        generate_api_key(pool, name)?;
+        return Ok(true);
+    }
+
+    if cli.list_api_keys {
+        list_api_keys(pool)?;
+        return Ok(true);
+    }
+
+    if let Some(ref name) = cli.disable_api_key {
+        disable_api_key(pool, name)?;
+        return Ok(true);
+    }
+
+    if let Some(ref name) = cli.enable_api_key {
+        enable_api_key(pool, name)?;
+        return Ok(true);
+    }
+
+    if let Some(ref name) = cli.delete_api_key {
+        delete_api_key(pool, name)?;
+        return Ok(true);
+    }
+
+    // No command matched — server should start
     Ok(false)
 }
 
