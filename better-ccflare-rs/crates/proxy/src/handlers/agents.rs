@@ -149,6 +149,66 @@ pub async fn update_agent_model(
     }
 }
 
+/// POST /api/agents/bulk-preference — bulk update model preference for multiple agents.
+pub async fn bulk_agent_preference(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let model = match body.get("model").and_then(|v| v.as_str()) {
+        Some(m) if !m.trim().is_empty() => m.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "model is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_valid_model_id(&model) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Invalid model. Allowed: {:?}", ALL_MODEL_IDS)})),
+        )
+            .into_response();
+    }
+
+    let agent_ids = match body.get("agentIds").and_then(|v| v.as_array()) {
+        Some(ids) => ids
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect::<Vec<_>>(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "agentIds (array) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    let conn = match get_conn(&state) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut updated = 0;
+
+    for agent_id in &agent_ids {
+        if agent_preference::set_preference(&conn, agent_id, &model, now).is_ok() {
+            updated += 1;
+        }
+    }
+
+    Json(json!({
+        "success": true,
+        "updated": updated,
+        "model": model
+    }))
+    .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

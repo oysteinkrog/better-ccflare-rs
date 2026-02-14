@@ -476,6 +476,172 @@ pub async fn set_auto_fallback(
     Json(json!({"success": true, "enabled": enabled})).into_response()
 }
 
+/// POST /api/accounts/:id/auto-refresh — toggle auto-refresh.
+pub async fn set_auto_refresh(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let enabled = match body.get("enabled").and_then(|v| v.as_bool()) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "enabled (boolean) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_auto_refresh_enabled(&conn, &account_id, enabled) {
+        warn!("Failed to set auto_refresh for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update auto-refresh"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "enabled": enabled})).into_response()
+}
+
+/// POST /api/accounts/:id/custom-endpoint — update custom endpoint URL.
+pub async fn set_custom_endpoint(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let endpoint = body.get("endpoint").and_then(|v| v.as_str()).map(|s| s.trim());
+
+    // Empty string clears the endpoint
+    let endpoint = match endpoint {
+        Some(e) if e.is_empty() => None,
+        Some(e) => {
+            // Basic URL validation
+            if !e.starts_with("http://") && !e.starts_with("https://") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "Endpoint must start with http:// or https://"})),
+                )
+                    .into_response();
+            }
+            Some(e)
+        }
+        None => None,
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_custom_endpoint(&conn, &account_id, endpoint) {
+        warn!("Failed to set custom_endpoint for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update custom endpoint"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "endpoint": endpoint})).into_response()
+}
+
+/// POST /api/accounts/:id/model-mappings — update model mappings.
+pub async fn set_model_mappings(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let mappings = body.get("mappings");
+
+    // Validate mappings is an object or null
+    let mappings_str = match mappings {
+        Some(serde_json::Value::Object(_)) => {
+            Some(serde_json::to_string(mappings.unwrap()).unwrap())
+        }
+        Some(serde_json::Value::Null) | None => None,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "mappings must be an object or null"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) =
+        account_repo::set_model_mappings(&conn, &account_id, mappings_str.as_deref())
+    {
+        warn!("Failed to set model_mappings for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update model mappings"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true})).into_response()
+}
+
 /// Valid provider modes for account creation.
 const VALID_MODES: &[&str] = &[
     "claude-oauth",

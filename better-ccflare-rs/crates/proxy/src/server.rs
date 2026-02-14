@@ -95,6 +95,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/config/retention",
             get(api::get_retention).post(api::set_retention),
         )
+        .route(
+            "/api/config/model",
+            get(api::get_default_model).post(api::set_default_model),
+        )
         // Account management
         .route(
             "/api/accounts",
@@ -113,6 +117,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/accounts/{id}/auto-fallback",
             post(accounts::set_auto_fallback),
         )
+        .route(
+            "/api/accounts/{id}/auto-refresh",
+            post(accounts::set_auto_refresh),
+        )
+        .route(
+            "/api/accounts/{id}/custom-endpoint",
+            post(accounts::set_custom_endpoint),
+        )
+        .route(
+            "/api/accounts/{id}/model-mappings",
+            post(accounts::set_model_mappings),
+        )
         // Request history & payload
         .route("/api/requests", get(handlers::requests::list_requests))
         .route(
@@ -127,6 +143,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/logs/stream", get(handlers::logs::logs_stream))
         // Stats & analytics
         .route("/api/stats", get(handlers::stats::get_stats))
+        .route("/api/stats/reset", post(api::stats_reset))
         .route("/api/analytics", get(handlers::analytics::get_analytics))
         // Logs history
         .route("/api/logs", get(handlers::logs::logs_history))
@@ -158,11 +175,45 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/keys/{id}/disable",
             post(handlers::api_keys::disable_key),
         )
+        // Aliases for /api/api-keys (TS uses this path)
+        .route(
+            "/api/api-keys",
+            get(handlers::api_keys::list_keys).post(handlers::api_keys::generate_key),
+        )
+        .route("/api/api-keys/stats", get(handlers::api_keys::key_stats))
+        .route(
+            "/api/api-keys/{id}",
+            delete(handlers::api_keys::delete_key),
+        )
+        .route(
+            "/api/api-keys/{id}/enable",
+            post(handlers::api_keys::enable_key),
+        )
+        .route(
+            "/api/api-keys/{id}/disable",
+            post(handlers::api_keys::disable_key),
+        )
+        // Maintenance
+        .route(
+            "/api/maintenance/cleanup",
+            post(api::maintenance_cleanup),
+        )
+        .route(
+            "/api/maintenance/compact",
+            post(api::maintenance_compact),
+        )
+        // Projects & workspaces
+        .route("/api/projects", get(api::get_projects))
+        .route("/api/workspaces", get(api::get_workspaces))
         // Agent preferences
         .route("/api/agents", get(handlers::agents::list_agents))
         .route(
             "/api/agents/{id}/model",
             post(handlers::agents::update_agent_model),
+        )
+        .route(
+            "/api/agents/bulk-preference",
+            post(handlers::agents::bulk_agent_preference),
         )
         // Proxy routes — core /v1/messages endpoint
         .route("/v1/messages", post(crate::proxy::proxy_handler))

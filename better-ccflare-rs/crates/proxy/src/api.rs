@@ -231,6 +231,167 @@ pub async fn set_retention(
 }
 
 // ---------------------------------------------------------------------------
+// Default Agent Model
+// ---------------------------------------------------------------------------
+
+/// GET /api/config/model — returns the default agent model.
+pub async fn get_default_model() -> impl IntoResponse {
+    Json(json!({
+        "model": DEFAULT_AGENT_MODEL
+    }))
+}
+
+/// POST /api/config/model — set the default agent model.
+pub async fn set_default_model(Json(body): Json<serde_json::Value>) -> Response {
+    let model = match body.get("model").and_then(|v| v.as_str()) {
+        Some(m) if !m.trim().is_empty() => m.trim(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "model (string) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    // TODO: persist to config file when config write is implemented
+    Json(json!({"success": true, "model": model})).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance
+// ---------------------------------------------------------------------------
+
+/// POST /api/maintenance/cleanup — run data retention cleanup.
+pub async fn maintenance_cleanup(State(state): State<Arc<AppState>>) -> Response {
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Database not configured"})),
+        )
+            .into_response();
+    };
+    let Ok(conn) = pool.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Database unavailable"})),
+        )
+            .into_response();
+    };
+
+    let config = state.config();
+    let payload_days = config.get_data_retention_days();
+    let request_days = config.get_request_retention_days();
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let payload_cutoff = now - (payload_days as i64 * 24 * 60 * 60 * 1000);
+    let request_cutoff = now - (request_days as i64 * 24 * 60 * 60 * 1000);
+
+    let payloads_deleted = conn
+        .execute(
+            "DELETE FROM request_payloads WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
+            [payload_cutoff],
+        )
+        .unwrap_or(0);
+
+    let requests_deleted = conn
+        .execute("DELETE FROM requests WHERE timestamp < ?1", [request_cutoff])
+        .unwrap_or(0);
+
+    Json(json!({
+        "success": true,
+        "payloadsDeleted": payloads_deleted,
+        "requestsDeleted": requests_deleted,
+        "payloadRetentionDays": payload_days,
+        "requestRetentionDays": request_days
+    }))
+    .into_response()
+}
+
+/// POST /api/maintenance/compact — VACUUM the database.
+pub async fn maintenance_compact(State(state): State<Arc<AppState>>) -> Response {
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Database not configured"})),
+        )
+            .into_response();
+    };
+    let Ok(conn) = pool.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Database unavailable"})),
+        )
+            .into_response();
+    };
+
+    match conn.execute_batch("VACUUM") {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("VACUUM failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stats Reset
+// ---------------------------------------------------------------------------
+
+/// POST /api/stats/reset — reset all request stats.
+pub async fn stats_reset(State(state): State<Arc<AppState>>) -> Response {
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Database not configured"})),
+        )
+            .into_response();
+    };
+    let Ok(conn) = pool.get() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Database unavailable"})),
+        )
+            .into_response();
+    };
+
+    let _ = conn.execute_batch("DELETE FROM request_payloads; DELETE FROM requests;");
+    let _ = conn.execute_batch(
+        "UPDATE accounts SET request_count = 0, total_requests = 0, session_request_count = 0, session_start = NULL, last_used = NULL;",
+    );
+
+    Json(json!({"success": true, "message": "All request stats have been reset"})).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+/// GET /api/projects — list distinct project names.
+pub async fn get_projects(State(state): State<Arc<AppState>>) -> Response {
+    let Some(pool) = state.db_pool::<DbPool>() else {
+        return Json(json!([])).into_response();
+    };
+    let Ok(conn) = pool.get() else {
+        return Json(json!([])).into_response();
+    };
+
+    let projects =
+        bccf_database::repositories::stats::get_distinct_projects(&conn, 1000).unwrap_or_default();
+    Json(json!(projects)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+
+/// GET /api/workspaces — list workspaces (returns empty for now).
+pub async fn get_workspaces() -> impl IntoResponse {
+    Json(json!({"workspaces": []}))
+}
+
+// ---------------------------------------------------------------------------
 // Catch-all / Not Found
 // ---------------------------------------------------------------------------
 
