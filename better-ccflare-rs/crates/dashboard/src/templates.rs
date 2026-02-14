@@ -175,6 +175,18 @@ pub struct ApiKeysTab;
 // Partial templates (HTMX partials for dynamic content)
 // ---------------------------------------------------------------------------
 
+/// A usage window with utilization percentage and optional reset time.
+pub struct UsageWindowDisplay {
+    /// Window label for display (e.g. "5-hour", "Weekly", "Opus (Weekly)").
+    pub label: String,
+    /// Utilization percentage (0-100), or -1 if not available.
+    pub pct: i64,
+    /// CSS class for the progress bar ("success", "warning", "danger").
+    pub css_class: String,
+    /// Human-readable time until reset (e.g. "2h 15m"), empty if unknown.
+    pub reset_text: String,
+}
+
 /// A single account row in the accounts table partial.
 pub struct AccountRow {
     pub id: String,
@@ -190,47 +202,14 @@ pub struct AccountRow {
     pub total_requests: i64,
     pub last_used_relative: Option<String>,
     pub custom_endpoint: Option<String>,
-    pub usage_5h_tokens: i64,
-    pub usage_5h_cost: f64,
-    pub usage_5h_pct: i64,
-    pub usage_5h_class: String,
-    pub usage_24h_tokens: i64,
-    pub usage_24h_cost: f64,
-    pub usage_24h_pct: i64,
-    pub usage_24h_class: String,
-    pub usage_7d_tokens: i64,
-    pub usage_7d_cost: f64,
-    pub usage_7d_pct: i64,
-    pub usage_7d_class: String,
+    /// Per-window usage data from provider API (empty if provider doesn't support it).
+    pub usage_windows: Vec<UsageWindowDisplay>,
+    /// Whether this account supports usage tracking.
+    /// Whether this account supports usage tracking.
+    pub has_usage: bool,
     pub is_oauth: bool,
-}
-
-impl AccountRow {
-    /// Format token count with K/M suffixes.
-    pub fn fmt_tokens(&self, n: &i64) -> String {
-        let n = *n;
-        if n >= 1_000_000 {
-            format!("{:.1}M", n as f64 / 1_000_000.0)
-        } else if n >= 1_000 {
-            format!("{:.0}K", n as f64 / 1_000.0)
-        } else {
-            n.to_string()
-        }
-    }
-
-    /// Format USD cost.
-    pub fn fmt_cost(&self, v: &f64) -> String {
-        if *v >= 1.0 {
-            format!("${v:.2}")
-        } else if *v >= 0.01 {
-            format!("${v:.3}")
-        } else if *v > 0.0 {
-            format!("${v:.4}")
-        } else {
-            "$0".to_string()
-        }
-    }
-
+    /// Whether the load balancer would choose this account next.
+    pub is_next: bool,
 }
 
 /// Accounts table partial — rendered by `/dashboard/partials/accounts-table`.

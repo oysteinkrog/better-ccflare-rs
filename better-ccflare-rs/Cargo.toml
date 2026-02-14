@@ -130,3 +130,4 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
+reqwest = { workspace = true }

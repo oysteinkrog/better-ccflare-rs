@@ -226,3 +226,267 @@ async fn proxy_no_accounts_returns_503() {
     let resp = router.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 503);
 }
+
+// ---------------------------------------------------------------------------
+// Proxy transparency tests
+// ---------------------------------------------------------------------------
+
+/// Custom client headers (e.g. user-agent, anthropic-beta, x-custom) must
+/// pass through the proxy to the upstream server unmodified.
+#[tokio::test]
+async fn proxy_preserves_client_headers() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": "msg-hdr",
+                    "type": "message",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let (router, pool) = setup_with_mock(&mock_server.uri());
+    let conn = pool.get().unwrap();
+    account_repo::create(&conn, &make_account("acc-h", "Headers", "sk-hdr", 0)).unwrap();
+    drop(conn);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", "context-management-2025-01-01")
+        .header("user-agent", "Claude-Code/1.0")
+        .header("x-custom-header", "should-pass-through")
+        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Inspect what the upstream server actually received
+    let received = mock_server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1, "Expected exactly one request to upstream");
+    let upstream_req = &received[0];
+
+    // anthropic-version must be preserved
+    assert_eq!(
+        upstream_req.headers.get("anthropic-version").map(|v| v.to_str().unwrap()),
+        Some("2023-06-01"),
+        "anthropic-version header must pass through unchanged"
+    );
+
+    // anthropic-beta must be preserved (not replaced)
+    let beta = upstream_req.headers.get("anthropic-beta").map(|v| v.to_str().unwrap().to_string());
+    assert!(
+        beta.as_deref().unwrap_or("").contains("context-management-2025-01-01"),
+        "anthropic-beta must contain client's original beta value, got: {:?}",
+        beta
+    );
+
+    // user-agent must be preserved
+    assert_eq!(
+        upstream_req.headers.get("user-agent").map(|v| v.to_str().unwrap()),
+        Some("Claude-Code/1.0"),
+        "user-agent header must pass through unchanged"
+    );
+
+    // Custom headers must be preserved
+    assert_eq!(
+        upstream_req.headers.get("x-custom-header").map(|v| v.to_str().unwrap()),
+        Some("should-pass-through"),
+        "Custom headers must pass through unchanged"
+    );
+
+    // Auth header must be set by the proxy (replaced, not from client)
+    let auth = upstream_req.headers.get("x-api-key").map(|v| v.to_str().unwrap().to_string());
+    assert_eq!(auth.as_deref(), Some("sk-hdr"), "Proxy must set the account's API key");
+}
+
+/// Request body must pass through the proxy byte-for-byte (when no model
+/// mapping is configured).
+#[tokio::test]
+async fn proxy_preserves_request_body() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": "msg-body",
+                    "type": "message",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let (router, pool) = setup_with_mock(&mock_server.uri());
+    let conn = pool.get().unwrap();
+    account_repo::create(&conn, &make_account("acc-b", "Body", "sk-body", 0)).unwrap();
+    drop(conn);
+
+    let body_with_extras = json!({
+        "model": "claude-sonnet-4-5-20250929",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 10,
+        "context_management": {"strategy": "balanced"},
+        "system": "You are helpful.",
+        "metadata": {"user_id": "test-user-123"}
+    });
+    let body_bytes = serde_json::to_vec(&body_with_extras).unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .body(Body::from(body_bytes.clone()))
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let received = mock_server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+
+    // Parse both as JSON to compare (byte-exact comparison would break on
+    // whitespace differences, but the proxy should not alter JSON semantics)
+    let sent: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let received_body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(
+        sent, received_body,
+        "Request body must not be modified by the proxy"
+    );
+
+    // Specifically verify context_management is preserved (this was the bug)
+    assert!(
+        received_body.get("context_management").is_some(),
+        "context_management field must not be stripped from the body"
+    );
+}
+
+/// Response headers from upstream must be forwarded to the client.
+#[tokio::test]
+async fn proxy_preserves_response_headers() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": "msg-rh",
+                    "type": "message",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+                .insert_header("content-type", "application/json")
+                .insert_header("x-request-id", "req-abc-123")
+                .insert_header("anthropic-ratelimit-requests-remaining", "42")
+                .insert_header("anthropic-ratelimit-tokens-remaining", "100000"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let (router, pool) = setup_with_mock(&mock_server.uri());
+    let conn = pool.get().unwrap();
+    account_repo::create(&conn, &make_account("acc-r", "Resp", "sk-resp", 0)).unwrap();
+    drop(conn);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify upstream response headers are forwarded to client
+    assert_eq!(
+        resp.headers().get("x-request-id").map(|v| v.to_str().unwrap()),
+        Some("req-abc-123"),
+        "x-request-id response header must be forwarded"
+    );
+    assert_eq!(
+        resp.headers().get("anthropic-ratelimit-requests-remaining").map(|v| v.to_str().unwrap()),
+        Some("42"),
+        "Rate limit response headers must be forwarded"
+    );
+}
+
+/// Hop-by-hop headers (host, accept-encoding, content-encoding) must NOT
+/// be forwarded to the upstream server.
+#[tokio::test]
+async fn proxy_removes_hop_by_hop_headers() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": "msg-hop",
+                    "type": "message",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let (router, pool) = setup_with_mock(&mock_server.uri());
+    let conn = pool.get().unwrap();
+    account_repo::create(&conn, &make_account("acc-hop", "Hop", "sk-hop", 0)).unwrap();
+    drop(conn);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .header("host", "should-be-removed.example.com")
+        .header("accept-encoding", "gzip, br")
+        .header("content-encoding", "identity")
+        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .unwrap();
+
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let received = mock_server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let upstream_req = &received[0];
+
+    // These hop-by-hop headers must be removed by prepare_headers
+    assert!(
+        upstream_req.headers.get("accept-encoding").is_none(),
+        "accept-encoding must not be forwarded to upstream"
+    );
+    assert!(
+        upstream_req.headers.get("content-encoding").is_none(),
+        "content-encoding must not be forwarded to upstream"
+    );
+    // Note: host is typically rewritten by reqwest to the actual target host,
+    // so we just verify the original client value is not present
+    let host = upstream_req.headers.get("host").map(|v| v.to_str().unwrap().to_string());
+    assert!(
+        host.as_deref() != Some("should-be-removed.example.com"),
+        "Client's host header must not be forwarded verbatim"
+    );
+}

@@ -338,7 +338,15 @@ impl Provider for ClaudeOAuthProvider {
             if let Ok(val) = format!("Bearer {token}").parse() {
                 headers.insert("authorization", val);
             }
-            if let Ok(val) = OAUTH_BETA_HEADER.parse() {
+            // Append OAuth beta header to existing client betas (don't overwrite)
+            // This preserves client-sent betas like context-management-*
+            if let Some(existing) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok().map(String::from)) {
+                if !existing.contains(OAUTH_BETA_HEADER) {
+                    if let Ok(val) = format!("{existing},{OAUTH_BETA_HEADER}").parse() {
+                        headers.insert("anthropic-beta", val);
+                    }
+                }
+            } else if let Ok(val) = OAUTH_BETA_HEADER.parse() {
                 headers.insert("anthropic-beta", val);
             }
         } else if let Some(key) = api_key {
@@ -594,6 +602,36 @@ mod tests {
         );
         assert_eq!(headers.get("anthropic-beta").unwrap(), OAUTH_BETA_HEADER);
         assert!(headers.get("host").is_none());
+    }
+
+    #[test]
+    fn prepare_headers_appends_oauth_beta_to_existing() {
+        let p = ClaudeOAuthProvider::claude_oauth();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-beta",
+            "context-management-2025-01-01".parse().unwrap(),
+        );
+
+        p.prepare_headers(&mut headers, Some("access-token-123"), None);
+
+        let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
+        assert!(beta.contains("context-management-2025-01-01"));
+        assert!(beta.contains(OAUTH_BETA_HEADER));
+        assert!(beta.contains(','));
+    }
+
+    #[test]
+    fn prepare_headers_no_duplicate_oauth_beta() {
+        let p = ClaudeOAuthProvider::claude_oauth();
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-beta", OAUTH_BETA_HEADER.parse().unwrap());
+
+        p.prepare_headers(&mut headers, Some("access-token-123"), None);
+
+        let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
+        // Should not duplicate the oauth beta
+        assert_eq!(beta, OAUTH_BETA_HEADER);
     }
 
     #[test]

@@ -212,12 +212,94 @@
     .badge-warning { background: var(--bccf-warning-bg); color: var(--bccf-warning); }
     .badge-danger { background: var(--bccf-danger-bg); color: var(--bccf-danger); }
     .badge-muted { background: var(--pico-muted-border-color); color: var(--pico-muted-color); }
+    .badge-primary { background: color-mix(in srgb, var(--pico-primary) 15%, transparent); color: var(--pico-primary); }
     /* Metric card styling */
     .metric-value { font-size: 2rem; font-weight: 700; margin: 0; line-height: 1.2; }
     .metric-label { font-size: 0.8rem; color: var(--pico-muted-color); margin: 0; text-transform: uppercase; letter-spacing: 0.03em; }
     /* Zero-state muted display for usage */
     .usage-zero { opacity: 0.35; }
     .usage-zero .usage-fill { width: 0 !important; }
+    /* Account card list */
+    .acct-list { display: flex; flex-direction: column; gap: 0.5rem; }
+    .acct-card {
+      border: 1px solid var(--pico-muted-border-color);
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      transition: border-color var(--bccf-transition-fast), box-shadow var(--bccf-transition-fast);
+    }
+    .acct-card:hover { border-color: var(--pico-primary); box-shadow: var(--bccf-shadow-sm); }
+    .acct-card.acct-active {
+      border-color: var(--pico-primary);
+      background: color-mix(in srgb, var(--pico-primary) 5%, transparent);
+      box-shadow: var(--bccf-shadow-sm);
+    }
+    /* Grid layout for consistent alignment across cards.
+       Fixed column widths so columns align across independent card grids. */
+    .acct-grid {
+      display: grid;
+      grid-template-columns: minmax(200px,1fr) 155px 58px 72px 68px 105px 62px auto;
+      align-items: center;
+      gap: 0.4rem 0.75rem;
+    }
+    .acct-g-name { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; min-width: 0; }
+    .acct-g-name strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+    .acct-badges { display: inline-flex; gap: 0.3rem; flex-shrink: 0; }
+    .acct-g-provider { font-size: 0.85rem; }
+    .acct-g-provider kbd { white-space: nowrap; font-size: 0.75rem; }
+    .acct-g-cell { font-size: 0.85rem; }
+    .acct-g-label {
+      display: block;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--pico-muted-color);
+      line-height: 1;
+      margin-bottom: 2px;
+    }
+    .acct-g-actions { display: flex; gap: 0.3rem; justify-content: flex-end; white-space: nowrap; }
+    .acct-editable {
+      cursor: pointer;
+      border-bottom: 1px dashed var(--pico-muted-border-color);
+      padding-bottom: 1px;
+    }
+    .acct-editable:hover {
+      border-bottom-color: var(--pico-primary);
+      color: var(--pico-primary);
+    }
+    @media (max-width: 1200px) {
+      .acct-grid {
+        grid-template-columns: minmax(160px,1fr) 130px 55px 70px 65px 55px auto;
+      }
+      /* Hide session column on medium screens */
+      .acct-g-cell:nth-child(6) { display: none; }
+    }
+    @media (max-width: 900px) {
+      .acct-grid {
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+      }
+      .acct-g-name { grid-column: 1 / -1; }
+      .acct-g-actions { grid-column: 1 / -1; justify-content: flex-start; }
+    }
+    @media (max-width: 600px) {
+      .acct-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .acct-g-name { grid-column: 1 / -1; }
+      .acct-g-provider { grid-column: 1 / -1; }
+      .acct-g-actions { grid-column: 1 / -1; }
+    }
+    .acct-usage {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--pico-muted-border-color);
+    }
+    .acct-usage-window { flex: 1; min-width: 180px; max-width: 320px; }
+    .acct-usage-label { font-size: 0.75rem; color: var(--pico-muted-color); }
+    .acct-usage-pct { font-size: 0.75rem; font-weight: 600; }
+    .acct-usage-reset { font-size: 0.7rem; color: var(--pico-muted-color); }
     /* Tab content loading indicator */
     .htmx-request #tab-content { opacity: 0.6; transition: opacity var(--bccf-transition-fast); }
     /* Mobile */

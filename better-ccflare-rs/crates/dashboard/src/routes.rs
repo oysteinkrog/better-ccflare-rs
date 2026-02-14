@@ -6,7 +6,6 @@
 //! - `GET /dashboard/partials/overview` — overview stats partial (HTMX refresh)
 //! - `GET /dashboard/assets/{file}` — embedded static assets
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use askama::Template;
@@ -266,20 +265,20 @@ fn overview_defaults(version: String) -> OverviewTab {
 async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response {
     let now = chrono::Utc::now().timestamp_millis();
 
-    let (accounts, usage_map) = match state.db_pool::<DbPool>() {
+    let accounts = match state.db_pool::<DbPool>() {
         Some(pool) => match pool.get() {
-            Ok(conn) => {
-                let accts =
-                    bccf_database::repositories::account::find_all(&conn).unwrap_or_default();
-                let usage =
-                    bccf_database::repositories::stats::get_all_account_usage_windows(&conn)
-                        .unwrap_or_default();
-                (accts, usage)
-            }
-            Err(_) => (Vec::new(), HashMap::new()),
+            Ok(conn) => bccf_database::repositories::account::find_all(&conn).unwrap_or_default(),
+            Err(_) => Vec::new(),
         },
-        None => (Vec::new(), HashMap::new()),
+        None => Vec::new(),
     };
+
+    // Get the usage cache from AppState (populated by UsagePollingService)
+    let usage_cache = state.usage_cache::<bccf_providers::UsageCache>();
+
+    // Determine which account the load balancer would choose next.
+    // Mirrors the SessionStrategy logic without incrementing round-robin.
+    let next_account_id = predict_next_account(&accounts, now);
 
     let rows: Vec<AccountRow> = accounts
         .iter()
@@ -330,7 +329,9 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 }
             });
 
-            let usage = usage_map.get(&a.id);
+            // Build usage windows from the real provider API data
+            let usage_windows = build_usage_windows(usage_cache, &a.id, now);
+            let has_usage = !usage_windows.is_empty();
 
             AccountRow {
                 id: a.id.clone(),
@@ -346,19 +347,12 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 total_requests: a.total_requests,
                 last_used_relative,
                 custom_endpoint: a.custom_endpoint.clone(),
-                usage_5h_tokens: usage.map(|u| u.tokens_5h).unwrap_or(0),
-                usage_5h_cost: usage.map(|u| u.cost_5h).unwrap_or(0.0),
-                usage_5h_pct: usage_bar_pct(usage.map(|u| u.tokens_5h).unwrap_or(0), 1_000_000),
-                usage_5h_class: usage_bar_class(usage.map(|u| u.tokens_5h).unwrap_or(0), 100_000, 500_000),
-                usage_24h_tokens: usage.map(|u| u.tokens_24h).unwrap_or(0),
-                usage_24h_cost: usage.map(|u| u.cost_24h).unwrap_or(0.0),
-                usage_24h_pct: usage_bar_pct(usage.map(|u| u.tokens_24h).unwrap_or(0), 5_000_000),
-                usage_24h_class: usage_bar_class(usage.map(|u| u.tokens_24h).unwrap_or(0), 500_000, 2_000_000),
-                usage_7d_tokens: usage.map(|u| u.tokens_7d).unwrap_or(0),
-                usage_7d_cost: usage.map(|u| u.cost_7d).unwrap_or(0.0),
-                usage_7d_pct: usage_bar_pct(usage.map(|u| u.tokens_7d).unwrap_or(0), 20_000_000),
-                usage_7d_class: usage_bar_class(usage.map(|u| u.tokens_7d).unwrap_or(0), 2_000_000, 10_000_000),
-                is_oauth: a.provider == "anthropic" || a.provider == "claude-oauth" || a.provider == "console",
+                usage_windows,
+                has_usage,
+                is_oauth: a.provider == "anthropic"
+                    || a.provider == "claude-oauth"
+                    || a.provider == "console",
+                is_next: next_account_id.as_deref() == Some(a.id.as_str()),
             }
         })
         .collect();
@@ -370,6 +364,190 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
             tracing::error!("Accounts table render error: {e}");
             Html("<p>Error rendering accounts table</p>".to_string()).into_response()
         }
+    }
+}
+
+/// Build usage window display data from the UsageCache.
+fn build_usage_windows(
+    cache: Option<&bccf_providers::UsageCache>,
+    account_id: &str,
+    now: i64,
+) -> Vec<UsageWindowDisplay> {
+    use bccf_providers::usage_polling::AnyUsageData;
+
+    let Some(cache) = cache else {
+        return Vec::new();
+    };
+    let Some(data) = cache.get(account_id) else {
+        return Vec::new();
+    };
+
+    let mut windows = Vec::new();
+
+    match &data {
+        AnyUsageData::Anthropic(map) => {
+            // Show each known window from the Anthropic usage API.
+            // The API returns utilization as a percentage (0-100).
+            let window_order = [
+                ("five_hour", "5-hour"),
+                ("seven_day", "Weekly"),
+                ("seven_day_opus", "Opus (Wk)"),
+                ("seven_day_sonnet", "Sonnet (Wk)"),
+            ];
+
+            for (key, label) in window_order {
+                if let Some(val) = map.get(key) {
+                    if let Some(util) = val.get("utilization").and_then(|v| v.as_f64()) {
+                        let resets_at = val
+                            .get("resets_at")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        let pct = util.round() as i64;
+                        windows.push(UsageWindowDisplay {
+                            label: label.to_string(),
+                            pct: pct.clamp(0, 100),
+                            css_class: utilization_class(pct),
+                            reset_text: format_reset_time(&resets_at, now),
+                        });
+                    }
+                }
+            }
+        }
+        AnyUsageData::NanoGpt(data) => {
+            if data.active {
+                let daily_pct = (data.daily.percent_used * 100.0).round() as i64;
+                windows.push(UsageWindowDisplay {
+                    label: "Daily".to_string(),
+                    pct: daily_pct.min(100),
+                    css_class: utilization_class(daily_pct),
+                    reset_text: format_reset_timestamp(data.daily.reset_at, now),
+                });
+                let monthly_pct = (data.monthly.percent_used * 100.0).round() as i64;
+                windows.push(UsageWindowDisplay {
+                    label: "Monthly".to_string(),
+                    pct: monthly_pct.min(100),
+                    css_class: utilization_class(monthly_pct),
+                    reset_text: format_reset_timestamp(data.monthly.reset_at, now),
+                });
+            }
+        }
+        AnyUsageData::Zai(data) => {
+            if let Some(ref tl) = data.tokens_limit {
+                let pct = tl.percentage.round() as i64;
+                windows.push(UsageWindowDisplay {
+                    label: "5-hour".to_string(),
+                    pct: pct.min(100),
+                    css_class: utilization_class(pct),
+                    reset_text: data
+                        .tokens_limit
+                        .as_ref()
+                        .and_then(|t| t.reset_at)
+                        .map(|ts| format_reset_timestamp(ts, now))
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    windows
+}
+
+/// Predict which account the load balancer would choose next.
+///
+/// Mirrors the SessionStrategy logic (without side effects like round-robin
+/// counter increment or session resets):
+/// 1. Auto-fallback candidates (anthropic + auto_fallback + rate_limit_reset passed)
+/// 2. Active session (anthropic with session within 5h)
+/// 3. Highest priority available account
+fn predict_next_account(accounts: &[bccf_core::types::Account], now: i64) -> Option<String> {
+    let session_duration_ms: i64 = 5 * 60 * 60 * 1000; // 5 hours
+
+    let is_available = |a: &bccf_core::types::Account| -> bool {
+        !a.paused && a.rate_limited_until.map_or(true, |until| until < now)
+    };
+
+    // 1. Auto-fallback candidates
+    let mut fallback: Vec<_> = accounts
+        .iter()
+        .filter(|a| {
+            a.auto_fallback_enabled
+                && a.provider == "anthropic"
+                && a.rate_limit_reset.is_some_and(|reset| reset < now - 1000)
+                && is_available(a)
+        })
+        .collect();
+    fallback.sort_by_key(|a| a.priority);
+    if let Some(a) = fallback.first() {
+        return Some(a.id.clone());
+    }
+
+    // 2. Active session (most recent)
+    let active = accounts
+        .iter()
+        .filter(|a| {
+            matches!(a.provider.as_str(), "anthropic" | "claude-oauth")
+                && a.session_start
+                    .is_some_and(|start| now - start < session_duration_ms)
+                && is_available(a)
+        })
+        .max_by_key(|a| a.session_start.unwrap_or(0));
+    if let Some(a) = active {
+        return Some(a.id.clone());
+    }
+
+    // 3. Highest priority available
+    let mut available: Vec<_> = accounts.iter().filter(|a| is_available(a)).collect();
+    available.sort_by_key(|a| a.priority);
+    available.first().map(|a| a.id.clone())
+}
+
+/// CSS class for utilization percentage.
+fn utilization_class(pct: i64) -> String {
+    if pct >= 80 {
+        "danger".to_string()
+    } else if pct >= 50 {
+        "warning".to_string()
+    } else {
+        "success".to_string()
+    }
+}
+
+/// Format an ISO reset time string as a relative duration.
+fn format_reset_time(iso: &Option<String>, now: i64) -> String {
+    let Some(iso_str) = iso else {
+        return String::new();
+    };
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(iso_str) else {
+        return String::new();
+    };
+    let reset_ms = dt.timestamp_millis();
+    let remaining_ms = reset_ms - now;
+    if remaining_ms <= 0 {
+        return "resetting".to_string();
+    }
+    let mins = remaining_ms / 60_000;
+    let hours = mins / 60;
+    let m = mins % 60;
+    if hours > 0 {
+        format!("{hours}h {m}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+/// Format a Unix timestamp (ms) as relative duration.
+fn format_reset_timestamp(ts: i64, now: i64) -> String {
+    let remaining_ms = ts - now;
+    if remaining_ms <= 0 {
+        return "resetting".to_string();
+    }
+    let mins = remaining_ms / 60_000;
+    let hours = mins / 60;
+    let m = mins % 60;
+    if hours > 0 {
+        format!("{hours}h {m}m")
+    } else {
+        format!("{mins}m")
     }
 }
 
@@ -567,27 +745,6 @@ fn render_empty_requests() -> Response {
     match tpl.render() {
         Ok(html) => Html(html).into_response(),
         Err(_) => Html("<p>No requests recorded yet.</p>".to_string()).into_response(),
-    }
-}
-
-/// Compute bar percentage (0–100) for usage display.
-fn usage_bar_pct(tokens: i64, max_ref: i64) -> i64 {
-    if max_ref == 0 || tokens == 0 {
-        return 0;
-    }
-    let pct = ((tokens as f64 / max_ref as f64) * 100.0).min(100.0) as i64;
-    // Ensure any non-zero usage shows at least a 3% bar for visibility
-    if pct == 0 { 3 } else { pct }
-}
-
-/// CSS class for usage severity.
-fn usage_bar_class(tokens: i64, warn: i64, danger: i64) -> String {
-    if tokens > danger {
-        "danger".to_string()
-    } else if tokens > warn {
-        "warning".to_string()
-    } else {
-        "success".to_string()
     }
 }
 
