@@ -112,6 +112,9 @@ path = "src/main.rs"
 [dependencies]
 bccf-core = { workspace = true }
 bccf-cli = { workspace = true }
+bccf-database = { workspace = true }
+bccf-proxy = { workspace = true }
+anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }

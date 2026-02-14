@@ -449,8 +449,11 @@ dependencies = [
 name = "better-ccflare"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bccf-cli",
  "bccf-core",
+ "bccf-database",
+ "bccf-proxy",
  "clap",
  "tokio",
  "tracing",

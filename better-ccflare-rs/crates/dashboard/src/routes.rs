@@ -40,6 +40,10 @@ pub fn router() -> Router<Arc<AppState>> {
             "/dashboard/partials/accounts-table",
             get(accounts_table_partial),
         )
+        .route(
+            "/dashboard/partials/requests-table",
+            get(requests_table_partial),
+        )
         .route("/dashboard/{tab}", get(dashboard_tab))
         .route("/dashboard/assets/{file}", get(serve_asset))
 }
@@ -333,6 +337,85 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
     }
 }
 
+/// GET /dashboard/partials/requests-table — requests table HTMX partial.
+async fn requests_table_partial(State(state): State<Arc<AppState>>) -> Response {
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let requests = match state.db_pool::<DbPool>() {
+        Some(pool) => match pool.get() {
+            Ok(conn) => {
+                bccf_database::repositories::request::get_recent(&conn, 50).unwrap_or_default()
+            }
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+
+    let total = requests.len() as i64;
+
+    let rows: Vec<RequestRow> = requests
+        .iter()
+        .map(|r| {
+            let diff_ms = now - r.timestamp;
+            let secs = diff_ms / 1000;
+            let timestamp_relative = if secs < 60 {
+                "just now".to_string()
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            };
+
+            let model_short = r
+                .model
+                .as_deref()
+                .map(bccf_core::models::get_model_short_name)
+                .unwrap_or("unknown")
+                .to_string();
+
+            let response_time_display = r.response_time_ms.map(|ms| {
+                if ms >= 1000 {
+                    format!("{:.1}s", ms as f64 / 1000.0)
+                } else {
+                    format!("{}ms", ms)
+                }
+            });
+
+            let cost_display = r.cost_usd.map(|c| format!("${:.4}", c));
+
+            RequestRow {
+                id: r.id.clone(),
+                timestamp_relative,
+                account_name: r.account_used.clone().unwrap_or_default(),
+                model_short,
+                status_code: r.status_code.unwrap_or(0),
+                success: r.success,
+                input_tokens: r.input_tokens.unwrap_or(0),
+                output_tokens: r.output_tokens.unwrap_or(0),
+                total_tokens: r.total_tokens.unwrap_or(0),
+                response_time_display,
+                cost_display,
+            }
+        })
+        .collect();
+
+    let tpl = RequestsTablePartial {
+        requests: rows,
+        page: 1,
+        total_pages: 1,
+        total,
+    };
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Requests table render error: {e}");
+            Html("<p>Error rendering requests table</p>".to_string()).into_response()
+        }
+    }
+}
+
 /// GET /dashboard/assets/{file} — serve embedded static assets.
 async fn serve_asset(Path(file): Path<String>) -> Response {
     match file.as_str() {
@@ -367,6 +450,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use bccf_core::config::Config;
+    use bccf_core::AppStateBuilder;
+    use bccf_database::pool::{create_memory_pool, PoolConfig};
     use http::Request;
     use tower::ServiceExt;
 
@@ -376,6 +461,16 @@ mod tests {
         )))
         .unwrap();
         Arc::new(AppState::new(config))
+    }
+
+    fn test_state_with_db() -> Arc<AppState> {
+        let config = Config::load(Some(std::path::PathBuf::from(
+            "/tmp/bccf-test-dashboard-nonexistent/config.json",
+        )))
+        .unwrap();
+        let pool = create_memory_pool(&PoolConfig::default()).unwrap();
+        let state = AppStateBuilder::new(config).db_pool(pool).build();
+        Arc::new(state)
     }
 
     #[tokio::test]
