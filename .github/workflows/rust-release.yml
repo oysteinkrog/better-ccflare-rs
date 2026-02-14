@@ -1,0 +1,146 @@
+name: Rust Release
+
+on:
+  push:
+    tags:
+      - 'rust-v*'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: better-ccflare-rs
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: better-ccflare-linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: better-ccflare-linux-arm64
+            cross: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: |
+          cp target/${{ matrix.target }}/release/better-ccflare ${{ matrix.artifact }}
+
+      - name: Generate SHA-256 checksum
+        run: |
+          sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            better-ccflare-rs/${{ matrix.artifact }}
+            better-ccflare-rs/${{ matrix.artifact }}.sha256
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          echo "Release assets:"
+          ls -lh release/
+          echo ""
+          echo "Checksums:"
+          cat release/*.sha256
+
+      - name: Detect release type
+        id: release_type
+        run: |
+          REF_NAME="${{ github.ref_name }}"
+          if [[ "$REF_NAME" =~ (beta|rc|alpha|pre) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#rust-}"
+
+          PRERELEASE_FLAG=""
+          if [[ "${{ steps.release_type.outputs.is_prerelease }}" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Delete existing release if present
+          gh release delete "${{ github.ref_name }}" -y 2>/dev/null || true
+
+          gh release create "${{ github.ref_name }}" \
+            --title "Rust Binary ${VERSION}" \
+            --notes "## Rust Binary Release ${VERSION}
+
+          ### Download
+
+          | Platform | Binary | Checksum |
+          |----------|--------|----------|
+          | Linux x86_64 | \`better-ccflare-linux-amd64\` | See \`.sha256\` file |
+          | Linux ARM64 | \`better-ccflare-linux-arm64\` | See \`.sha256\` file |
+
+          ### Quick Install
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/SijanC147/better-ccflare/${{ github.ref_name }}/better-ccflare-rs/install.sh | sh
+          \`\`\`
+
+          ### Verify Checksum
+
+          \`\`\`bash
+          sha256sum -c better-ccflare-linux-amd64.sha256
+          \`\`\`
+
+          ### systemd Service
+
+          A systemd service template is included in the repository at \`better-ccflare-rs/better-ccflare.service\`.
+          " \
+            $PRERELEASE_FLAG \
+            release/*
