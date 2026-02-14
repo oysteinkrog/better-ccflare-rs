@@ -2,6 +2,8 @@
 //!
 //! Matches the TypeScript `StatsRepository` consolidation.
 
+use std::collections::HashMap;
+
 use rusqlite::{params, Connection};
 
 use crate::error::DbError;
@@ -286,6 +288,69 @@ pub fn get_api_key_stats(conn: &Connection) -> Result<Vec<ApiKeyStats>, DbError>
     Ok(result)
 }
 
+/// Per-account usage across 5h, 24h, and 7d time windows.
+#[derive(Debug, Clone, Default)]
+pub struct AccountUsageWindows {
+    pub account_id: String,
+    pub requests_5h: i64,
+    pub tokens_5h: i64,
+    pub cost_5h: f64,
+    pub requests_24h: i64,
+    pub tokens_24h: i64,
+    pub cost_24h: f64,
+    pub requests_7d: i64,
+    pub tokens_7d: i64,
+    pub cost_7d: f64,
+}
+
+/// Get usage windows (5h, 24h, 7d) for all accounts in a single query.
+pub fn get_all_account_usage_windows(
+    conn: &Connection,
+) -> Result<HashMap<String, AccountUsageWindows>, DbError> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let t_5h = now - 5 * 60 * 60 * 1000;
+    let t_24h = now - 24 * 60 * 60 * 1000;
+    let t_7d = now - 7 * 24 * 60 * 60 * 1000;
+
+    let mut stmt = conn.prepare(
+        "SELECT account_used,
+            SUM(CASE WHEN timestamp >= ?1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN timestamp >= ?1 THEN COALESCE(input_tokens,0)+COALESCE(output_tokens,0)+COALESCE(cache_read_input_tokens,0)+COALESCE(cache_creation_input_tokens,0) ELSE 0 END),
+            SUM(CASE WHEN timestamp >= ?1 THEN COALESCE(cost_usd,0) ELSE 0.0 END),
+            SUM(CASE WHEN timestamp >= ?2 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN timestamp >= ?2 THEN COALESCE(input_tokens,0)+COALESCE(output_tokens,0)+COALESCE(cache_read_input_tokens,0)+COALESCE(cache_creation_input_tokens,0) ELSE 0 END),
+            SUM(CASE WHEN timestamp >= ?2 THEN COALESCE(cost_usd,0) ELSE 0.0 END),
+            COUNT(*),
+            SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)+COALESCE(cache_read_input_tokens,0)+COALESCE(cache_creation_input_tokens,0)),
+            SUM(COALESCE(cost_usd,0))
+         FROM requests
+         WHERE timestamp >= ?3 AND account_used IS NOT NULL
+         GROUP BY account_used",
+    )?;
+
+    let rows = stmt.query_map(params![t_5h, t_24h, t_7d], |row| {
+        Ok(AccountUsageWindows {
+            account_id: row.get::<_, String>(0)?,
+            requests_5h: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            tokens_5h: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            cost_5h: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+            requests_24h: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+            tokens_24h: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            cost_24h: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+            requests_7d: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+            tokens_7d: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            cost_7d: row.get::<_, Option<f64>>(9)?.unwrap_or(0.0),
+        })
+    })?;
+
+    let mut map = HashMap::new();
+    for row in rows {
+        let usage = row?;
+        map.insert(usage.account_id.clone(), usage);
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,5 +498,29 @@ mod tests {
         assert_eq!(models.len(), 2);
         // Each model has 50%
         assert!((models[0].percentage - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn account_usage_windows_empty() {
+        let conn = setup_db();
+        let windows = get_all_account_usage_windows(&conn).unwrap();
+        assert!(windows.is_empty());
+    }
+
+    #[test]
+    fn account_usage_windows_with_data() {
+        let conn = setup_db();
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut r1 = test_request("r1", "a1", true);
+        r1.timestamp = now - 1000; // 1 second ago (within 5h)
+        request::save(&conn, &r1).unwrap();
+
+        let windows = get_all_account_usage_windows(&conn).unwrap();
+        assert_eq!(windows.len(), 1);
+        let w = windows.get("a1").unwrap();
+        assert_eq!(w.requests_5h, 1);
+        assert_eq!(w.requests_24h, 1);
+        assert_eq!(w.requests_7d, 1);
+        assert!(w.tokens_5h > 0);
     }
 }

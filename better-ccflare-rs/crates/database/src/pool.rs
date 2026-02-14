@@ -64,6 +64,9 @@ pub fn create_pool(db_path: &std::path::Path, config: &PoolConfig) -> Result<DbP
     // Migrate from legacy location if needed
     migrations::migrate_from_legacy(db_path)?;
 
+    // Copy Node/TS-era DB on first run (if RS DB doesn't exist yet)
+    migrations::migrate_from_node_db(db_path)?;
+
     let manager = SqliteConnectionManager::file(db_path);
     let pool = Pool::builder()
         .max_size(config.max_size)
@@ -81,6 +84,7 @@ pub fn create_pool(db_path: &std::path::Path, config: &PoolConfig) -> Result<DbP
     }
 
     schema::create_tables(&conn)?;
+    migrations::run_schema_migrations(&conn)?;
     schema::create_indexes(&conn)?;
 
     tracing::info!(

@@ -53,7 +53,7 @@ pub async fn get_token_health(State(state): State<Arc<AppState>>) -> Response {
     let now = chrono::Utc::now().timestamp_millis();
     let report = token_health::check_all_accounts_health(&accounts, now);
 
-    Json(json!(report)).into_response()
+    Json(json!({"success": true, "data": report})).into_response()
 }
 
 // ---------------------------------------------------------------------------

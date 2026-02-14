@@ -1,4 +1,128 @@
 <h2>Accounts</h2>
-<div hx-get="/dashboard/partials/accounts-table" hx-trigger="load, every 30s" hx-swap="innerHTML">
+
+<div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem;">
+  <label style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+    <input type="checkbox" role="switch" id="auto-refresh-toggle" checked style="margin: 0;">
+    <small>Auto-refresh</small>
+  </label>
+  <button class="outline secondary" onclick="refreshAccounts()" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; margin: 0;">
+    Refresh
+  </button>
+  <button class="outline" id="add-account-btn" onclick="toggleAddForm()" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; margin: 0;">
+    + Add Account
+  </button>
+</div>
+
+<div id="add-account-form" style="display: none; margin-bottom: 1rem;">
+  <article style="padding: 1rem;">
+    <header style="padding: 0.5rem 0; margin-bottom: 0.5rem;"><strong>Add New Account</strong></header>
+    <div class="grid" style="gap: 0.75rem;">
+      <label>
+        <small>Name</small>
+        <input type="text" id="new-acct-name" placeholder="my-account" required>
+      </label>
+      <label>
+        <small>Provider</small>
+        <select id="new-acct-mode">
+          <option value="claude-oauth">Claude OAuth</option>
+          <option value="console">Console (API Key)</option>
+          <option value="anthropic-compatible">Anthropic Compatible</option>
+          <option value="openai-compatible">OpenAI Compatible</option>
+          <option value="vertex-ai">Vertex AI</option>
+          <option value="zai">Zhipu AI</option>
+          <option value="minimax">Minimax</option>
+          <option value="nanogpt">NanoGPT</option>
+        </select>
+      </label>
+      <label>
+        <small>Priority (0-100)</small>
+        <input type="number" id="new-acct-priority" value="0" min="0" max="100">
+      </label>
+    </div>
+    <div id="api-key-field" style="margin-top: 0.75rem; display: none;">
+      <label>
+        <small>API Key</small>
+        <input type="password" id="new-acct-apikey" placeholder="sk-...">
+      </label>
+    </div>
+    <footer style="padding: 0.5rem 0; margin-top: 0.5rem;">
+      <div style="display: flex; gap: 0.5rem;">
+        <button onclick="submitAddAccount()" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">Add</button>
+        <button class="outline secondary" onclick="toggleAddForm()" style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">Cancel</button>
+      </div>
+      <small id="add-acct-error" class="secondary" style="color: var(--pico-color-red-500, #d9534f); display: none;"></small>
+    </footer>
+  </article>
+</div>
+
+<div id="accounts-table-container"
+     hx-get="/dashboard/partials/accounts-table"
+     hx-trigger="load, every 30s [autoRefreshEnabled]"
+     hx-swap="innerHTML">
   <p aria-busy="true">Loading accounts...</p>
 </div>
+
+<script>
+var autoRefreshEnabled = true;
+
+document.getElementById('auto-refresh-toggle').addEventListener('change', function() {
+  autoRefreshEnabled = this.checked;
+  // Re-process HTMX triggers
+  htmx.process(document.getElementById('accounts-table-container'));
+});
+
+function refreshAccounts() {
+  htmx.ajax('GET', '/dashboard/partials/accounts-table', '#accounts-table-container');
+}
+
+var OAUTH_MODES = ['claude-oauth'];
+
+document.getElementById('new-acct-mode').addEventListener('change', function() {
+  var isOAuth = OAUTH_MODES.indexOf(this.value) !== -1;
+  document.getElementById('api-key-field').style.display = isOAuth ? 'none' : 'block';
+});
+
+function toggleAddForm() {
+  var form = document.getElementById('add-account-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  document.getElementById('add-acct-error').style.display = 'none';
+}
+
+function submitAddAccount() {
+  var name = document.getElementById('new-acct-name').value.trim();
+  var mode = document.getElementById('new-acct-mode').value;
+  var priority = parseInt(document.getElementById('new-acct-priority').value) || 0;
+  var apiKey = document.getElementById('new-acct-apikey').value.trim();
+  var errEl = document.getElementById('add-acct-error');
+
+  if (!name) {
+    errEl.textContent = 'Name is required';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  var body = {name: name, mode: mode, priority: priority};
+  if (apiKey) body.api_key = apiKey;
+
+  fetch('/api/accounts', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+    .then(function(res) {
+      if (res.ok) {
+        toggleAddForm();
+        document.getElementById('new-acct-name').value = '';
+        document.getElementById('new-acct-apikey').value = '';
+        refreshAccounts();
+      } else {
+        errEl.textContent = res.data.error || 'Failed to add account';
+        errEl.style.display = 'block';
+      }
+    })
+    .catch(function(e) {
+      errEl.textContent = 'Network error: ' + e.message;
+      errEl.style.display = 'block';
+    });
+}
+</script>

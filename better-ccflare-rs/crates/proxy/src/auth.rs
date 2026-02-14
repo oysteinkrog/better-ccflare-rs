@@ -129,7 +129,7 @@ fn count_active_api_keys(pool: &DbPool) -> i64 {
     };
 
     conn.query_row(
-        "SELECT COUNT(*) FROM api_keys WHERE enabled = 1",
+        "SELECT COUNT(*) FROM api_keys WHERE is_active = 1",
         [],
         |row| row.get(0),
     )

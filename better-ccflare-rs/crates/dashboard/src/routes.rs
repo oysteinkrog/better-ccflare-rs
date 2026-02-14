@@ -6,6 +6,7 @@
 //! - `GET /dashboard/partials/overview` — overview stats partial (HTMX refresh)
 //! - `GET /dashboard/assets/{file}` — embedded static assets
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use askama::Template;
@@ -265,12 +266,19 @@ fn overview_defaults(version: String) -> OverviewTab {
 async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response {
     let now = chrono::Utc::now().timestamp_millis();
 
-    let accounts = match state.db_pool::<DbPool>() {
+    let (accounts, usage_map) = match state.db_pool::<DbPool>() {
         Some(pool) => match pool.get() {
-            Ok(conn) => bccf_database::repositories::account::find_all(&conn).unwrap_or_default(),
-            Err(_) => Vec::new(),
+            Ok(conn) => {
+                let accts =
+                    bccf_database::repositories::account::find_all(&conn).unwrap_or_default();
+                let usage =
+                    bccf_database::repositories::stats::get_all_account_usage_windows(&conn)
+                        .unwrap_or_default();
+                (accts, usage)
+            }
+            Err(_) => (Vec::new(), HashMap::new()),
         },
-        None => Vec::new(),
+        None => (Vec::new(), HashMap::new()),
     };
 
     let rows: Vec<AccountRow> = accounts
@@ -322,12 +330,15 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 }
             });
 
+            let usage = usage_map.get(&a.id);
+
             AccountRow {
                 id: a.id.clone(),
                 name: a.name.clone(),
                 provider: a.provider.clone(),
                 priority: a.priority,
                 paused: a.paused,
+                auto_fallback_enabled: a.auto_fallback_enabled,
                 token_status_str,
                 rate_limit_status,
                 session_info,
@@ -335,6 +346,18 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 total_requests: a.total_requests,
                 last_used_relative,
                 custom_endpoint: a.custom_endpoint.clone(),
+                usage_5h_tokens: usage.map(|u| u.tokens_5h).unwrap_or(0),
+                usage_5h_cost: usage.map(|u| u.cost_5h).unwrap_or(0.0),
+                usage_5h_pct: usage_bar_pct(usage.map(|u| u.tokens_5h).unwrap_or(0), 1_000_000),
+                usage_5h_class: usage_bar_class(usage.map(|u| u.tokens_5h).unwrap_or(0), 100_000, 500_000),
+                usage_24h_tokens: usage.map(|u| u.tokens_24h).unwrap_or(0),
+                usage_24h_cost: usage.map(|u| u.cost_24h).unwrap_or(0.0),
+                usage_24h_pct: usage_bar_pct(usage.map(|u| u.tokens_24h).unwrap_or(0), 5_000_000),
+                usage_24h_class: usage_bar_class(usage.map(|u| u.tokens_24h).unwrap_or(0), 500_000, 2_000_000),
+                usage_7d_tokens: usage.map(|u| u.tokens_7d).unwrap_or(0),
+                usage_7d_cost: usage.map(|u| u.cost_7d).unwrap_or(0.0),
+                usage_7d_pct: usage_bar_pct(usage.map(|u| u.tokens_7d).unwrap_or(0), 20_000_000),
+                usage_7d_class: usage_bar_class(usage.map(|u| u.tokens_7d).unwrap_or(0), 2_000_000, 10_000_000),
             }
         })
         .collect();
@@ -543,6 +566,25 @@ fn render_empty_requests() -> Response {
     match tpl.render() {
         Ok(html) => Html(html).into_response(),
         Err(_) => Html("<p>No requests recorded yet.</p>".to_string()).into_response(),
+    }
+}
+
+/// Compute bar percentage (0–100) for usage display.
+fn usage_bar_pct(tokens: i64, max_ref: i64) -> i64 {
+    if max_ref == 0 || tokens == 0 {
+        return 0;
+    }
+    ((tokens as f64 / max_ref as f64) * 100.0).min(100.0) as i64
+}
+
+/// CSS class for usage severity.
+fn usage_bar_class(tokens: i64, warn: i64, danger: i64) -> String {
+    if tokens > danger {
+        "danger".to_string()
+    } else if tokens > warn {
+        "warning".to_string()
+    } else {
+        "success".to_string()
     }
 }
 

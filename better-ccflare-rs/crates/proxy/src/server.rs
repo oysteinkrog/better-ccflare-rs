@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::middleware;
-use axum::routing::{delete, get, post};
+use axum::routing::{any, delete, get, post};
 use axum::Router;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
@@ -96,7 +96,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_retention).post(api::set_retention),
         )
         // Account management
-        .route("/api/accounts", get(accounts::list_accounts))
+        .route(
+            "/api/accounts",
+            get(accounts::list_accounts).post(accounts::create_account),
+        )
         .route("/api/accounts/{id}/pause", post(accounts::pause_account))
         .route("/api/accounts/{id}/resume", post(accounts::resume_account))
         .route("/api/accounts/{id}/reload", post(accounts::reload_account))
@@ -160,13 +163,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/agents/{id}/model",
             post(handlers::agents::update_agent_model),
-        );
+        )
+        // Proxy routes — core /v1/messages endpoint
+        .route("/v1/messages", post(crate::proxy::proxy_handler))
+        .route("/v1/{*rest}", any(crate::proxy::proxy_handler));
 
     // Dashboard routes (exempt from API auth — served under /dashboard)
     let dashboard_routes = bccf_dashboard::routes::router();
 
     // Combine all routes
     Router::new()
+        // Root redirect to dashboard
+        .route("/", get(|| async {
+            axum::response::Redirect::temporary("/dashboard")
+        }))
         // Health endpoint (exempt from auth)
         .route("/health", get(api::health))
         // Prometheus metrics (exempt from auth, optional — returns 503 if not enabled)

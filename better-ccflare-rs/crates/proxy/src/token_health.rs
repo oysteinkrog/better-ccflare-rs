@@ -49,6 +49,7 @@ pub enum HealthStatus {
 
 /// Detailed health status for one account.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenHealthStatus {
     pub account_id: String,
     pub account_name: String,
@@ -71,6 +72,7 @@ pub struct TokenHealthReport {
 
 /// Summary counts for the health report.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthSummary {
     pub total: usize,
     pub healthy: usize,

@@ -476,6 +476,181 @@ pub async fn set_auto_fallback(
     Json(json!({"success": true, "enabled": enabled})).into_response()
 }
 
+/// Valid provider modes for account creation.
+const VALID_MODES: &[&str] = &[
+    "claude-oauth",
+    "console",
+    "zai",
+    "minimax",
+    "nanogpt",
+    "anthropic-compatible",
+    "openai-compatible",
+    "vertex-ai",
+];
+
+/// Map a mode string to a provider string stored in the database.
+fn mode_to_provider(mode: &str) -> &str {
+    match mode {
+        "claude-oauth" => "claude-oauth",
+        "console" => "claude-console-api",
+        "zai" => "zai",
+        "minimax" => "minimax",
+        "nanogpt" => "nanogpt",
+        "anthropic-compatible" => "anthropic-compatible",
+        "openai-compatible" => "openai-compatible",
+        "vertex-ai" => "vertex-ai",
+        other => other,
+    }
+}
+
+/// POST /api/accounts — create a new account.
+pub async fn create_account(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    // Validate name
+    let name = match body.get("name").and_then(|v| v.as_str()) {
+        Some(n) if !n.trim().is_empty() && n.len() <= 100 => n.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "name is required (1-100 characters)"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate mode
+    let mode = match body.get("mode").and_then(|v| v.as_str()) {
+        Some(m) if VALID_MODES.contains(&m) => m.to_string(),
+        Some(m) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Invalid mode: '{}'. Valid modes: {}", m, VALID_MODES.join(", "))})),
+            )
+                .into_response();
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("mode is required. Valid modes: {}", VALID_MODES.join(", "))})),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate priority
+    let priority = body
+        .get("priority")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if !(0..=100).contains(&priority) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Priority must be between 0 and 100"})),
+        )
+            .into_response();
+    }
+
+    // Check for duplicate name (case-insensitive)
+    let name_lower = name.to_lowercase();
+    match account_repo::find_all(&conn) {
+        Ok(accounts) => {
+            if accounts.iter().any(|a| a.name.to_lowercase() == name_lower) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error": format!("Account '{}' already exists", name)})),
+                )
+                    .into_response();
+            }
+        }
+        Err(e) => {
+            warn!("Failed to check existing accounts: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    let provider = mode_to_provider(&mode);
+    let now = chrono::Utc::now().timestamp_millis();
+    let id = uuid::Uuid::new_v4().to_string();
+    let api_key_input = body.get("api_key").and_then(|v| v.as_str());
+
+    let is_oauth = mode == "claude-oauth";
+
+    // For non-OAuth modes, API key is required
+    if !is_oauth && api_key_input.map_or(true, |k| k.trim().is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("API key is required for '{}' accounts", mode)})),
+        )
+            .into_response();
+    }
+
+    let (api_key, access_token, expires_at) = if is_oauth {
+        (None, None, None)
+    } else {
+        let key = api_key_input.unwrap().trim().to_string();
+        let token = key.clone();
+        let exp = now + 30 * 24 * 60 * 60 * 1000; // 30 days
+        (Some(key), Some(token), Some(exp))
+    };
+
+    let account = Account {
+        id: id.clone(),
+        name: name.clone(),
+        provider: provider.to_string(),
+        api_key,
+        refresh_token: String::new(),
+        access_token,
+        expires_at,
+        request_count: 0,
+        total_requests: 0,
+        last_used: None,
+        created_at: now,
+        rate_limited_until: None,
+        session_start: None,
+        session_request_count: 0,
+        paused: false,
+        rate_limit_reset: None,
+        rate_limit_status: None,
+        rate_limit_remaining: None,
+        priority,
+        auto_fallback_enabled: true,
+        auto_refresh_enabled: true,
+        custom_endpoint: None,
+        model_mappings: None,
+    };
+
+    if let Err(e) = account_repo::create(&conn, &account) {
+        warn!("Failed to create account {name}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to create account"})),
+        )
+            .into_response();
+    }
+
+    let mut msg = format!("Account '{}' created ({})", name, provider);
+    if is_oauth {
+        msg.push_str(". Run `better-ccflare --reauthenticate ");
+        msg.push_str(&name);
+        msg.push_str("` to complete OAuth setup.");
+    }
+
+    debug!("Created account {name} (id={id}, provider={provider})");
+    (
+        StatusCode::CREATED,
+        Json(json!({"success": true, "id": id, "message": msg})),
+    )
+        .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -538,7 +713,7 @@ mod tests {
 
     fn build_test_router(state: Arc<AppState>) -> Router {
         Router::new()
-            .route("/api/accounts", get(list_accounts))
+            .route("/api/accounts", get(list_accounts).post(create_account))
             .route("/api/accounts/{id}/pause", post(pause_account))
             .route("/api/accounts/{id}/resume", post(resume_account))
             .route("/api/accounts/{id}/reload", post(reload_account))
