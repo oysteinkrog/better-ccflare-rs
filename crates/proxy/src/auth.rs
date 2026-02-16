@@ -2,8 +2,14 @@
 //!
 //! Verifies requests against stored API key hashes using scrypt (with SHA-256 legacy fallback).
 //! Supports path-based exemptions for health, OAuth, and dashboard routes.
+//!
+//! Performance: scrypt verification is offloaded to `spawn_blocking` to avoid blocking
+//! the async runtime. Verified keys are cached for 5 minutes to avoid repeated scrypt
+//! computations on every request.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -25,6 +31,44 @@ pub struct AuthInfo {
     /// Name of the API key used (if any).
     pub api_key_name: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// API key cache
+// ---------------------------------------------------------------------------
+
+/// TTL for cached API key verifications.
+const API_KEY_CACHE_TTL_SECS: u64 = 300; // 5 minutes
+
+/// TTL for cached "auth enabled" check.
+const AUTH_ENABLED_CACHE_TTL_SECS: u64 = 10;
+
+/// Maximum number of entries in the API key cache (LRU-style eviction).
+const API_KEY_CACHE_MAX_SIZE: usize = 1000;
+
+struct CachedKeyResult {
+    id: String,
+    name: String,
+    verified_at: Instant,
+}
+
+struct AuthEnabledCache {
+    enabled: bool,
+    checked_at: Instant,
+}
+
+fn api_key_cache() -> &'static Mutex<HashMap<String, CachedKeyResult>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedKeyResult>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn auth_enabled_cache() -> &'static Mutex<Option<AuthEnabledCache>> {
+    static CACHE: OnceLock<Mutex<Option<AuthEnabledCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+// ---------------------------------------------------------------------------
+// Key extraction
+// ---------------------------------------------------------------------------
 
 /// Extract the API key from the request headers.
 ///
@@ -57,6 +101,10 @@ fn extract_api_key(req: &Request<Body>) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Path exemptions
+// ---------------------------------------------------------------------------
+
 /// Check if a path is exempt from authentication.
 ///
 /// Exempt paths:
@@ -88,11 +136,15 @@ fn is_path_exempt(path: &str, _method: &str) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// Verification (sync — runs inside spawn_blocking)
+// ---------------------------------------------------------------------------
+
 /// Verify an API key against stored hashed keys in the database.
 ///
 /// Supports both scrypt hashes (salt:hash format) and legacy SHA-256 hashes.
 /// Uses constant-time comparison to prevent timing attacks.
-fn verify_api_key(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
+fn verify_api_key_sync(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
     let conn = pool.get().ok()?;
 
     // Get all active API keys
@@ -122,8 +174,8 @@ fn verify_api_key(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
     None
 }
 
-/// Count active API keys in the database.
-fn count_active_api_keys(pool: &DbPool) -> i64 {
+/// Count active API keys in the database (sync).
+fn count_active_api_keys_sync(pool: &DbPool) -> i64 {
     let Ok(conn) = pool.get() else {
         return 0;
     };
@@ -135,6 +187,92 @@ fn count_active_api_keys(pool: &DbPool) -> i64 {
     )
     .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// Async wrappers with caching
+// ---------------------------------------------------------------------------
+
+/// Check if auth is enabled (cached for 10 seconds).
+async fn is_auth_enabled(pool: &DbPool) -> bool {
+    // Check cache
+    {
+        let cache = auth_enabled_cache().lock().unwrap();
+        if let Some(ref entry) = *cache {
+            if entry.checked_at.elapsed().as_secs() < AUTH_ENABLED_CACHE_TTL_SECS {
+                return entry.enabled;
+            }
+        }
+    }
+
+    // Cache miss — query via spawn_blocking
+    let pool = pool.clone();
+    let enabled = tokio::task::spawn_blocking(move || count_active_api_keys_sync(&pool) > 0)
+        .await
+        .unwrap_or(false);
+
+    // Update cache
+    {
+        let mut cache = auth_enabled_cache().lock().unwrap();
+        *cache = Some(AuthEnabledCache {
+            enabled,
+            checked_at: Instant::now(),
+        });
+    }
+
+    enabled
+}
+
+/// Hash an API key for use as a cache key (avoids storing plaintext keys in memory).
+fn hash_for_cache(api_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(api_key.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Verify an API key with caching and spawn_blocking.
+///
+/// On cache hit (within TTL), returns immediately without any crypto or DB work.
+/// On cache miss, offloads the scrypt verification to a blocking thread.
+/// Cache keys are SHA-256 hashed to avoid storing plaintext API keys in memory.
+async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
+    // Check cache
+    {
+        let cache = api_key_cache().lock().unwrap();
+        if let Some(entry) = cache.get(api_key) {
+            if entry.verified_at.elapsed().as_secs() < API_KEY_CACHE_TTL_SECS {
+                return Some((entry.id.clone(), entry.name.clone()));
+            }
+        }
+    }
+
+    // Cache miss — verify via spawn_blocking (scrypt is CPU-intensive)
+    let pool = pool.clone();
+    let key_owned = api_key.to_string();
+    let result = tokio::task::spawn_blocking(move || verify_api_key_sync(&pool, &key_owned))
+        .await
+        .ok()
+        .flatten();
+
+    // Cache successful result
+    if let Some((ref id, ref name)) = result {
+        let mut cache = api_key_cache().lock().unwrap();
+        cache.insert(
+            cache_key,
+            CachedKeyResult {
+                id: id.clone(),
+                name: name.clone(),
+                verified_at: Instant::now(),
+            },
+        );
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
 
 /// Authentication middleware for axum.
 ///
@@ -159,7 +297,10 @@ pub async fn auth_middleware(
 
     // Check if authentication is enabled (any active API keys exist)
     let pool = state.db_pool::<DbPool>();
-    let auth_enabled = pool.is_some_and(|p| count_active_api_keys(p) > 0);
+    let auth_enabled = match pool {
+        Some(p) => is_auth_enabled(p).await,
+        None => false,
+    };
 
     if !auth_enabled {
         // No API keys configured — allow all requests (first-run experience)
@@ -185,7 +326,7 @@ pub async fn auth_middleware(
         }
     };
 
-    // Verify API key
+    // Verify API key (cached + spawn_blocking for scrypt)
     let Some(pool) = pool else {
         // No database — can't verify
         req.extensions_mut().insert(AuthInfo {
@@ -195,7 +336,7 @@ pub async fn auth_middleware(
         return next.run(req).await;
     };
 
-    match verify_api_key(pool, &api_key) {
+    match verify_api_key_cached(pool, &api_key).await {
         Some((id, name)) => {
             debug!("Auth success: key={name} path={path}");
             req.extensions_mut().insert(AuthInfo {

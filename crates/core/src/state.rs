@@ -112,6 +112,9 @@ pub struct AppState {
 
     /// Usage cache for account utilization data (from provider APIs).
     usage_cache: Option<Box<dyn std::any::Any + Send + Sync>>,
+
+    /// Shared HTTP client for upstream requests (connection pooling).
+    http_client: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl AppState {
@@ -127,6 +130,7 @@ impl AppState {
             token_manager: None,
             oauth_store: None,
             usage_cache: None,
+            http_client: None,
         }
     }
 
@@ -191,6 +195,13 @@ impl AppState {
     /// Get the usage cache, downcasting from the type-erased box.
     pub fn usage_cache<T: 'static + Send + Sync>(&self) -> Option<&T> {
         self.usage_cache
+            .as_ref()
+            .and_then(|b| b.downcast_ref::<T>())
+    }
+
+    /// Get the shared HTTP client, downcasting from the type-erased box.
+    pub fn http_client<T: 'static + Send + Sync>(&self) -> Option<&T> {
+        self.http_client
             .as_ref()
             .and_then(|b| b.downcast_ref::<T>())
     }
@@ -260,6 +271,12 @@ impl AppStateBuilder {
         self
     }
 
+    /// Set the shared HTTP client (type-erased).
+    pub fn http_client<T: 'static + Send + Sync>(mut self, client: T) -> Self {
+        self.state.http_client = Some(Box::new(client));
+        self
+    }
+
     /// Build the final `AppState`.
     pub fn build(self) -> AppState {
         self.state
@@ -282,6 +299,7 @@ impl std::fmt::Debug for AppState {
             .field("token_manager", &self.token_manager.is_some())
             .field("oauth_store", &self.oauth_store.is_some())
             .field("usage_cache", &self.usage_cache.is_some())
+            .field("http_client", &self.http_client.is_some())
             .finish()
     }
 }

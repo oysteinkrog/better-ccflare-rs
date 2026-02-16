@@ -186,9 +186,16 @@ pub fn detect_agent_from_user_agent(user_agent: &str) -> Option<String> {
 }
 
 /// Extract the model from a request body JSON.
+///
+/// Uses a lightweight struct to avoid parsing the entire body into a Value tree.
+/// For large conversation payloads (multi-MB), this avoids megabytes of throw-away allocations.
 pub fn extract_model_from_body(body: &[u8]) -> Option<String> {
-    let json: serde_json::Value = serde_json::from_slice(body).ok()?;
-    json.get("model")?.as_str().map(|s| s.to_string())
+    #[derive(serde::Deserialize)]
+    struct ModelOnly {
+        model: Option<String>,
+    }
+    let parsed: ModelOnly = serde_json::from_slice(body).ok()?;
+    parsed.model
 }
 
 /// Replace the model in a request body JSON, returning modified bytes.
