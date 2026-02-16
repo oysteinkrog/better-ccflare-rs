@@ -28,6 +28,7 @@ use crate::templates::*;
 const PICO_CSS: &str = include_str!("../assets/pico.min.css");
 const HTMX_JS: &str = include_str!("../assets/htmx.min.js");
 const CHART_JS: &str = include_str!("../assets/chart.min.js");
+const FAVICON_SVG: &str = include_str!("../assets/favicon.svg");
 
 // ---------------------------------------------------------------------------
 // Router
@@ -357,7 +358,12 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
         })
         .collect();
 
-    let tpl = AccountsTablePartial { accounts: rows };
+    let pool_summary = build_pool_summary(&rows);
+
+    let tpl = AccountsTablePartial {
+        accounts: rows,
+        pool_summary,
+    };
     match tpl.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -365,6 +371,129 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
             Html("<p>Error rendering accounts table</p>".to_string()).into_response()
         }
     }
+}
+
+/// Build pool-level aggregate usage summary from all account rows.
+fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
+    use std::collections::BTreeMap;
+
+    // Only aggregate non-paused accounts that have usage data
+    let active_rows: Vec<&AccountRow> = rows
+        .iter()
+        .filter(|r| !r.paused && r.has_usage && !r.usage_windows.is_empty())
+        .collect();
+
+    if active_rows.is_empty() {
+        return None;
+    }
+
+    // Group windows by label, collecting pct values and reset texts
+    let mut groups: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
+
+    // Maintain insertion order using a separate vec
+    let label_order = ["5-hour", "Weekly", "Opus (Wk)", "Sonnet (Wk)", "Daily", "Monthly"];
+
+    for row in &active_rows {
+        for w in &row.usage_windows {
+            if w.pct >= 0 {
+                groups
+                    .entry(w.label.clone())
+                    .or_default()
+                    .push((w.pct, w.reset_text.clone()));
+            }
+        }
+    }
+
+    let mut windows: Vec<PoolWindowSummary> = Vec::new();
+
+    // Add windows in preferred order first, then any remaining
+    for &label in &label_order {
+        if let Some(entries) = groups.remove(label) {
+            windows.push(build_pool_window(label.to_string(), &entries));
+        }
+    }
+    // Any remaining labels not in our preferred order
+    for (label, entries) in groups {
+        windows.push(build_pool_window(label, &entries));
+    }
+
+    if windows.is_empty() {
+        return None;
+    }
+
+    // Traffic light: based on worst avg across windows
+    let max_avg = windows.iter().map(|w| w.avg_pct).max().unwrap_or(0);
+    let (pool_status, status_text) = if max_avg >= 80 {
+        ("red".to_string(), "Constrained \u{2014} defer big jobs".to_string())
+    } else if max_avg >= 50 {
+        ("yellow".to_string(), "Moderate \u{2014} light work preferred".to_string())
+    } else {
+        ("green".to_string(), "All clear \u{2014} launch heavy jobs".to_string())
+    };
+
+    let total_accounts = rows.iter().filter(|r| !r.paused).count();
+    let available_accounts = rows
+        .iter()
+        .filter(|r| {
+            !r.paused && r.rate_limit_status == "OK"
+        })
+        .count();
+
+    Some(PoolUsageSummary {
+        windows,
+        total_accounts,
+        available_accounts,
+        pool_status,
+        status_text,
+    })
+}
+
+/// Build a single pool window summary from collected (pct, reset_text) pairs.
+fn build_pool_window(label: String, entries: &[(i64, String)]) -> PoolWindowSummary {
+    let count = entries.len();
+    let sum: i64 = entries.iter().map(|(p, _)| *p).sum();
+    let avg = sum / count as i64;
+    let max = entries.iter().map(|(p, _)| *p).max().unwrap_or(0);
+
+    // Pick earliest non-empty reset text
+    let next_reset = entries
+        .iter()
+        .filter(|(_, r)| !r.is_empty())
+        .map(|(_, r)| r.as_str())
+        .min_by(|a, b| {
+            // Simple heuristic: shorter reset texts are sooner
+            // "resetting" < "5m" < "2h 15m" < "3d 2h"
+            parse_reset_minutes(a).cmp(&parse_reset_minutes(b))
+        })
+        .unwrap_or("")
+        .to_string();
+
+    PoolWindowSummary {
+        label,
+        avg_pct: avg,
+        max_pct: max,
+        css_class: utilization_class(avg),
+        account_count: count,
+        next_reset,
+    }
+}
+
+/// Parse a reset text like "2h 15m", "45m", "resetting" into approximate minutes for sorting.
+fn parse_reset_minutes(s: &str) -> i64 {
+    if s == "resetting" {
+        return 0;
+    }
+    let mut total = 0i64;
+    for part in s.split_whitespace() {
+        if let Some(h) = part.strip_suffix('h') {
+            total += h.parse::<i64>().unwrap_or(0) * 60;
+        } else if let Some(m) = part.strip_suffix('m') {
+            total += m.parse::<i64>().unwrap_or(0);
+        } else if let Some(d) = part.strip_suffix('d') {
+            total += d.parse::<i64>().unwrap_or(0) * 1440;
+        }
+    }
+    total
 }
 
 /// Build usage window display data from the UsageCache.
@@ -884,6 +1013,15 @@ async fn serve_asset(Path(file): Path<String>) -> Response {
                 (header::CACHE_CONTROL, "public, max-age=86400"),
             ],
             CHART_JS,
+        )
+            .into_response(),
+        "favicon.svg" => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/svg+xml"),
+                (header::CACHE_CONTROL, "public, max-age=604800"),
+            ],
+            FAVICON_SVG,
         )
             .into_response(),
         _ => (StatusCode::NOT_FOUND, "Not found").into_response(),

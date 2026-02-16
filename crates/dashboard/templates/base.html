@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>better-ccflare — Dashboard</title>
+  <title>better-ccflare-rs — Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/dashboard/assets/favicon.svg">
   <link rel="stylesheet" href="/dashboard/assets/pico.min.css">
   <style>
     :root {
@@ -300,6 +301,61 @@
     .acct-usage-label { font-size: 0.75rem; color: var(--pico-muted-color); }
     .acct-usage-pct { font-size: 0.75rem; font-weight: 600; }
     .acct-usage-reset { font-size: 0.7rem; color: var(--pico-muted-color); }
+    /* Pool usage summary */
+    .pool-summary {
+      border: 1px solid var(--pico-muted-border-color);
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.75rem;
+      background: color-mix(in srgb, var(--pico-background-color) 95%, var(--pico-primary) 5%);
+    }
+    [data-theme="dark"] .pool-summary {
+      background: rgba(255,255,255,0.02);
+      border-color: var(--bccf-border);
+    }
+    .pool-summary-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .pool-status-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .pool-status-dot.green { background: var(--bccf-success); }
+    .pool-status-dot.yellow { background: var(--bccf-warning); }
+    .pool-status-dot.red { background: var(--bccf-danger); }
+    .pool-windows {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .pool-window {
+      flex: 1;
+      min-width: 180px;
+      max-width: 320px;
+    }
+    .pool-window-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 4px;
+      font-size: 0.75rem;
+    }
+    .pool-window-label { color: var(--pico-muted-color); }
+    .pool-window-pct { font-weight: 600; }
+    .pool-window-detail {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 3px;
+      font-size: 0.7rem;
+      color: var(--pico-muted-color);
+    }
     /* Tab content loading indicator */
     .htmx-request #tab-content { opacity: 0.6; transition: opacity var(--bccf-transition-fast); }
     /* Mobile */
@@ -339,7 +395,7 @@
   <button class="hamburger" onclick="document.querySelector('.sidebar').classList.toggle('open')" aria-label="Menu">☰</button>
   <aside class="sidebar" id="sidebar">
     <a class="sidebar-brand" href="/dashboard">
-      ⚡ better-ccflare
+      ⚡ better-ccflare-rs
       <small>v{{ version }}</small>
     </a>
     <nav>
