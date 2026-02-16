@@ -212,11 +212,31 @@ pub struct AccountRow {
     pub is_next: bool,
 }
 
+/// Aggregate pool usage summary shown above account cards.
+pub struct PoolUsageSummary {
+    pub windows: Vec<PoolWindowSummary>,
+    pub total_accounts: usize,
+    pub available_accounts: usize,
+    pub pool_status: String,
+    pub status_text: String,
+}
+
+/// One window in the pool usage summary (e.g. "5-hour", "Weekly").
+pub struct PoolWindowSummary {
+    pub label: String,
+    pub avg_pct: i64,
+    pub max_pct: i64,
+    pub css_class: String,
+    pub account_count: usize,
+    pub next_reset: String,
+}
+
 /// Accounts table partial — rendered by `/dashboard/partials/accounts-table`.
 #[derive(Template)]
 #[template(path = "partials/accounts_table.html")]
 pub struct AccountsTablePartial {
     pub accounts: Vec<AccountRow>,
+    pub pool_summary: Option<PoolUsageSummary>,
 }
 
 /// A single account stats entry for the stats table partial.

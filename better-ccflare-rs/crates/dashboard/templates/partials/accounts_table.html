@@ -2,9 +2,36 @@
 <p>No accounts configured.</p>
 <details>
   <summary>Add account via CLI</summary>
-  <pre><code>better-ccflare --add-account my-account --mode claude-oauth --priority 0</code></pre>
+  <pre><code>better-ccflare-rs --add-account my-account --mode claude-oauth --priority 0</code></pre>
 </details>
 {% else %}
+{% if let Some(ps) = pool_summary %}
+<div class="pool-summary">
+  <div class="pool-summary-header">
+    <span class="pool-status-dot {{ ps.pool_status }}"></span>
+    <span>{{ ps.status_text }} &mdash; {{ ps.available_accounts }}/{{ ps.total_accounts }} accounts available</span>
+  </div>
+  {% if !ps.windows.is_empty() %}
+  <div class="pool-windows">
+    {% for w in ps.windows %}
+    <div class="pool-window">
+      <div class="pool-window-header">
+        <span class="pool-window-label">{{ w.label }}</span>
+        <span class="pool-window-pct">{{ w.avg_pct }}% avg</span>
+      </div>
+      <div class="usage-bar" style="height:8px;border-radius:4px;">
+        <div class="usage-fill {{ w.css_class }}" style="width:{{ w.avg_pct }}%;border-radius:4px;transition:width 700ms ease-out;"></div>
+      </div>
+      <div class="pool-window-detail">
+        <span>max {{ w.max_pct }}% ({{ w.account_count }} acct{% if w.account_count != 1 %}s{% endif %})</span>
+        {% if !w.next_reset.is_empty() %}<span>resets in {{ w.next_reset }}</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 <div class="acct-list">
   {% for acct in accounts %}
   <div class="acct-card{% if acct.is_next %} acct-active{% endif %}" id="acct-row-{{ acct.id }}">
