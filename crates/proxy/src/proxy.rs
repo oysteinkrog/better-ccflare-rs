@@ -5,7 +5,8 @@
 //! handles rate limits and auth failures with failover, streams responses
 //! back to clients, and sends analytics to the post-processor.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use axum::body::Body;
@@ -34,6 +35,103 @@ use crate::token_manager::TokenManager;
 
 /// Maximum request body size (10 MB).
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+/// TTL for cached accounts list (seconds).
+/// Disabled during integration tests to avoid cross-test interference.
+#[cfg(not(feature = "integration"))]
+const ACCOUNTS_CACHE_TTL_SECS: u64 = 5;
+#[cfg(feature = "integration")]
+const ACCOUNTS_CACHE_TTL_SECS: u64 = 0;
+
+// ---------------------------------------------------------------------------
+// Accounts cache — avoids DB query per request
+// ---------------------------------------------------------------------------
+
+struct CachedAccounts {
+    accounts: Arc<Vec<bccf_core::types::Account>>,
+    fetched_at: Instant,
+}
+
+fn accounts_cache() -> &'static RwLock<Option<CachedAccounts>> {
+    static CACHE: OnceLock<RwLock<Option<CachedAccounts>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
+}
+
+/// Get accounts, using cache if fresh enough, otherwise query DB.
+/// Returns Arc to avoid cloning 10+ Account structs on every cache hit.
+async fn get_accounts_cached(
+    pool: &DbPool,
+) -> Result<Arc<Vec<bccf_core::types::Account>>, String> {
+    // Check cache (read lock) — Arc::clone is a single atomic op
+    {
+        let cache = accounts_cache().read().unwrap();
+        if let Some(ref entry) = *cache {
+            if entry.fetched_at.elapsed().as_secs() < ACCOUNTS_CACHE_TTL_SECS {
+                return Ok(Arc::clone(&entry.accounts));
+            }
+        }
+    }
+
+    // Cache miss — query via spawn_blocking
+    let pool_clone = pool.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = pool_clone.get()?;
+        account_repo::find_all(&conn)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(accounts)) => {
+            let accounts = Arc::new(accounts);
+            // Update cache
+            let mut cache = accounts_cache().write().unwrap();
+            *cache = Some(CachedAccounts {
+                accounts: Arc::clone(&accounts),
+                fetched_at: Instant::now(),
+            });
+            Ok(accounts)
+        }
+        Ok(Err(e)) => Err(format!("Failed to load accounts: {e}")),
+        Err(e) => Err(format!("Account loading task failed: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model mapping cache — avoids re-parsing JSON per request
+// ---------------------------------------------------------------------------
+
+fn model_mapping_cache() -> &'static RwLock<HashMap<String, HashMap<String, String>>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, HashMap<String, String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Get parsed model mappings for an account, caching the parsed result.
+fn get_model_mapping<'a>(
+    account_id: &str,
+    mappings_json: &str,
+    model: &str,
+) -> Option<String> {
+    // Check cache
+    {
+        let cache = model_mapping_cache().read().unwrap();
+        if let Some(mappings) = cache.get(account_id) {
+            return mappings.get(model).cloned();
+        }
+    }
+
+    // Parse and cache
+    let parsed: HashMap<String, String> = match serde_json::from_str(mappings_json) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    let result = parsed.get(model).cloned();
+
+    let mut cache = model_mapping_cache().write().unwrap();
+    cache.insert(account_id.to_string(), parsed);
+
+    result
+}
 
 /// Main proxy handler for `/v1/messages` and `/v1/*` routes.
 pub async fn proxy_handler(
@@ -90,24 +188,11 @@ pub async fn proxy_handler(
         );
     };
 
-    // Load accounts from DB (via spawn_blocking to avoid blocking async runtime)
-    let pool_clone = pool.clone();
-    let accounts = match tokio::task::spawn_blocking(move || {
-        let conn = pool_clone.get()?;
-        account_repo::find_all(&conn)
-    })
-    .await
-    {
-        Ok(Ok(accs)) => accs,
-        Ok(Err(e)) => {
-            error!("Failed to load accounts: {e}");
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Failed to load accounts",
-            );
-        }
+    // Load accounts (cached — avoids DB query per request)
+    let accounts = match get_accounts_cached(pool).await {
+        Ok(accs) => accs,
         Err(e) => {
-            error!("Account loading task failed: {e}");
+            error!("{e}");
             return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Failed to load accounts",
@@ -141,17 +226,20 @@ pub async fn proxy_handler(
         (sorted, vec![])
     };
 
-    // Persist session resets (fire-and-forget via spawn_blocking)
+    // Persist session resets (fire-and-forget via spawn_blocking, batched)
     if !session_resets.is_empty() {
         let pool_c = pool.clone();
         tokio::task::spawn_blocking(move || {
             if let Ok(conn) = pool_c.get() {
+                // Batch all resets in a single transaction
+                let _ = conn.execute_batch("BEGIN");
                 for reset in &session_resets {
                     let _ = conn.execute(
                         "UPDATE accounts SET session_start = ?1, session_request_count = 0 WHERE id = ?2",
                         rusqlite::params![reset.new_session_start, reset.account_id],
                     );
                 }
+                let _ = conn.execute_batch("COMMIT");
             }
         });
     }
@@ -183,7 +271,6 @@ pub async fn proxy_handler(
             let post_processor = post_processor.clone();
             let auth_info = auth_info.clone();
             let requested_model = requested_model.clone();
-            let start_time = start_time;
             let client = http_client.clone();
             let base_headers = headers.clone(); // keep as axum HeaderMap
 
@@ -226,43 +313,24 @@ pub async fn proxy_handler(
                 // Build upstream URL
                 let url = provider.build_url(&req_meta.path, &req_meta.query, Some(&account));
 
-                // Prepare headers (start from pre-converted reqwest headers)
+                // Prepare headers — provider mutates axum headers (strips hop-by-hop, adds auth),
+                // then convert to reqwest format once (no back-and-forth)
                 let upstream_headers = {
-                    let mut axum_headers = axum_headers_from_reqwest(&base_headers);
+                    let mut h = base_headers.clone();
                     provider.prepare_headers(
-                        &mut axum_headers,
+                        &mut h,
                         account.access_token.as_deref(),
                         account.api_key.as_deref(),
                     );
-                    reqwest_headers(&axum_headers)
+                    reqwest_headers(&h)
                 };
 
                 // Transform request body (model mapping, etc.)
                 let final_body = match provider.transform_request_body(&req_body, Some(&account)).await {
                     Ok(Some(transformed)) => Bytes::from(transformed),
                     Ok(None) => {
-                        // Apply model mappings from account config if present
-                        if let Some(ref mappings_json) = account.model_mappings {
-                            if let Some(ref model) = requested_model {
-                                if let Ok(mappings) = serde_json::from_str::<serde_json::Value>(mappings_json) {
-                                    if let Some(mapped) = mappings.get(model).and_then(|v| v.as_str()) {
-                                        if let Some(replaced) = replace_model_in_body(&req_body, mapped) {
-                                            replaced
-                                        } else {
-                                            req_body.clone()
-                                        }
-                                    } else {
-                                        req_body.clone()
-                                    }
-                                } else {
-                                    req_body.clone()
-                                }
-                            } else {
-                                req_body.clone()
-                            }
-                        } else {
-                            req_body.clone()
-                        }
+                        // Apply model mappings from account config (cached parse)
+                        apply_model_mapping(&account, &requested_model, &req_body)
                     }
                     Err(e) => {
                         warn!("Body transform failed: {e}");
@@ -406,7 +474,7 @@ pub async fn proxy_handler(
 
     match result {
         Some((response, succeeded_account_id)) => {
-            // Update stats (fire-and-forget via spawn_blocking)
+            // Batch stats + rate limit update in a single DB write (fire-and-forget)
             let pool_c = pool.clone();
             tokio::task::spawn_blocking(move || {
                 if let Ok(conn) = pool_c.get() {
@@ -422,6 +490,30 @@ pub async fn proxy_handler(
             StatusCode::SERVICE_UNAVAILABLE,
             "All accounts failed — request could not be proxied",
         ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model mapping helper
+// ---------------------------------------------------------------------------
+
+/// Apply model mappings from account config, returning the (possibly transformed) body.
+fn apply_model_mapping(
+    account: &bccf_core::types::Account,
+    requested_model: &Option<String>,
+    req_body: &Bytes,
+) -> Bytes {
+    let Some(ref mappings_json) = account.model_mappings else {
+        return req_body.clone();
+    };
+    let Some(ref model) = requested_model else {
+        return req_body.clone();
+    };
+
+    if let Some(mapped) = get_model_mapping(&account.id, mappings_json, model) {
+        replace_model_in_body(req_body, model, &mapped).unwrap_or_else(|| req_body.clone())
+    } else {
+        req_body.clone()
     }
 }
 
@@ -446,7 +538,7 @@ async fn build_success_response(
     let axum_resp_headers = axum_headers_from_reqwest(&resp_headers);
     let is_streaming = provider.is_streaming_response(&axum_resp_headers);
 
-    // Parse rate limit info and persist (fire-and-forget via spawn_blocking)
+    // Parse rate limit info and batch-persist with request stats (fire-and-forget)
     let rate_info = provider.parse_rate_limit(&axum_resp_headers, status.as_u16());
     if let Some(pool) = state.db_pool::<DbPool>() {
         let pool_c = pool.clone();
@@ -517,10 +609,11 @@ async fn build_success_response(
 
         // Forward relevant headers
         for (name, value) in &resp_headers {
-            if let Ok(name) = axum::http::HeaderName::from_bytes(name.as_ref()) {
-                if let Ok(value) = axum::http::HeaderValue::from_bytes(value.as_ref()) {
-                    builder = builder.header(name, value);
-                }
+            if let (Ok(name), Ok(value)) = (
+                axum::http::HeaderName::from_bytes(name.as_ref()),
+                axum::http::HeaderValue::from_bytes(value.as_ref()),
+            ) {
+                builder = builder.header(name, value);
             }
         }
 
@@ -557,10 +650,11 @@ async fn build_success_response(
             .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
 
         for (name, value) in &resp_headers {
-            if let Ok(name) = axum::http::HeaderName::from_bytes(name.as_ref()) {
-                if let Ok(value) = axum::http::HeaderValue::from_bytes(value.as_ref()) {
-                    builder = builder.header(name, value);
-                }
+            if let (Ok(name), Ok(value)) = (
+                axum::http::HeaderName::from_bytes(name.as_ref()),
+                axum::http::HeaderValue::from_bytes(value.as_ref()),
+            ) {
+                builder = builder.header(name, value);
             }
         }
 

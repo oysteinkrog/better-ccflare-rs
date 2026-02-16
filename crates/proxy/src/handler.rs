@@ -4,6 +4,8 @@
 //! handles rate limits and auth failures with failover, and streams
 //! responses back to clients.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -11,6 +13,16 @@ use tracing::{debug, error, info, warn};
 
 use bccf_core::types::Account;
 use bccf_providers::types::RateLimitInfo;
+
+/// Global request counter for lightweight request IDs.
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Generate a lightweight request ID (timestamp-counter format).
+/// Much cheaper than UUID: no entropy source, no formatting of 128-bit random.
+fn generate_request_id(now: i64) -> String {
+    let counter = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("req-{now}-{counter}")
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,7 +54,7 @@ pub struct RequestMeta {
 impl RequestMeta {
     pub fn new(method: &Method, path: &str, query: &str, now: i64) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: generate_request_id(now),
             method: method.to_string(),
             path: path.to_string(),
             query: query.to_string(),

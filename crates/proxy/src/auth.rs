@@ -8,7 +8,7 @@
 //! computations on every request.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use axum::body::Body;
@@ -56,14 +56,14 @@ struct AuthEnabledCache {
     checked_at: Instant,
 }
 
-fn api_key_cache() -> &'static Mutex<HashMap<String, CachedKeyResult>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, CachedKeyResult>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn api_key_cache() -> &'static RwLock<HashMap<String, CachedKeyResult>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, CachedKeyResult>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn auth_enabled_cache() -> &'static Mutex<Option<AuthEnabledCache>> {
-    static CACHE: OnceLock<Mutex<Option<AuthEnabledCache>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
+fn auth_enabled_cache() -> &'static RwLock<Option<AuthEnabledCache>> {
+    static CACHE: OnceLock<RwLock<Option<AuthEnabledCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +194,9 @@ fn count_active_api_keys_sync(pool: &DbPool) -> i64 {
 
 /// Check if auth is enabled (cached for 10 seconds).
 async fn is_auth_enabled(pool: &DbPool) -> bool {
-    // Check cache
+    // Check cache (read lock — concurrent readers allowed)
     {
-        let cache = auth_enabled_cache().lock().unwrap();
+        let cache = auth_enabled_cache().read().unwrap();
         if let Some(ref entry) = *cache {
             if entry.checked_at.elapsed().as_secs() < AUTH_ENABLED_CACHE_TTL_SECS {
                 return entry.enabled;
@@ -210,9 +210,9 @@ async fn is_auth_enabled(pool: &DbPool) -> bool {
         .await
         .unwrap_or(false);
 
-    // Update cache
+    // Update cache (write lock)
     {
-        let mut cache = auth_enabled_cache().lock().unwrap();
+        let mut cache = auth_enabled_cache().write().unwrap();
         *cache = Some(AuthEnabledCache {
             enabled,
             checked_at: Instant::now(),
@@ -236,10 +236,12 @@ fn hash_for_cache(api_key: &str) -> String {
 /// On cache miss, offloads the scrypt verification to a blocking thread.
 /// Cache keys are SHA-256 hashed to avoid storing plaintext API keys in memory.
 async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
-    // Check cache
+    let cache_key = hash_for_cache(api_key);
+
+    // Check cache (read lock — concurrent readers allowed)
     {
-        let cache = api_key_cache().lock().unwrap();
-        if let Some(entry) = cache.get(api_key) {
+        let cache = api_key_cache().read().unwrap();
+        if let Some(entry) = cache.get(&cache_key) {
             if entry.verified_at.elapsed().as_secs() < API_KEY_CACHE_TTL_SECS {
                 return Some((entry.id.clone(), entry.name.clone()));
             }
@@ -254,9 +256,19 @@ async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, 
         .ok()
         .flatten();
 
-    // Cache successful result
+    // Cache successful result (write lock)
     if let Some((ref id, ref name)) = result {
-        let mut cache = api_key_cache().lock().unwrap();
+        let mut cache = api_key_cache().write().unwrap();
+        // Evict oldest entries if cache is too large
+        if cache.len() >= API_KEY_CACHE_MAX_SIZE {
+            if let Some(oldest_key) = cache
+                .iter()
+                .min_by_key(|(_, v)| v.verified_at)
+                .map(|(k, _)| k.clone())
+            {
+                cache.remove(&oldest_key);
+            }
+        }
         cache.insert(
             cache_key,
             CachedKeyResult {
