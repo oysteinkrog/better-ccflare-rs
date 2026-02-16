@@ -9,6 +9,7 @@ bccf-database = { workspace = true }
 bccf-dashboard = { workspace = true }
 bccf-providers = { workspace = true }
 bccf-load-balancer = { workspace = true }
+arc-swap = { workspace = true }
 async-stream = "0.3"
 async-trait = { workspace = true }
 bytes = "1"

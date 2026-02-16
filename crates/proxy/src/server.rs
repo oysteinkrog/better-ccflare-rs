@@ -315,6 +315,9 @@ pub async fn start(
 async fn run_startup_maintenance(state: &AppState) {
     info!("Running startup maintenance...");
 
+    // Fetch remote pricing (non-blocking, falls back to bundled on failure)
+    crate::pricing::refresh_remote_pricing().await;
+
     let Some(pool) = state.db_pool::<DbPool>() else {
         warn!("No database pool — skipping startup maintenance");
         return;
