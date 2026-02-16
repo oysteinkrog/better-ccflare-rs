@@ -13,6 +13,8 @@ use bccf_core::state::AppStateBuilder;
 use bccf_database::paths::{ensure_db_dir, resolve_db_path};
 use bccf_database::pool::{create_pool, PoolConfig};
 use bccf_database::schema;
+use bccf_proxy::auto_refresh::{AutoRefreshScheduler, RefreshAccountSource, RefreshableAccount};
+use bccf_proxy::token_health::{TokenHealthService, HEALTH_CHECK_INTERVAL_MS};
 use bccf_providers::usage_polling::{AccountSource, PollableAccount, UsageCache, UsagePollingService};
 use bccf_providers::ProviderRegistry;
 
@@ -81,6 +83,9 @@ async fn run(cli: Cli) -> Result<()> {
         reqwest::Client::new(),
     );
 
+    // Clone pool before moving into AppState (needed for background services)
+    let bg_pool = pool.clone();
+
     let state = Arc::new(
         AppStateBuilder::new(config)
             .db_pool(pool)
@@ -106,10 +111,88 @@ async fn run(cli: Cli) -> Result<()> {
         server_config.tls_cert_path = Some(cert.clone());
     }
 
-    let coordinator = bccf_proxy::shutdown::ShutdownCoordinator::new();
+    // Start auto-refresh scheduler (sends dummy requests to keep OAuth usage windows fresh)
+    let refresh_source = Arc::new(DbRefreshSource { pool: bg_pool.clone() });
+    let auto_refresh = AutoRefreshScheduler::start(
+        refresh_source,
+        server_config.port,
+        server_config.tls_enabled,
+    );
+
+    // Start token health monitoring service (periodic health checks every 6h)
+    let health_pool = bg_pool.clone();
+    let token_health_svc = TokenHealthService::start(
+        move || {
+            let Ok(conn) = health_pool.get() else {
+                return Vec::new();
+            };
+            bccf_database::repositories::account::find_all(&conn).unwrap_or_default()
+        },
+        HEALTH_CHECK_INTERVAL_MS,
+    );
+
+    // Register shutdown steps for background services
+    let mut coordinator = bccf_proxy::shutdown::ShutdownCoordinator::new();
+    coordinator.register("auto-refresh scheduler", move || async move {
+        auto_refresh.shutdown().await;
+    });
+    coordinator.register("token health service", move || async move {
+        token_health_svc.stop();
+    });
+
     bccf_proxy::server::start(state, server_config, coordinator).await?;
 
     Ok(())
+}
+
+/// Database-backed account source for auto-refresh scheduling.
+struct DbRefreshSource {
+    pool: bccf_database::DbPool,
+}
+
+impl RefreshAccountSource for DbRefreshSource {
+    fn get_refreshable_accounts(&self) -> Vec<RefreshableAccount> {
+        let Ok(conn) = self.pool.get() else {
+            return Vec::new();
+        };
+        // Query accounts with auto_refresh_enabled and anthropic/claude-oauth provider
+        let accounts = match conn.prepare(
+            "SELECT id, name, rate_limit_reset FROM accounts \
+             WHERE auto_refresh_enabled = 1 \
+             AND provider IN ('anthropic', 'claude-oauth') \
+             AND paused = 0",
+        ) {
+            Ok(mut stmt) => stmt
+                .query_map([], |row| {
+                    Ok(RefreshableAccount {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        rate_limit_reset: row.get(2)?,
+                    })
+                })
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        accounts
+    }
+
+    fn get_active_refresh_account_ids(&self) -> Vec<String> {
+        let Ok(conn) = self.pool.get() else {
+            return Vec::new();
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT id FROM accounts \
+             WHERE auto_refresh_enabled = 1 \
+             AND provider IN ('anthropic', 'claude-oauth')",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Database-backed account source for usage polling.
