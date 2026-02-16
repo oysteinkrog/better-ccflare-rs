@@ -8,7 +8,7 @@
 //! NanoGPT pricing is handled separately with in-memory 24h cache.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use arc_swap::ArcSwap;
 use tracing::{info, warn};
@@ -359,6 +359,10 @@ pub async fn refresh_remote_pricing() {
 
     let count = pricing.len();
     remote_pricing().store(Arc::new(pricing));
+    // Clear fuzzy cache since remote pricing changed
+    if let Ok(mut cache) = fuzzy_cache().write() {
+        cache.clear();
+    }
     info!("Loaded {count} model prices from LiteLLM");
 }
 
@@ -366,9 +370,15 @@ pub async fn refresh_remote_pricing() {
 // Pricing catalog
 // ---------------------------------------------------------------------------
 
+/// Cache for fuzzy pricing lookups (avoids repeated O(n) scans).
+fn fuzzy_cache() -> &'static RwLock<HashMap<String, Option<ModelCost>>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, Option<ModelCost>>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
 /// Get the pricing for a model, searching remote then bundled pricing with fuzzy matching.
 ///
-/// Tries exact match first (remote, then bundled), then substring matching.
+/// Tries exact match first (remote, then bundled), then cached fuzzy, then linear fuzzy scan.
 pub fn get_model_pricing(model: &str) -> Option<ModelCost> {
     // 1. Check remote pricing (exact match)
     let remote = remote_pricing().load();
@@ -382,19 +392,37 @@ pub fn get_model_pricing(model: &str) -> Option<ModelCost> {
         return Some(*cost);
     }
 
-    // 3. Fuzzy: check remote pricing
+    // 3. Check fuzzy cache
+    {
+        let cache = fuzzy_cache().read().unwrap();
+        if let Some(cached) = cache.get(model) {
+            return *cached;
+        }
+    }
+
+    // 4. Fuzzy: check remote pricing
     let model_lower = model.to_lowercase();
     for (key, cost) in remote.iter() {
         if model_lower.contains(key.as_str()) || key.contains(&*model_lower) {
+            let mut cache = fuzzy_cache().write().unwrap();
+            cache.insert(model.to_string(), Some(*cost));
             return Some(*cost);
         }
     }
 
-    // 4. Fuzzy: check bundled pricing
+    // 5. Fuzzy: check bundled pricing
     for (key, cost) in bundled.iter() {
         if model_lower.contains(key) || key.contains(&*model_lower) {
+            let mut cache = fuzzy_cache().write().unwrap();
+            cache.insert(model.to_string(), Some(*cost));
             return Some(*cost);
         }
+    }
+
+    // Cache the miss too (avoids repeated scans for unknown models)
+    {
+        let mut cache = fuzzy_cache().write().unwrap();
+        cache.insert(model.to_string(), None);
     }
 
     None
