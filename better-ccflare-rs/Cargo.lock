@@ -412,6 +412,7 @@ dependencies = [
 name = "bccf-proxy"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-stream",
  "async-trait",
  "axum",

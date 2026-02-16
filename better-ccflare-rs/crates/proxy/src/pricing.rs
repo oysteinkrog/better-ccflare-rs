@@ -1,16 +1,17 @@
 //! Token pricing engine — three-tier pricing with bundled fallback.
 //!
 //! Pricing sources (in priority order):
-//! 1. Remote API (`models.dev/api.json`) with 24-hour file cache
+//! 1. Remote LiteLLM pricing (fetched on startup, refreshed every 24h)
 //! 2. Bundled fallback (hardcoded prices for known models)
 //! 3. Returns 0 cost for unknown models (warns once)
 //!
 //! NanoGPT pricing is handled separately with in-memory 24h cache.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use tracing::warn;
+use arc_swap::ArcSwap;
+use tracing::{info, warn};
 
 use crate::streaming::StreamUsage;
 
@@ -18,7 +19,11 @@ use crate::streaming::StreamUsage;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Models.dev cache TTL (24 hours).
+/// LiteLLM pricing JSON URL.
+const LITELLM_PRICING_URL: &str =
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+
+/// Remote pricing refresh interval (24 hours).
 pub const REMOTE_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -55,6 +60,16 @@ impl From<&StreamUsage> for TokenBreakdown {
 }
 
 // ---------------------------------------------------------------------------
+// Remote pricing store (ArcSwap)
+// ---------------------------------------------------------------------------
+
+/// Global remote pricing table, populated from LiteLLM on startup.
+fn remote_pricing() -> &'static ArcSwap<HashMap<String, ModelCost>> {
+    static STORE: OnceLock<ArcSwap<HashMap<String, ModelCost>>> = OnceLock::new();
+    STORE.get_or_init(|| ArcSwap::from_pointee(HashMap::new()))
+}
+
+// ---------------------------------------------------------------------------
 // Bundled pricing
 // ---------------------------------------------------------------------------
 
@@ -65,6 +80,16 @@ fn bundled_pricing() -> &'static HashMap<&'static str, ModelCost> {
         let mut m = HashMap::new();
 
         // Anthropic Claude models (dollars per 1M tokens)
+        // Haiku 3
+        m.insert(
+            "claude-3-haiku-20240307",
+            ModelCost {
+                input: 0.25,
+                output: 1.25,
+                cache_read: 0.03,
+                cache_write: 0.30,
+            },
+        );
         // Haiku 3.5
         m.insert(
             "claude-3-5-haiku-20241022",
@@ -103,6 +128,26 @@ fn bundled_pricing() -> &'static HashMap<&'static str, ModelCost> {
                 cache_write: 3.75,
             },
         );
+        // Haiku 4.5
+        m.insert(
+            "claude-haiku-4-5-20251001",
+            ModelCost {
+                input: 1.0,
+                output: 5.0,
+                cache_read: 0.1,
+                cache_write: 1.25,
+            },
+        );
+        // Sonnet 3.7
+        m.insert(
+            "claude-3-7-sonnet-20250219",
+            ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+            },
+        );
         // Sonnet 4 / 4.5
         m.insert(
             "claude-sonnet-4-20250514",
@@ -122,7 +167,7 @@ fn bundled_pricing() -> &'static HashMap<&'static str, ModelCost> {
                 cache_write: 3.75,
             },
         );
-        // Opus 4 / 4.1
+        // Opus 4
         m.insert(
             "claude-opus-4-20250514",
             ModelCost {
@@ -135,6 +180,16 @@ fn bundled_pricing() -> &'static HashMap<&'static str, ModelCost> {
         // Opus 4.5
         m.insert(
             "claude-opus-4-5-20250414",
+            ModelCost {
+                input: 5.0,
+                output: 25.0,
+                cache_read: 0.5,
+                cache_write: 6.25,
+            },
+        );
+        // Opus 4.6
+        m.insert(
+            "claude-opus-4-6",
             ModelCost {
                 input: 5.0,
                 output: 25.0,
@@ -207,23 +262,136 @@ fn bundled_pricing() -> &'static HashMap<&'static str, ModelCost> {
 }
 
 // ---------------------------------------------------------------------------
+// Remote pricing fetch
+// ---------------------------------------------------------------------------
+
+/// Per-token cost to per-million-token cost.
+fn per_token_to_per_mtok(per_token: f64) -> f64 {
+    per_token * 1_000_000.0
+}
+
+/// Fetch pricing from LiteLLM and store in the global ArcSwap.
+///
+/// Only keeps bare model keys (no provider prefix like "anthropic." or "azure_ai/").
+/// Models without `input_cost_per_token` are skipped.
+pub async fn refresh_remote_pricing() {
+    info!("Fetching remote pricing from LiteLLM...");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build();
+
+    let client = match client {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to build HTTP client for pricing fetch: {e}");
+            return;
+        }
+    };
+
+    let resp = match client.get(LITELLM_PRICING_URL).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to fetch LiteLLM pricing: {e}");
+            return;
+        }
+    };
+
+    if !resp.status().is_success() {
+        warn!(
+            status = %resp.status(),
+            "LiteLLM pricing fetch returned non-200"
+        );
+        return;
+    }
+
+    let body = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("Failed to read LiteLLM pricing response body: {e}");
+            return;
+        }
+    };
+
+    let raw: HashMap<String, serde_json::Value> = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Failed to parse LiteLLM pricing JSON: {e}");
+            return;
+        }
+    };
+
+    let mut pricing = HashMap::new();
+
+    for (key, obj) in &raw {
+        // Skip provider-prefixed keys (e.g. "anthropic.claude-*", "azure_ai/claude-*")
+        if key.contains('/') || key.contains('.') {
+            continue;
+        }
+
+        let input = match obj.get("input_cost_per_token").and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let output = obj
+            .get("output_cost_per_token")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let cache_read = obj
+            .get("cache_read_input_token_cost")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let cache_write = obj
+            .get("cache_creation_input_token_cost")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        pricing.insert(
+            key.clone(),
+            ModelCost {
+                input: per_token_to_per_mtok(input),
+                output: per_token_to_per_mtok(output),
+                cache_read: per_token_to_per_mtok(cache_read),
+                cache_write: per_token_to_per_mtok(cache_write),
+            },
+        );
+    }
+
+    let count = pricing.len();
+    remote_pricing().store(Arc::new(pricing));
+    info!("Loaded {count} model prices from LiteLLM");
+}
+
+// ---------------------------------------------------------------------------
 // Pricing catalog
 // ---------------------------------------------------------------------------
 
-/// Get the pricing for a model, searching bundled pricing with fuzzy matching.
+/// Get the pricing for a model, searching remote then bundled pricing with fuzzy matching.
 ///
-/// Tries exact match first, then substring matching against known patterns.
+/// Tries exact match first (remote, then bundled), then substring matching.
 pub fn get_model_pricing(model: &str) -> Option<ModelCost> {
-    let pricing = bundled_pricing();
-
-    // Exact match
-    if let Some(cost) = pricing.get(model) {
+    // 1. Check remote pricing (exact match)
+    let remote = remote_pricing().load();
+    if let Some(cost) = remote.get(model) {
         return Some(*cost);
     }
 
-    // Fuzzy: check if any bundled key is a substring of the model
+    // 2. Check bundled pricing (exact match)
+    let bundled = bundled_pricing();
+    if let Some(cost) = bundled.get(model) {
+        return Some(*cost);
+    }
+
+    // 3. Fuzzy: check remote pricing
     let model_lower = model.to_lowercase();
-    for (key, cost) in pricing.iter() {
+    for (key, cost) in remote.iter() {
+        if model_lower.contains(key.as_str()) || key.contains(&*model_lower) {
+            return Some(*cost);
+        }
+    }
+
+    // 4. Fuzzy: check bundled pricing
+    for (key, cost) in bundled.iter() {
         if model_lower.contains(key) || key.contains(&*model_lower) {
             return Some(*cost);
         }
@@ -335,5 +503,35 @@ mod tests {
         assert_eq!(breakdown.output_tokens, 50);
         assert_eq!(breakdown.cache_read_input_tokens, 0);
         assert_eq!(breakdown.cache_creation_input_tokens, 10);
+    }
+
+    #[test]
+    fn per_token_to_per_mtok_conversion() {
+        // 3e-06 per token = 3.0 per MTok
+        assert!((per_token_to_per_mtok(3e-06) - 3.0).abs() < 1e-10);
+        // 1.5e-05 per token = 15.0 per MTok
+        assert!((per_token_to_per_mtok(1.5e-05) - 15.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn remote_pricing_overrides_bundled() {
+        // Store a custom price in remote
+        let mut custom = HashMap::new();
+        custom.insert(
+            "claude-sonnet-4-5-20250929".to_string(),
+            ModelCost {
+                input: 99.0,
+                output: 99.0,
+                cache_read: 99.0,
+                cache_write: 99.0,
+            },
+        );
+        remote_pricing().store(Arc::new(custom));
+
+        let cost = get_model_pricing("claude-sonnet-4-5-20250929").unwrap();
+        assert!((cost.input - 99.0).abs() < f64::EPSILON);
+
+        // Restore empty remote so other tests use bundled
+        remote_pricing().store(Arc::new(HashMap::new()));
     }
 }
