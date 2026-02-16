@@ -26,8 +26,8 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            max_size: 5,
-            min_idle: Some(1),
+            max_size: 10,
+            min_idle: Some(2),
         }
     }
 }
@@ -41,8 +41,8 @@ pub fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
         PRAGMA journal_mode = WAL;
         PRAGMA busy_timeout = 10000;
         PRAGMA cache_size = -10000;
-        PRAGMA synchronous = FULL;
-        PRAGMA mmap_size = 0;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA mmap_size = 268435456;
         PRAGMA temp_store = MEMORY;
         PRAGMA foreign_keys = ON;
         PRAGMA wal_autocheckpoint = 1000;
@@ -71,6 +71,7 @@ pub fn create_pool(db_path: &std::path::Path, config: &PoolConfig) -> Result<DbP
     let pool = Pool::builder()
         .max_size(config.max_size)
         .min_idle(config.min_idle)
+        .connection_timeout(std::time::Duration::from_secs(2))
         .connection_customizer(Box::new(PragmaCustomizer))
         .build(manager)?;
 
@@ -169,8 +170,8 @@ mod tests {
         let synchronous: i64 = conn
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .unwrap();
-        // synchronous=FULL is value 2
-        assert_eq!(synchronous, 2);
+        // synchronous=NORMAL is value 1
+        assert_eq!(synchronous, 1);
 
         let temp_store: i64 = conn
             .query_row("PRAGMA temp_store", [], |row| row.get(0))
@@ -182,7 +183,7 @@ mod tests {
     #[test]
     fn pool_config_default() {
         let config = PoolConfig::default();
-        assert_eq!(config.max_size, 5);
-        assert_eq!(config.min_idle, Some(1));
+        assert_eq!(config.max_size, 10);
+        assert_eq!(config.min_idle, Some(2));
     }
 }

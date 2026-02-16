@@ -74,13 +74,21 @@ async fn run(cli: Cli) -> Result<()> {
     let db_receiver = bccf_proxy::post_processor::DbSummaryReceiver::new(pool.clone());
     let post_processor = bccf_proxy::post_processor::spawn_post_processor(db_receiver);
 
+    // Shared HTTP client — reuses TCP connections and TLS sessions across requests
+    let http_client = reqwest::Client::builder()
+        .pool_max_idle_per_host(20)
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to create HTTP client");
+
     // Start usage polling service (fetches utilization from provider APIs)
     let usage_cache = UsageCache::new();
     let account_source = Arc::new(DbAccountSource { pool: pool.clone() });
     let _usage_polling = UsagePollingService::start(
         account_source,
         usage_cache.clone(),
-        reqwest::Client::new(),
+        http_client.clone(),
     );
 
     // Clone pool before moving into AppState (needed for background services)
@@ -94,6 +102,7 @@ async fn run(cli: Cli) -> Result<()> {
             .token_manager(token_manager)
             .async_writer(post_processor)
             .usage_cache(usage_cache)
+            .http_client(http_client)
             .build(),
     );
 

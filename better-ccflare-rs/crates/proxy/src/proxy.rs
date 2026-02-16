@@ -72,7 +72,7 @@ pub async fn proxy_handler(
         meta.agent_used = detect_agent_from_user_agent(ua);
     }
 
-    // Extract model from body
+    // Extract model from body (lightweight — only deserializes the "model" field)
     let requested_model = extract_model_from_body(&body_bytes);
 
     // Extract project from header
@@ -90,27 +90,28 @@ pub async fn proxy_handler(
         );
     };
 
-    // Load accounts from DB
-    let accounts = {
-        let conn = match pool.get() {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to get DB connection: {e}");
-                return error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Database connection failed",
-                );
-            }
-        };
-        match account_repo::find_all(&conn) {
-            Ok(accs) => accs,
-            Err(e) => {
-                error!("Failed to load accounts: {e}");
-                return error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Failed to load accounts",
-                );
-            }
+    // Load accounts from DB (via spawn_blocking to avoid blocking async runtime)
+    let pool_clone = pool.clone();
+    let accounts = match tokio::task::spawn_blocking(move || {
+        let conn = pool_clone.get()?;
+        account_repo::find_all(&conn)
+    })
+    .await
+    {
+        Ok(Ok(accs)) => accs,
+        Ok(Err(e)) => {
+            error!("Failed to load accounts: {e}");
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Failed to load accounts",
+            );
+        }
+        Err(e) => {
+            error!("Account loading task failed: {e}");
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Failed to load accounts",
+            );
         }
     };
 
@@ -140,16 +141,19 @@ pub async fn proxy_handler(
         (sorted, vec![])
     };
 
-    // Persist session resets
+    // Persist session resets (fire-and-forget via spawn_blocking)
     if !session_resets.is_empty() {
-        if let Ok(conn) = pool.get() {
-            for reset in &session_resets {
-                let _ = conn.execute(
-                    "UPDATE accounts SET session_start = ?1, session_request_count = 0 WHERE id = ?2",
-                    rusqlite::params![reset.new_session_start, reset.account_id],
-                );
+        let pool_c = pool.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = pool_c.get() {
+                for reset in &session_resets {
+                    let _ = conn.execute(
+                        "UPDATE accounts SET session_start = ?1, session_request_count = 0 WHERE id = ?2",
+                        rusqlite::params![reset.new_session_start, reset.account_id],
+                    );
+                }
             }
-        }
+        });
     }
 
     if ordered_accounts.is_empty() {
@@ -162,23 +166,26 @@ pub async fn proxy_handler(
     // Get post-processor handle (if available)
     let post_processor = state.async_writer::<PostProcessorHandle>().cloned();
 
-    // Shared HTTP client for all account attempts (reuses connection pool)
-    let http_client = reqwest::Client::new();
+    // Shared HTTP client — reuses connections across requests (stored in AppState)
+    let http_client = state
+        .http_client::<reqwest::Client>()
+        .cloned()
+        .unwrap_or_else(reqwest::Client::new);
 
-    // Try accounts in order
-    let body = Bytes::from(body_bytes.to_vec());
+    // Try accounts in order (body.clone() is O(1) — Bytes is refcounted)
+    let body = body_bytes;
     let result = handler::try_accounts_in_order(
         &ordered_accounts,
         &meta,
         &body,
         |account, req_meta, req_body, attempt| {
             let state = state.clone();
-            let headers = headers.clone();
             let post_processor = post_processor.clone();
             let auth_info = auth_info.clone();
             let requested_model = requested_model.clone();
             let start_time = start_time;
             let client = http_client.clone();
+            let base_headers = headers.clone(); // keep as axum HeaderMap
 
             async move {
                 // Get provider for this account
@@ -219,13 +226,16 @@ pub async fn proxy_handler(
                 // Build upstream URL
                 let url = provider.build_url(&req_meta.path, &req_meta.query, Some(&account));
 
-                // Prepare headers
-                let mut upstream_headers = headers.clone();
-                provider.prepare_headers(
-                    &mut upstream_headers,
-                    account.access_token.as_deref(),
-                    account.api_key.as_deref(),
-                );
+                // Prepare headers (start from pre-converted reqwest headers)
+                let upstream_headers = {
+                    let mut axum_headers = axum_headers_from_reqwest(&base_headers);
+                    provider.prepare_headers(
+                        &mut axum_headers,
+                        account.access_token.as_deref(),
+                        account.api_key.as_deref(),
+                    );
+                    reqwest_headers(&axum_headers)
+                };
 
                 // Transform request body (model mapping, etc.)
                 let final_body = match provider.transform_request_body(&req_body, Some(&account)).await {
@@ -266,7 +276,7 @@ pub async fn proxy_handler(
                         reqwest::Method::from_bytes(req_meta.method.as_bytes()).unwrap_or(reqwest::Method::POST),
                         &url,
                     )
-                    .headers(reqwest_headers(&upstream_headers))
+                    .headers(upstream_headers.clone())
                     .body(final_body.clone())
                     .send()
                     .await;
@@ -284,16 +294,20 @@ pub async fn proxy_handler(
 
                 // Handle rate limit (429)
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let rate_info = provider.parse_rate_limit(&axum_headers(&resp_headers), status.as_u16());
-                    // Mark account as rate-limited in DB
+                    let rate_info = provider.parse_rate_limit(&axum_headers_from_reqwest(&resp_headers), status.as_u16());
+                    // Mark account as rate-limited in DB (fire-and-forget)
                     if let Some(pool) = state.db_pool::<DbPool>() {
-                        if let Ok(conn) = pool.get() {
-                            let until = rate_info.reset_time.unwrap_or(now + 60_000);
-                            let _ = conn.execute(
-                                "UPDATE accounts SET rate_limited_until = ?1 WHERE id = ?2",
-                                rusqlite::params![until, account.id],
-                            );
-                        }
+                        let pool_c = pool.clone();
+                        let until = rate_info.reset_time.unwrap_or(now + 60_000);
+                        let account_id = account.id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            if let Ok(conn) = pool_c.get() {
+                                let _ = conn.execute(
+                                    "UPDATE accounts SET rate_limited_until = ?1 WHERE id = ?2",
+                                    rusqlite::params![until, account_id],
+                                );
+                            }
+                        });
                     }
                     return AccountResult::RateLimited(rate_info);
                 }
@@ -318,7 +332,7 @@ pub async fn proxy_handler(
                                     reqwest::Method::from_bytes(req_meta.method.as_bytes()).unwrap_or(reqwest::Method::POST),
                                     &url,
                                 )
-                                .headers(reqwest_headers(&upstream_headers))
+                                .headers(upstream_headers)
                                 .body(filtered)
                                 .send()
                                 .await;
@@ -392,13 +406,16 @@ pub async fn proxy_handler(
 
     match result {
         Some((response, succeeded_account_id)) => {
-            // Update stats for the account that actually succeeded
-            if let Ok(conn) = pool.get() {
-                let _ = conn.execute(
-                    "UPDATE accounts SET request_count = request_count + 1, total_requests = total_requests + 1, session_request_count = session_request_count + 1, last_used = ?1 WHERE id = ?2",
-                    rusqlite::params![now, succeeded_account_id],
-                );
-            }
+            // Update stats (fire-and-forget via spawn_blocking)
+            let pool_c = pool.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = pool_c.get() {
+                    let _ = conn.execute(
+                        "UPDATE accounts SET request_count = request_count + 1, total_requests = total_requests + 1, session_request_count = session_request_count + 1, last_used = ?1 WHERE id = ?2",
+                        rusqlite::params![now, succeeded_account_id],
+                    );
+                }
+            });
             response
         }
         None => error_response(
@@ -426,22 +443,25 @@ async fn build_success_response(
 ) -> AccountResult {
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
-    let is_streaming = provider.is_streaming_response(&axum_headers(&resp_headers));
+    let axum_resp_headers = axum_headers_from_reqwest(&resp_headers);
+    let is_streaming = provider.is_streaming_response(&axum_resp_headers);
 
-    // Parse rate limit info and persist
-    let rate_info = provider.parse_rate_limit(&axum_headers(&resp_headers), status.as_u16());
+    // Parse rate limit info and persist (fire-and-forget via spawn_blocking)
+    let rate_info = provider.parse_rate_limit(&axum_resp_headers, status.as_u16());
     if let Some(pool) = state.db_pool::<DbPool>() {
-        if let Ok(conn) = pool.get() {
-            let _ = conn.execute(
-                "UPDATE accounts SET rate_limit_status = ?1, rate_limit_remaining = ?2, rate_limit_reset = ?3 WHERE id = ?4",
-                rusqlite::params![
-                    rate_info.status_header,
-                    rate_info.remaining,
-                    rate_info.reset_time,
-                    account.id,
-                ],
-            );
-        }
+        let pool_c = pool.clone();
+        let account_id = account.id.clone();
+        let status_header = rate_info.status_header.clone();
+        let remaining = rate_info.remaining;
+        let reset_time = rate_info.reset_time;
+        tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = pool_c.get() {
+                let _ = conn.execute(
+                    "UPDATE accounts SET rate_limit_status = ?1, rate_limit_remaining = ?2, rate_limit_reset = ?3 WHERE id = ?4",
+                    rusqlite::params![status_header, remaining, reset_time, account_id],
+                );
+            }
+        });
     }
 
     if is_streaming {
@@ -557,7 +577,7 @@ async fn build_success_response(
 
 /// Convert axum HeaderMap to reqwest HeaderMap.
 fn reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
-    let mut out = reqwest::header::HeaderMap::new();
+    let mut out = reqwest::header::HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         if let (Ok(n), Ok(v)) = (
             reqwest::header::HeaderName::from_bytes(name.as_ref()),
@@ -570,8 +590,8 @@ fn reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
 }
 
 /// Convert reqwest HeaderMap to axum HeaderMap.
-fn axum_headers(headers: &reqwest::header::HeaderMap) -> HeaderMap {
-    let mut out = HeaderMap::new();
+fn axum_headers_from_reqwest(headers: &reqwest::header::HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         if let (Ok(n), Ok(v)) = (
             axum::http::HeaderName::from_bytes(name.as_ref()),
