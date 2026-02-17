@@ -139,6 +139,8 @@ fn seed_test_data(pool: &DbPool) {
         auto_refresh_enabled: true,
         custom_endpoint: None,
         model_mappings: None,
+        reserve_percent: 0,
+        reserve_hard: false,
     };
 
     let acc2 = Account {
@@ -165,6 +167,8 @@ fn seed_test_data(pool: &DbPool) {
         auto_refresh_enabled: false,
         custom_endpoint: None,
         model_mappings: None,
+        reserve_percent: 0,
+        reserve_hard: false,
     };
 
     account_repo::create(&conn, &acc1).unwrap();

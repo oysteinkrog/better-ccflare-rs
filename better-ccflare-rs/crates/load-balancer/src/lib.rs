@@ -4,11 +4,12 @@
 //! round-robin for pay-as-you-go accounts within the same priority tier,
 //! and auto-fallback when higher-priority accounts recover from rate limits.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bccf_core::constants::time;
 use bccf_core::providers::Provider;
-use bccf_core::types::Account;
+use bccf_core::types::{Account, RoutingUsageInfo};
 
 /// Metadata about an incoming request, used by the strategy to make routing decisions.
 #[derive(Debug, Clone, Default)]
@@ -49,9 +50,16 @@ impl SessionStrategy {
     /// The first account in the returned vec is the preferred account.
     /// Remaining accounts are fallbacks sorted by priority.
     /// Any `SessionReset` values should be persisted by the caller.
+    ///
+    /// `usage` provides per-account utilization data from the usage polling
+    /// cache. Accounts with `reserve_percent > 0` that have exceeded their
+    /// reserve threshold are deprioritised (soft) or excluded (hard).
+    /// Within a priority tier, accounts with soonest reset are preferred so
+    /// their remaining capacity isn't wasted.
     pub fn select(
         &self,
         accounts: &[Account],
+        usage: &HashMap<String, RoutingUsageInfo>,
         meta: &SelectionMeta,
         now: i64,
     ) -> (Vec<Account>, Vec<SessionReset>) {
@@ -77,24 +85,25 @@ impl SessionStrategy {
 
             let mut others: Vec<Account> = accounts
                 .iter()
-                .filter(|a| a.id != chosen.id && is_account_available(a, now))
+                .filter(|a| a.id != chosen.id && is_account_available(a, usage, now))
                 .cloned()
                 .collect();
-            others.sort_by_key(|a| a.priority);
+            sort_accounts_usage_aware(&mut others, usage);
 
             let mut result = vec![chosen];
             result.extend(others);
             return (result, resets);
         }
 
-        // Find account with the most recent active session (Anthropic only)
+        // Find account with the most recent active session (Anthropic only).
+        // If the active-session account is at its hard reserve, skip it.
         let active_account = accounts
             .iter()
             .filter(|a| self.has_active_session(a, now))
             .max_by_key(|a| a.session_start.unwrap_or(0));
 
         if let Some(active) = active_account {
-            if is_account_available(active, now) {
+            if is_account_available(active, usage, now) {
                 let mut chosen = active.clone();
                 if !meta.bypass_session {
                     if let Some(reset) = self.maybe_reset_session(&mut chosen, now) {
@@ -104,10 +113,10 @@ impl SessionStrategy {
 
                 let mut others: Vec<Account> = accounts
                     .iter()
-                    .filter(|a| a.id != chosen.id && is_account_available(a, now))
+                    .filter(|a| a.id != chosen.id && is_account_available(a, usage, now))
                     .cloned()
                     .collect();
-                others.sort_by_key(|a| a.priority);
+                sort_accounts_usage_aware(&mut others, usage);
 
                 let mut result = vec![chosen];
                 result.extend(others);
@@ -115,13 +124,14 @@ impl SessionStrategy {
             }
         }
 
-        // No active session — select from available accounts by priority
+        // No active session — select from available accounts by priority,
+        // with usage-aware ordering within each tier.
         let mut available: Vec<Account> = accounts
             .iter()
-            .filter(|a| is_account_available(a, now))
+            .filter(|a| is_account_available(a, usage, now))
             .cloned()
             .collect();
-        available.sort_by_key(|a| a.priority);
+        sort_accounts_usage_aware(&mut available, usage);
 
         if available.is_empty() {
             return (vec![], resets);
@@ -242,9 +252,81 @@ impl Default for SessionStrategy {
     }
 }
 
-/// Check if an account is available (not paused and not rate-limited).
-pub fn is_account_available(account: &Account, now: i64) -> bool {
-    !account.paused && account.rate_limited_until.is_none_or(|until| until < now)
+/// Check if an account is available for routing.
+///
+/// An account is unavailable if it's paused, rate-limited, or has hit its
+/// hard reserve threshold (when `reserve_hard` is true and usage data shows
+/// utilization at or above `100 - reserve_percent`).
+pub fn is_account_available(
+    account: &Account,
+    usage: &HashMap<String, RoutingUsageInfo>,
+    now: i64,
+) -> bool {
+    if account.paused {
+        return false;
+    }
+    if account.rate_limited_until.is_some_and(|until| until >= now) {
+        return false;
+    }
+    // Hard reserve: exclude account when utilization >= (100 - reserve_percent)
+    if account.reserve_hard && account.reserve_percent > 0 {
+        if let Some(info) = usage.get(&account.id) {
+            let threshold = (100 - account.reserve_percent) as f64;
+            if info.utilization_pct >= threshold {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Sort accounts for routing: primary key is priority, secondary key is
+/// usage-aware ordering within each priority tier.
+///
+/// Within a tier, accounts under their reserve threshold come before those
+/// at/over reserve. Within each partition, accounts whose usage window resets
+/// soonest come first (use them before capacity expires).
+fn sort_accounts_usage_aware(accounts: &mut [Account], usage: &HashMap<String, RoutingUsageInfo>) {
+    accounts.sort_by(|a, b| {
+        // 1. Primary: priority (lower = higher priority)
+        let pri = a.priority.cmp(&b.priority);
+        if pri != std::cmp::Ordering::Equal {
+            return pri;
+        }
+
+        // 2. Within same priority: under-reserve before at/over-reserve
+        let a_at_reserve = is_at_reserve(a, usage);
+        let b_at_reserve = is_at_reserve(b, usage);
+        match (a_at_reserve, b_at_reserve) {
+            (false, true) => return std::cmp::Ordering::Less,
+            (true, false) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+
+        // 3. Soonest reset first (prefer accounts whose window expires soon)
+        let a_reset = usage.get(&a.id).and_then(|u| u.resets_at_ms);
+        let b_reset = usage.get(&b.id).and_then(|u| u.resets_at_ms);
+        match (a_reset, b_reset) {
+            (Some(ar), Some(br)) => ar.cmp(&br),
+            (Some(_), None) => std::cmp::Ordering::Less, // known reset before unknown
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+}
+
+/// Whether an account is at or over its reserve threshold.
+/// Returns false if no reserve is configured or no usage data is available.
+fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -> bool {
+    if account.reserve_percent == 0 {
+        return false;
+    }
+    if let Some(info) = usage.get(&account.id) {
+        let threshold = (100 - account.reserve_percent) as f64;
+        info.utilization_pct >= threshold
+    } else {
+        false // no data = assume under reserve
+    }
 }
 
 /// Check if a provider string requires session duration tracking.
@@ -281,11 +363,17 @@ mod tests {
             auto_refresh_enabled: false,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         }
     }
 
     fn default_meta() -> SelectionMeta {
         SelectionMeta::default()
+    }
+
+    fn no_usage() -> HashMap<String, RoutingUsageInfo> {
+        HashMap::new()
     }
 
     const NOW: i64 = 1_700_000_000_000; // Fixed timestamp for tests
@@ -299,7 +387,7 @@ mod tests {
             make_account("mid", "zai", 5),
         ];
 
-        let (result, _) = strategy.select(&accounts, &default_meta(), NOW);
+        let (result, _) = strategy.select(&accounts, &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].id, "high");
         assert_eq!(result[1].id, "mid");
@@ -313,7 +401,7 @@ mod tests {
         paused.paused = true;
         let available = make_account("available", "zai", 5);
 
-        let (result, _) = strategy.select(&[paused, available], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[paused, available], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "available");
     }
@@ -325,7 +413,7 @@ mod tests {
         limited.rate_limited_until = Some(NOW + 60_000); // Rate limited for 60 more seconds
         let available = make_account("available", "zai", 5);
 
-        let (result, _) = strategy.select(&[limited, available], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[limited, available], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "available");
     }
@@ -337,7 +425,7 @@ mod tests {
         was_limited.rate_limited_until = Some(NOW - 1000); // Rate limit expired
         let other = make_account("other", "zai", 5);
 
-        let (result, _) = strategy.select(&[was_limited, other], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[was_limited, other], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "was-limited"); // Higher priority
     }
@@ -351,7 +439,7 @@ mod tests {
 
         let higher_prio = make_account("higher", "zai", 1); // Higher priority but no session
 
-        let (result, _) = strategy.select(&[anthropic, higher_prio], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[anthropic, higher_prio], &no_usage(), &default_meta(), NOW);
         // Anthropic with active session should come first, even though lower priority
         assert_eq!(result[0].id, "oauth");
         assert_eq!(result[1].id, "higher");
@@ -366,7 +454,7 @@ mod tests {
 
         let higher_prio = make_account("higher", "zai", 1);
 
-        let (result, _) = strategy.select(&[anthropic, higher_prio], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[anthropic, higher_prio], &no_usage(), &default_meta(), NOW);
         // Expired session means no active session, falls back to priority ordering
         assert_eq!(result[0].id, "higher");
         assert_eq!(result[1].id, "oauth");
@@ -379,7 +467,7 @@ mod tests {
         // Session started 6 hours ago — expired (>5hr window), but highest priority
         anthropic.session_start = Some(NOW - 6 * time::HOUR);
 
-        let (result, resets) = strategy.select(&[anthropic], &default_meta(), NOW);
+        let (result, resets) = strategy.select(&[anthropic], &no_usage(), &default_meta(), NOW);
         assert_eq!(result[0].id, "oauth");
         // Session should be reset since it's expired
         assert_eq!(resets.len(), 1);
@@ -395,7 +483,7 @@ mod tests {
 
         let higher = make_account("zai2", "zai", 1);
 
-        let (result, _) = strategy.select(&[zai, higher], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[zai, higher], &no_usage(), &default_meta(), NOW);
         // Pay-as-you-go should NOT have session affinity — priority wins
         assert_eq!(result[0].id, "zai2");
     }
@@ -410,7 +498,7 @@ mod tests {
         let mut low_prio = make_account("low", "anthropic", 5);
         low_prio.session_start = Some(NOW - time::HOUR); // Active session
 
-        let (result, _) = strategy.select(&[high_prio, low_prio], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[high_prio, low_prio], &no_usage(), &default_meta(), NOW);
         // Auto-fallback should choose the higher-priority account
         assert_eq!(result[0].id, "high");
     }
@@ -425,7 +513,7 @@ mod tests {
 
         let low_prio = make_account("low", "zai", 5);
 
-        let (result, _) = strategy.select(&[high_prio, low_prio], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[high_prio, low_prio], &no_usage(), &default_meta(), NOW);
         // Should not auto-fallback because account is still rate-limited
         assert_eq!(result[0].id, "low");
     }
@@ -439,7 +527,7 @@ mod tests {
 
         let other = make_account("other", "zai", 5);
 
-        let (result, _) = strategy.select(&[zai, other], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[zai, other], &no_usage(), &default_meta(), NOW);
         // Non-Anthropic accounts don't get auto-fallback treatment
         // Falls through to normal priority ordering
         assert_eq!(result[0].id, "zai");
@@ -457,7 +545,7 @@ mod tests {
             bypass_session: false,
         };
 
-        let (result, _) = strategy.select(&[a, b], &meta, NOW);
+        let (result, _) = strategy.select(&[a, b], &no_usage(), &meta, NOW);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "b");
     }
@@ -472,7 +560,7 @@ mod tests {
             bypass_session: false,
         };
 
-        let (result, _) = strategy.select(&[a], &meta, NOW);
+        let (result, _) = strategy.select(&[a], &no_usage(), &meta, NOW);
         // Should fall through to normal selection
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "a");
@@ -490,7 +578,7 @@ mod tests {
         // Call select multiple times and track which account is chosen first
         let mut first_picks = Vec::new();
         for _ in 0..6 {
-            let (result, _) = strategy.select(&accounts, &default_meta(), NOW);
+            let (result, _) = strategy.select(&accounts, &no_usage(), &default_meta(), NOW);
             first_picks.push(result[0].id.clone());
         }
 
@@ -504,7 +592,7 @@ mod tests {
     #[test]
     fn empty_accounts_returns_empty() {
         let strategy = SessionStrategy::default();
-        let (result, resets) = strategy.select(&[], &default_meta(), NOW);
+        let (result, resets) = strategy.select(&[], &no_usage(), &default_meta(), NOW);
         assert!(result.is_empty());
         assert!(resets.is_empty());
     }
@@ -517,7 +605,7 @@ mod tests {
         let mut b = make_account("b", "zai", 2);
         b.paused = true;
 
-        let (result, _) = strategy.select(&[a, b], &default_meta(), NOW);
+        let (result, _) = strategy.select(&[a, b], &no_usage(), &default_meta(), NOW);
         assert!(result.is_empty());
     }
 
@@ -528,7 +616,7 @@ mod tests {
         // No session started yet — should trigger a reset
         anthropic.session_start = None;
 
-        let (result, resets) = strategy.select(&[anthropic], &default_meta(), NOW);
+        let (result, resets) = strategy.select(&[anthropic], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 1);
         assert_eq!(resets.len(), 1);
         assert_eq!(resets[0].account_id, "oauth");
@@ -546,7 +634,7 @@ mod tests {
             bypass_session: true,
         };
 
-        let (result, resets) = strategy.select(&[anthropic], &meta, NOW);
+        let (result, resets) = strategy.select(&[anthropic], &no_usage(), &meta, NOW);
         assert_eq!(result.len(), 1);
         assert!(resets.is_empty()); // No resets when bypassing
     }
@@ -561,7 +649,7 @@ mod tests {
             make_account("p10", "anthropic-compatible", 10),
         ];
 
-        let (result, _) = strategy.select(&accounts, &default_meta(), NOW);
+        let (result, _) = strategy.select(&accounts, &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 4);
         // First should be from tier 1 (round-robin), rest by priority
         assert!(result[0].priority == 1);
@@ -577,7 +665,7 @@ mod tests {
         anthropic.session_start = Some(NOW - time::HOUR); // Active session, 1hr in
         anthropic.rate_limit_reset = Some(NOW - 2000); // Window reset 2s ago
 
-        let (result, resets) = strategy.select(&[anthropic], &default_meta(), NOW);
+        let (result, resets) = strategy.select(&[anthropic], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 1);
         // Should reset session because rate limit window reset
         assert_eq!(resets.len(), 1);
@@ -586,19 +674,183 @@ mod tests {
 
     #[test]
     fn is_account_available_checks() {
+        let usage = no_usage();
+
         let available = make_account("a", "zai", 1);
-        assert!(is_account_available(&available, NOW));
+        assert!(is_account_available(&available, &usage, NOW));
 
         let mut paused = make_account("b", "zai", 1);
         paused.paused = true;
-        assert!(!is_account_available(&paused, NOW));
+        assert!(!is_account_available(&paused, &usage, NOW));
 
         let mut rate_limited = make_account("c", "zai", 1);
         rate_limited.rate_limited_until = Some(NOW + 1000);
-        assert!(!is_account_available(&rate_limited, NOW));
+        assert!(!is_account_available(&rate_limited, &usage, NOW));
 
         let mut expired_rl = make_account("d", "zai", 1);
         expired_rl.rate_limited_until = Some(NOW - 1000);
-        assert!(is_account_available(&expired_rl, NOW));
+        assert!(is_account_available(&expired_rl, &usage, NOW));
+    }
+
+    // -----------------------------------------------------------------------
+    // Usage-aware / reserve capacity tests
+    // -----------------------------------------------------------------------
+
+    fn make_usage(pct: f64, resets_at_ms: Option<i64>) -> RoutingUsageInfo {
+        RoutingUsageInfo {
+            utilization_pct: pct,
+            resets_at_ms,
+        }
+    }
+
+    #[test]
+    fn hard_reserve_excludes_account() {
+        let strategy = SessionStrategy::default();
+        let mut a = make_account("a", "zai", 1);
+        a.reserve_percent = 20;
+        a.reserve_hard = true;
+
+        let b = make_account("b", "zai", 2);
+
+        // a is at 85% util → threshold is 80% → excluded
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(85.0, None));
+
+        let (result, _) = strategy.select(&[a, b], &usage, &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "b");
+    }
+
+    #[test]
+    fn hard_reserve_allows_under_threshold() {
+        let strategy = SessionStrategy::default();
+        let mut a = make_account("a", "zai", 1);
+        a.reserve_percent = 20;
+        a.reserve_hard = true;
+
+        let b = make_account("b", "zai", 2);
+
+        // a at 75% → threshold is 80% → still available
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(75.0, None));
+
+        let (result, _) = strategy.select(&[a, b], &usage, &default_meta(), NOW);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "a");
+    }
+
+    #[test]
+    fn soft_reserve_deprioritizes_within_tier() {
+        let strategy = SessionStrategy::default();
+        let mut a = make_account("a", "zai", 1);
+        a.reserve_percent = 20;
+        // reserve_hard = false (default) — soft reserve
+
+        let b = make_account("b", "zai", 1); // same priority
+
+        // a at 85% (over 80% threshold), b has no usage data (under reserve)
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(85.0, None));
+
+        let (result, _) = strategy.select(&[a, b], &usage, &default_meta(), NOW);
+        assert_eq!(result.len(), 2);
+        // b should come first (under reserve), a second (at reserve, soft)
+        assert_eq!(result[0].id, "b");
+        assert_eq!(result[1].id, "a");
+    }
+
+    #[test]
+    fn soonest_reset_preferred_within_tier() {
+        let strategy = SessionStrategy::default();
+        let a = make_account("a", "zai", 1);
+        let b = make_account("b", "zai", 1);
+        let c = make_account("c", "zai", 1);
+
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(50.0, Some(NOW + 3_600_000))); // resets in 1h
+        usage.insert("b".to_string(), make_usage(50.0, Some(NOW + 600_000))); // resets in 10min
+        usage.insert("c".to_string(), make_usage(50.0, Some(NOW + 7_200_000))); // resets in 2h
+
+        let (result, _) = strategy.select(&[a, b, c], &usage, &default_meta(), NOW);
+        assert_eq!(result.len(), 3);
+        // b resets soonest → first; a next; c last
+        assert_eq!(result[0].id, "b");
+        assert_eq!(result[1].id, "a");
+        assert_eq!(result[2].id, "c");
+    }
+
+    #[test]
+    fn no_usage_data_falls_back_to_existing_behavior() {
+        let strategy = SessionStrategy::default();
+        let accounts = vec![
+            make_account("low", "zai", 10),
+            make_account("high", "zai", 1),
+            make_account("mid", "zai", 5),
+        ];
+
+        // Empty usage map — should behave like before
+        let (result, _) = strategy.select(&accounts, &no_usage(), &default_meta(), NOW);
+        assert_eq!(result[0].id, "high");
+        assert_eq!(result[1].id, "mid");
+        assert_eq!(result[2].id, "low");
+    }
+
+    #[test]
+    fn hard_reserve_skips_active_session() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 1);
+        anthropic.session_start = Some(NOW - time::HOUR); // active session
+        anthropic.reserve_percent = 20;
+        anthropic.reserve_hard = true;
+
+        let fallback = make_account("fallback", "zai", 5);
+
+        // oauth at 85% → hard reserve threshold 80% → excluded despite active session
+        let mut usage = HashMap::new();
+        usage.insert("oauth".to_string(), make_usage(85.0, None));
+
+        let (result, _) = strategy.select(&[anthropic, fallback], &usage, &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "fallback");
+    }
+
+    #[test]
+    fn soft_reserve_keeps_active_session() {
+        let strategy = SessionStrategy::default();
+        let mut anthropic = make_account("oauth", "anthropic", 1);
+        anthropic.session_start = Some(NOW - time::HOUR); // active session
+        anthropic.reserve_percent = 20;
+        // reserve_hard = false (default)
+
+        let fallback = make_account("fallback", "zai", 5);
+
+        // oauth at 85% → soft reserve → still used because session affinity wins
+        let mut usage = HashMap::new();
+        usage.insert("oauth".to_string(), make_usage(85.0, None));
+
+        let (result, _) =
+            strategy.select(&[anthropic, fallback], &usage, &default_meta(), NOW);
+        assert_eq!(result[0].id, "oauth"); // session affinity preserved
+        assert_eq!(result[1].id, "fallback");
+    }
+
+    #[test]
+    fn is_account_available_hard_reserve() {
+        let mut a = make_account("a", "zai", 1);
+        a.reserve_percent = 25;
+        a.reserve_hard = true;
+
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(80.0, None)); // at threshold (100-25=75) → excluded
+
+        assert!(!is_account_available(&a, &usage, NOW));
+
+        // Under threshold
+        usage.insert("a".to_string(), make_usage(70.0, None));
+        assert!(is_account_available(&a, &usage, NOW));
+
+        // No usage data → available (assume under reserve)
+        let empty = no_usage();
+        assert!(is_account_available(&a, &empty, NOW));
     }
 }

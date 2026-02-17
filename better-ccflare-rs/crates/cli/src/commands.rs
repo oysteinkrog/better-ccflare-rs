@@ -128,6 +128,8 @@ pub fn add_account(
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;
@@ -191,6 +193,8 @@ pub fn add_account(
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;

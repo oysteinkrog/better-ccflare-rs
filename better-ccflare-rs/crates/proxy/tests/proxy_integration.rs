@@ -89,6 +89,8 @@ fn make_account(id: &str, name: &str, api_key: &str, priority: i64) -> Account {
         auto_refresh_enabled: false,
         custom_endpoint: None,
         model_mappings: None,
+        reserve_percent: 0,
+        reserve_hard: false,
     }
 }
 

@@ -390,6 +390,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         }
     }
 

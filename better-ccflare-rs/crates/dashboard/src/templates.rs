@@ -192,6 +192,8 @@ pub struct AccountRow {
     pub id: String,
     pub name: String,
     pub provider: String,
+    /// First character of provider name, uppercased (for fallback icon).
+    pub provider_initial: String,
     pub priority: i64,
     pub paused: bool,
     pub auto_fallback_enabled: bool,
@@ -210,6 +212,10 @@ pub struct AccountRow {
     pub is_oauth: bool,
     /// Whether the load balancer would choose this account next.
     pub is_next: bool,
+    /// Reserve capacity percentage (0-100).
+    pub reserve_percent: i64,
+    /// Whether reserve is hard (excluded) or soft (deprioritized).
+    pub reserve_hard: bool,
 }
 
 /// Aggregate pool usage summary shown above account cards.

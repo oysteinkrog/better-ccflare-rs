@@ -30,6 +30,8 @@ pub struct Account {
     pub auto_refresh_enabled: bool,
     pub custom_endpoint: Option<String>,
     pub model_mappings: Option<String>,
+    pub reserve_percent: i64,
+    pub reserve_hard: bool,
 }
 
 /// API response for an account — what clients receive.
@@ -59,6 +61,8 @@ pub struct AccountResponse {
     pub usage_window: Option<String>,
     pub usage_data: Option<serde_json::Value>,
     pub has_refresh_token: bool,
+    pub reserve_percent: i64,
+    pub reserve_hard: bool,
 }
 
 /// Token validity status.
@@ -70,6 +74,18 @@ pub enum TokenStatus {
     /// API-key provider — no OAuth token management needed.
     #[serde(rename = "api_key")]
     ApiKey,
+}
+
+/// Normalized usage info for load-balancer routing decisions.
+///
+/// Abstracts across provider-specific usage formats (Anthropic, Zai, NanoGPT)
+/// into a single struct the load balancer can use.
+#[derive(Debug, Clone, Copy)]
+pub struct RoutingUsageInfo {
+    /// Utilization percentage (0-100).
+    pub utilization_pct: f64,
+    /// Epoch-ms timestamp when the most restrictive window resets.
+    pub resets_at_ms: Option<i64>,
 }
 
 /// Account creation options.
