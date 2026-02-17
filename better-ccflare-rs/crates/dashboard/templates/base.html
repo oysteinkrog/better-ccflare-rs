@@ -103,13 +103,13 @@
       color: var(--bccf-orange);
       text-decoration: none;
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      flex-direction: column;
+      gap: 0;
     }
     .sidebar-brand small {
       font-weight: normal;
-      font-size: 0.7rem;
-      opacity: 0.6;
+      font-size: 0.65rem;
+      opacity: 0.5;
     }
     .sidebar nav { flex: 1; }
     .sidebar nav a {
@@ -313,35 +313,13 @@
       border-bottom-color: var(--pico-primary);
       color: var(--pico-primary);
     }
-    /* Expandable "More" section */
-    .acct-more {
-      display: inline;
-      font-size: 0.78rem;
-    }
-    .acct-more summary {
+    /* "More" toggle — just another chip */
+    .acct-more-toggle {
       cursor: pointer;
       color: var(--pico-muted-color);
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      list-style: none;
       user-select: none;
-      padding: 0.15rem 0.5rem;
-      border-radius: 0.25rem;
-      background: color-mix(in srgb, var(--pico-muted-border-color) 30%, transparent);
     }
-    [data-theme="dark"] .acct-more summary { background: rgba(255,255,255,0.05); }
-    .acct-more summary::-webkit-details-marker { display: none; }
-    .acct-more summary::before { content: "▸ "; font-size: 0.65rem; }
-    .acct-more[open] summary::before { content: "▾ "; }
-    .acct-more summary:hover { color: var(--pico-primary); }
-    .acct-more-chips {
-      display: inline-flex;
-      flex-wrap: wrap;
-      gap: 0.25rem 0.5rem;
-      margin-top: 0.3rem;
-      margin-left: 0.25rem;
-    }
+    .acct-more-toggle:hover { color: var(--pico-primary); }
     @media (max-width: 600px) {
       .acct-header { flex-wrap: wrap; }
       .acct-details { gap: 0.3rem; }

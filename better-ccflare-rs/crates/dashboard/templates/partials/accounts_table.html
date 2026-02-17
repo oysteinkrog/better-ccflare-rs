@@ -117,23 +117,20 @@
         </label>
         {% endif %}
       </div>
-      <details class="acct-more" title="Show request stats and session info">
-        <summary>More</summary>
-        <div class="acct-more-chips">
-          <div class="acct-chip" title="Total requests routed to this account (session count in parentheses)">
-            <span class="acct-chip-label">Requests</span>
-            {{ acct.total_requests }}{% if acct.request_count > 0 %} <small style="color:var(--pico-muted-color)">({{ acct.request_count }} sess)</small>{% endif %}
-          </div>
-          <div class="acct-chip" title="Time since this account last handled a request">
-            <span class="acct-chip-label">Last used</span>
-            {% match acct.last_used_relative %}{% when Some with (val) %}{{ val }}{% when None %}<span style="color:var(--pico-muted-color)">Never</span>{% endmatch %}
-          </div>
-          <div class="acct-chip" title="Current session state (active conversation / idle)">
-            <span class="acct-chip-label">Session</span>
-            {{ acct.session_info }}
-          </div>
-        </div>
-      </details>
+      <span class="acct-chip acct-more-toggle" title="Show request stats and session info"
+            onclick="toggleMore(this)">More ›</span>
+      <div class="acct-chip" title="Total requests routed to this account (session count in parentheses)" data-more="{{ acct.id }}" style="display:none">
+        <span class="acct-chip-label">Requests</span>
+        {{ acct.total_requests }}{% if acct.request_count > 0 %} <small style="color:var(--pico-muted-color)">({{ acct.request_count }} sess)</small>{% endif %}
+      </div>
+      <div class="acct-chip" title="Time since this account last handled a request" data-more="{{ acct.id }}" style="display:none">
+        <span class="acct-chip-label">Last used</span>
+        {% match acct.last_used_relative %}{% when Some with (val) %}{{ val }}{% when None %}<span style="color:var(--pico-muted-color)">Never</span>{% endmatch %}
+      </div>
+      <div class="acct-chip" title="Current session state (active conversation / idle)" data-more="{{ acct.id }}" style="display:none">
+        <span class="acct-chip-label">Session</span>
+        {{ acct.session_info }}
+      </div>
     </div>
 
     {% if acct.has_usage %}
@@ -177,6 +174,15 @@
 <script>
 function refreshAccounts() {
   htmx.ajax('GET', '/dashboard/partials/accounts-table', '#accounts-table-container');
+}
+
+function toggleMore(el) {
+  var card = el.closest('.acct-card');
+  var id = card.id.replace('acct-row-', '');
+  var chips = card.querySelectorAll('[data-more="' + id + '"]');
+  var showing = chips[0] && chips[0].style.display !== 'none';
+  chips.forEach(function(c) { c.style.display = showing ? 'none' : ''; });
+  el.textContent = showing ? 'More ›' : 'Less ‹';
 }
 
 function apiPost(url, body) {
