@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     auto_fallback_enabled INTEGER DEFAULT 1,
     auto_refresh_enabled INTEGER DEFAULT 1,
     custom_endpoint TEXT,
-    model_mappings TEXT
+    model_mappings TEXT,
+    reserve_percent INTEGER DEFAULT 0,
+    reserve_hard INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -249,6 +251,8 @@ mod tests {
             "auto_refresh_enabled",
             "custom_endpoint",
             "model_mappings",
+            "reserve_percent",
+            "reserve_hard",
         ];
 
         for col in &expected {

@@ -216,9 +216,26 @@ pub async fn proxy_handler(
         bypass_session: is_session_bypass(&headers),
     };
 
+    // Build per-account usage map for the load balancer
+    let usage_map: HashMap<String, bccf_core::types::RoutingUsageInfo> = {
+        if let Some(cache) = state.usage_cache::<bccf_providers::UsageCache>() {
+            accounts
+                .iter()
+                .filter_map(|a| {
+                    cache
+                        .get(&a.id)?
+                        .routing_info()
+                        .map(|info| (a.id.clone(), info))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        }
+    };
+
     // Select accounts via load balancer
     let (ordered_accounts, session_resets) = if let Some(lb) = load_balancer {
-        lb.select(&accounts, &selection_meta, now)
+        lb.select(&accounts, &usage_map, &selection_meta, now)
     } else {
         // Fallback: just use accounts as-is sorted by priority
         let mut sorted: Vec<_> = accounts.iter().cloned().collect();

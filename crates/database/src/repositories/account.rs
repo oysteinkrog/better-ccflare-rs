@@ -20,7 +20,9 @@ const ACCOUNT_SELECT: &str = "
         COALESCE(auto_fallback_enabled, 0) as auto_fallback_enabled,
         COALESCE(auto_refresh_enabled, 0) as auto_refresh_enabled,
         custom_endpoint,
-        model_mappings
+        model_mappings,
+        COALESCE(reserve_percent, 0) as reserve_percent,
+        COALESCE(reserve_hard, 0) as reserve_hard
     FROM accounts
 ";
 
@@ -54,6 +56,8 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         auto_refresh_enabled: row.get::<_, i64>("auto_refresh_enabled")? != 0,
         custom_endpoint: row.get("custom_endpoint")?,
         model_mappings: row.get("model_mappings")?,
+        reserve_percent: row.get::<_, Option<i64>>("reserve_percent")?.unwrap_or(0),
+        reserve_hard: row.get::<_, i64>("reserve_hard")? != 0,
     })
 }
 
@@ -270,6 +274,32 @@ pub fn set_model_mappings(
     Ok(())
 }
 
+/// Set reserve percent (0-100).
+pub fn set_reserve_percent(
+    conn: &Connection,
+    account_id: &str,
+    percent: i64,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET reserve_percent = ?1 WHERE id = ?2",
+        params![percent, account_id],
+    )?;
+    Ok(())
+}
+
+/// Set reserve hard mode (strict exclusion when at reserve threshold).
+pub fn set_reserve_hard(
+    conn: &Connection,
+    account_id: &str,
+    hard: bool,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET reserve_hard = ?1 WHERE id = ?2",
+        params![hard as i64, account_id],
+    )?;
+    Ok(())
+}
+
 /// Clear expired rate limits from all accounts.
 ///
 /// Returns the number of accounts that had their rate_limited_until cleared.
@@ -306,10 +336,10 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             rate_limited_until, session_start, session_request_count, paused,
             rate_limit_reset, rate_limit_status, rate_limit_remaining,
             priority, auto_fallback_enabled, auto_refresh_enabled,
-            custom_endpoint, model_mappings
+            custom_endpoint, model_mappings, reserve_percent, reserve_hard
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
         )",
         params![
             account.id,
@@ -335,6 +365,8 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             account.auto_refresh_enabled as i64,
             account.custom_endpoint,
             account.model_mappings,
+            account.reserve_percent,
+            account.reserve_hard as i64,
         ],
     )?;
     Ok(())
@@ -377,6 +409,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         }
     }
 

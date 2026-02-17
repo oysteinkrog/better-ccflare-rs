@@ -110,6 +110,8 @@ fn account_to_response(account: &Account, now: i64) -> AccountResponse {
         usage_window: None,
         usage_data: None,
         has_refresh_token: !account.refresh_token.is_empty(),
+        reserve_percent: account.reserve_percent,
+        reserve_hard: account.reserve_hard,
     }
 }
 
@@ -652,6 +654,113 @@ pub async fn set_model_mappings(
     Json(json!({"success": true})).into_response()
 }
 
+/// POST /api/accounts/:id/reserve-percent — set reserve capacity percentage.
+pub async fn set_reserve_percent(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let percent = match body.get("percent").and_then(|v| v.as_i64()) {
+        Some(p) if (0..=100).contains(&p) => p,
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "percent must be an integer 0-100"})),
+            )
+                .into_response();
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "percent (integer 0-100) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_reserve_percent(&conn, &account_id, percent) {
+        warn!("Failed to set reserve_percent for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update reserve percent"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "percent": percent})).into_response()
+}
+
+/// POST /api/accounts/:id/reserve-hard — toggle hard reserve.
+pub async fn set_reserve_hard(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let enabled = match body.get("enabled").and_then(|v| v.as_bool()) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "enabled (boolean) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_reserve_hard(&conn, &account_id, enabled) {
+        warn!("Failed to set reserve_hard for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update reserve hard"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "enabled": enabled})).into_response()
+}
+
 /// Valid provider modes for account creation.
 const VALID_MODES: &[&str] = &[
     "claude-oauth",
@@ -801,6 +910,8 @@ pub async fn create_account(
         auto_refresh_enabled: true,
         custom_endpoint: None,
         model_mappings: None,
+        reserve_percent: 0,
+        reserve_hard: false,
     };
 
     if let Err(e) = account_repo::create(&conn, &account) {
@@ -883,6 +994,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         };
         account_repo::create(&conn, &account).unwrap();
     }
@@ -1180,6 +1293,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         };
 
         let resp = account_to_response(&account, now);
@@ -1214,6 +1329,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
+            reserve_percent: 0,
+            reserve_hard: false,
         };
 
         let resp = account_to_response(&account, now);

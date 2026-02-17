@@ -215,6 +215,20 @@ pub fn run_schema_migrations(conn: &rusqlite::Connection) -> Result<(), DbError>
         );
         add_column_if_missing(conn, "accounts", "custom_endpoint", "TEXT", &cols);
         add_column_if_missing(conn, "accounts", "model_mappings", "TEXT", &cols);
+        add_column_if_missing(
+            conn,
+            "accounts",
+            "reserve_percent",
+            "INTEGER DEFAULT 0",
+            &cols,
+        );
+        add_column_if_missing(
+            conn,
+            "accounts",
+            "reserve_hard",
+            "INTEGER DEFAULT 0",
+            &cols,
+        );
 
         // Make name UNIQUE if not already (TS schema didn't enforce this)
         // We can't ALTER an existing constraint, so we just ignore duplicates

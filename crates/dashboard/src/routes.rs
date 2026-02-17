@@ -277,9 +277,23 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
     // Get the usage cache from AppState (populated by UsagePollingService)
     let usage_cache = state.usage_cache::<bccf_providers::UsageCache>();
 
+    // Build a usage map for reserve-aware predictions
+    let usage_map: std::collections::HashMap<String, bccf_core::types::RoutingUsageInfo> = {
+        if let Some(cache) = usage_cache {
+            accounts
+                .iter()
+                .filter_map(|a| {
+                    cache.get(&a.id)?.routing_info().map(|info| (a.id.clone(), info))
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+
     // Determine which account the load balancer would choose next.
     // Mirrors the SessionStrategy logic without incrementing round-robin.
-    let next_account_id = predict_next_account(&accounts, now);
+    let next_account_id = predict_next_account(&accounts, &usage_map, now);
 
     let rows: Vec<AccountRow> = accounts
         .iter()
@@ -304,9 +318,11 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                     "OK".to_string()
                 }
             } else {
-                a.rate_limit_status
-                    .clone()
-                    .unwrap_or_else(|| "OK".to_string())
+                match a.rate_limit_status.as_deref() {
+                    // Anthropic returns "allowed" when not rate-limited
+                    None | Some("allowed") | Some("OK") => "OK".to_string(),
+                    Some(other) => other.to_string(),
+                }
             };
 
             let session_info = match a.session_start {
@@ -337,6 +353,7 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
             AccountRow {
                 id: a.id.clone(),
                 name: a.name.clone(),
+                provider_initial: a.provider.chars().next().unwrap_or('?').to_uppercase().to_string(),
                 provider: a.provider.clone(),
                 priority: a.priority,
                 paused: a.paused,
@@ -354,6 +371,8 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                     || a.provider == "claude-oauth"
                     || a.provider == "console",
                 is_next: next_account_id.as_deref() == Some(a.id.as_str()),
+                reserve_percent: a.reserve_percent,
+                reserve_hard: a.reserve_hard,
             }
         })
         .collect();
@@ -588,11 +607,30 @@ fn build_usage_windows(
 /// 1. Auto-fallback candidates (anthropic + auto_fallback + rate_limit_reset passed)
 /// 2. Active session (anthropic with session within 5h)
 /// 3. Highest priority available account
-fn predict_next_account(accounts: &[bccf_core::types::Account], now: i64) -> Option<String> {
+fn predict_next_account(
+    accounts: &[bccf_core::types::Account],
+    usage: &std::collections::HashMap<String, bccf_core::types::RoutingUsageInfo>,
+    now: i64,
+) -> Option<String> {
     let session_duration_ms: i64 = 5 * 60 * 60 * 1000; // 5 hours
 
     let is_available = |a: &bccf_core::types::Account| -> bool {
-        !a.paused && a.rate_limited_until.map_or(true, |until| until < now)
+        if a.paused {
+            return false;
+        }
+        if a.rate_limited_until.is_some_and(|until| until >= now) {
+            return false;
+        }
+        // Hard reserve: exclude if at/over threshold
+        if a.reserve_hard && a.reserve_percent > 0 {
+            if let Some(info) = usage.get(&a.id) {
+                let threshold = (100 - a.reserve_percent) as f64;
+                if info.utilization_pct >= threshold {
+                    return false;
+                }
+            }
+        }
+        true
     };
 
     // 1. Auto-fallback candidates
@@ -610,7 +648,7 @@ fn predict_next_account(accounts: &[bccf_core::types::Account], now: i64) -> Opt
         return Some(a.id.clone());
     }
 
-    // 2. Active session (most recent)
+    // 2. Active session (most recent) — skip if hard reserve hit
     let active = accounts
         .iter()
         .filter(|a| {
@@ -624,10 +662,48 @@ fn predict_next_account(accounts: &[bccf_core::types::Account], now: i64) -> Opt
         return Some(a.id.clone());
     }
 
-    // 3. Highest priority available
+    // 3. Highest priority available, usage-aware sort within tiers
     let mut available: Vec<_> = accounts.iter().filter(|a| is_available(a)).collect();
-    available.sort_by_key(|a| a.priority);
+    available.sort_by(|a, b| {
+        let pri = a.priority.cmp(&b.priority);
+        if pri != std::cmp::Ordering::Equal {
+            return pri;
+        }
+        // Within same priority: under-reserve before at/over-reserve (soft)
+        let a_at = is_at_reserve(a, usage);
+        let b_at = is_at_reserve(b, usage);
+        match (a_at, b_at) {
+            (false, true) => return std::cmp::Ordering::Less,
+            (true, false) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        // Soonest reset first
+        let a_reset = usage.get(&a.id).and_then(|u| u.resets_at_ms);
+        let b_reset = usage.get(&b.id).and_then(|u| u.resets_at_ms);
+        match (a_reset, b_reset) {
+            (Some(ar), Some(br)) => ar.cmp(&br),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
     available.first().map(|a| a.id.clone())
+}
+
+/// Check if an account is at or over its soft reserve threshold.
+fn is_at_reserve(
+    account: &bccf_core::types::Account,
+    usage: &std::collections::HashMap<String, bccf_core::types::RoutingUsageInfo>,
+) -> bool {
+    if account.reserve_percent <= 0 {
+        return false;
+    }
+    if let Some(info) = usage.get(&account.id) {
+        let threshold = (100 - account.reserve_percent) as f64;
+        info.utilization_pct >= threshold
+    } else {
+        false
+    }
 }
 
 /// CSS class for utilization percentage.

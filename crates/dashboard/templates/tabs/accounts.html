@@ -1,5 +1,26 @@
 <h2>Accounts</h2>
 
+<details class="lb-explain" style="margin-bottom:1rem;">
+  <summary style="cursor:pointer;font-size:0.85rem;color:var(--pico-muted-color);">How the load balancer picks an account</summary>
+  <div style="font-size:0.82rem;line-height:1.5;padding:0.75rem 0 0.25rem;color:var(--pico-muted-color);">
+    <ol style="margin:0 0 0.5rem 1.2rem;padding:0;">
+      <li><strong>Force header</strong> &mdash; If the request includes <code>x-account-id</code>, that account is used directly.</li>
+      <li><strong>Auto-fallback recovery</strong> &mdash; If a higher-priority account just recovered from a rate limit and <em>Fallback</em> is on, it gets promoted to the front of the line so requests shift back to it automatically.</li>
+      <li><strong>Session affinity</strong> &mdash; OAuth accounts have 5-hour conversation windows. If an account has an active session, keep using it to avoid burning a new window elsewhere.</li>
+      <li><strong>Priority + usage-aware selection</strong> &mdash; Among remaining candidates, pick by priority tier (lower = higher). Within the same tier:
+        <ul style="margin:0.2rem 0 0.2rem 1rem;">
+          <li>Accounts under their <em>reserve</em> threshold come first.</li>
+          <li>Sorted by soonest reset time, so capacity about to expire gets used instead of wasted.</li>
+          <li><em>Soft reserve</em> (default): account is deprioritized but still available as a last resort.</li>
+          <li><em>Hard reserve</em>: account is fully excluded when above the threshold.</li>
+        </ul>
+      </li>
+      <li><strong>Round-robin</strong> &mdash; Pay-as-you-go (API key) accounts at the same priority are rotated evenly.</li>
+    </ol>
+    <p style="margin:0;">Paused and rate-limited accounts are always skipped. The <span class="badge badge-primary" style="font-size:0.7rem;vertical-align:middle;">Next</span> badge shows which account will handle the next request.</p>
+  </div>
+</details>
+
 <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem;">
   <label style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
     <input type="checkbox" role="switch" id="auto-refresh-toggle" checked style="margin: 0;">

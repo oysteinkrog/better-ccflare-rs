@@ -30,6 +30,9 @@ pub struct AnthropicUsageWindow {
 /// Anthropic usage data — flexible to handle new fields from API updates.
 pub type AnthropicUsageData = serde_json::Map<String, JsonValue>;
 
+// Re-export from core so consumers can use `bccf_providers::usage_polling::RoutingUsageInfo`.
+pub use bccf_core::types::RoutingUsageInfo;
+
 /// Union of all provider usage data types.
 #[derive(Debug, Clone)]
 pub enum AnyUsageData {
@@ -54,6 +57,18 @@ impl AnyUsageData {
             AnyUsageData::Anthropic(data) => anthropic_utilization(data),
             AnyUsageData::NanoGpt(data) => nanogpt::nanogpt_utilization(data),
             AnyUsageData::Zai(data) => zai::zai_utilization(data),
+        }
+    }
+
+    /// Normalized routing info for the load balancer.
+    ///
+    /// Returns utilization percentage (0-100) and the reset time (epoch ms) of
+    /// the most restrictive usage window, normalised across all provider types.
+    pub fn routing_info(&self) -> Option<RoutingUsageInfo> {
+        match self {
+            AnyUsageData::Anthropic(data) => anthropic_routing_info(data),
+            AnyUsageData::NanoGpt(data) => nanogpt_routing_info(data),
+            AnyUsageData::Zai(data) => zai_routing_info(data),
         }
     }
 
@@ -108,6 +123,85 @@ fn anthropic_representative_window(data: &AnthropicUsageData) -> Option<String> 
     }
 
     max_name
+}
+
+// ---------------------------------------------------------------------------
+// Routing info extractors (per-provider)
+// ---------------------------------------------------------------------------
+
+/// Extract routing info from Anthropic usage data.
+///
+/// Picks the window with the highest utilization and parses its `resets_at`
+/// ISO-8601 string into epoch-ms.
+fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo> {
+    let mut best_util: f64 = 0.0;
+    let mut best_reset: Option<i64> = None;
+
+    for (_key, value) in data {
+        if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
+            if util > best_util {
+                best_util = util;
+                best_reset = value
+                    .get("resets_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| {
+                        chrono::DateTime::parse_from_rfc3339(s)
+                            .ok()
+                            .map(|dt| dt.timestamp_millis())
+                    });
+            }
+        }
+    }
+
+    // Anthropic utilization is 0.0-1.0 in some windows — but the existing
+    // `anthropic_utilization()` already returns raw values. The API itself
+    // reports 0-100. We normalise to 0-100 here: if max < 1.01 treat it as
+    // a fraction and multiply by 100.
+    let pct = if best_util <= 1.01 {
+        best_util * 100.0
+    } else {
+        best_util
+    };
+
+    Some(RoutingUsageInfo {
+        utilization_pct: pct,
+        resets_at_ms: best_reset,
+    })
+}
+
+/// Extract routing info from NanoGPT usage data.
+///
+/// Picks the most restrictive window (daily vs monthly) and uses its reset_at
+/// epoch-ms directly. `percent_used` is 0.0-1.0 → multiply by 100.
+fn nanogpt_routing_info(data: &NanoGptUsageData) -> Option<RoutingUsageInfo> {
+    if !data.active {
+        return None;
+    }
+    let daily_pct = data.daily.percent_used * 100.0;
+    let monthly_pct = data.monthly.percent_used * 100.0;
+
+    let (pct, reset) = if daily_pct >= monthly_pct {
+        (daily_pct, data.daily.reset_at)
+    } else {
+        (monthly_pct, data.monthly.reset_at)
+    };
+
+    Some(RoutingUsageInfo {
+        utilization_pct: pct,
+        resets_at_ms: if reset > 0 { Some(reset) } else { None },
+    })
+}
+
+/// Extract routing info from Zai usage data.
+///
+/// Uses the tokens_limit window (the one that matters for routing).
+/// `percentage` is already 0-100, `reset_at` is `Option<i64>` epoch-ms.
+fn zai_routing_info(data: &ZaiUsageData) -> Option<RoutingUsageInfo> {
+    let w = data.tokens_limit.as_ref()?;
+    Some(RoutingUsageInfo {
+        utilization_pct: w.percentage,
+        resets_at_ms: w.reset_at,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -754,6 +848,125 @@ mod tests {
         poll_single_account(&account, &cache, &client).await;
         assert!(cache.get("acc1").is_none());
     }
+
+    // -- RoutingUsageInfo tests -----------------------------------------------
+
+    #[test]
+    fn routing_info_zai() {
+        let data = AnyUsageData::Zai(ZaiUsageData {
+            time_limit: None,
+            tokens_limit: Some(zai::ZaiUsageWindow {
+                used: 5000.0,
+                remaining: 45000.0,
+                percentage: 10.0,
+                reset_at: Some(1700000000000),
+                limit_type: "TOKENS_LIMIT".to_string(),
+            }),
+        });
+        let info = data.routing_info().unwrap();
+        assert!((info.utilization_pct - 10.0).abs() < 0.01);
+        assert_eq!(info.resets_at_ms, Some(1700000000000));
+    }
+
+    #[test]
+    fn routing_info_zai_no_tokens_limit() {
+        let data = AnyUsageData::Zai(ZaiUsageData {
+            time_limit: None,
+            tokens_limit: None,
+        });
+        assert!(data.routing_info().is_none());
+    }
+
+    #[test]
+    fn routing_info_nanogpt_daily_dominant() {
+        let data = AnyUsageData::NanoGpt(NanoGptUsageData {
+            active: true,
+            limits: nanogpt::NanoGptLimits {
+                daily: 1000.0,
+                monthly: 30000.0,
+            },
+            enforce_daily_limit: true,
+            daily: nanogpt::NanoGptUsageWindow {
+                used: 800.0,
+                remaining: 200.0,
+                percent_used: 0.8,
+                reset_at: 1700001000000,
+            },
+            monthly: nanogpt::NanoGptUsageWindow {
+                used: 3000.0,
+                remaining: 27000.0,
+                percent_used: 0.1,
+                reset_at: 1700100000000,
+            },
+            state: "active".to_string(),
+            grace_until: None,
+        });
+        let info = data.routing_info().unwrap();
+        assert!((info.utilization_pct - 80.0).abs() < 0.01);
+        assert_eq!(info.resets_at_ms, Some(1700001000000));
+    }
+
+    #[test]
+    fn routing_info_nanogpt_inactive() {
+        let data = AnyUsageData::NanoGpt(NanoGptUsageData {
+            active: false,
+            limits: nanogpt::NanoGptLimits {
+                daily: 1000.0,
+                monthly: 30000.0,
+            },
+            enforce_daily_limit: true,
+            daily: nanogpt::NanoGptUsageWindow {
+                used: 0.0,
+                remaining: 1000.0,
+                percent_used: 0.0,
+                reset_at: 0,
+            },
+            monthly: nanogpt::NanoGptUsageWindow {
+                used: 0.0,
+                remaining: 30000.0,
+                percent_used: 0.0,
+                reset_at: 0,
+            },
+            state: "inactive".to_string(),
+            grace_until: None,
+        });
+        assert!(data.routing_info().is_none());
+    }
+
+    #[test]
+    fn routing_info_anthropic_fractional() {
+        // Anthropic sometimes reports utilization as 0.0-1.0 (fraction)
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "five_hour".to_string(),
+            serde_json::json!({"utilization": 0.84, "resets_at": "2025-10-03T12:00:00Z"}),
+        );
+        let info = AnyUsageData::Anthropic(data).routing_info().unwrap();
+        assert!((info.utilization_pct - 84.0).abs() < 0.01);
+        assert!(info.resets_at_ms.is_some());
+    }
+
+    #[test]
+    fn routing_info_anthropic_percentage() {
+        // Anthropic may also report as 0-100
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "seven_day".to_string(),
+            serde_json::json!({"utilization": 42.5}),
+        );
+        let info = AnyUsageData::Anthropic(data).routing_info().unwrap();
+        assert!((info.utilization_pct - 42.5).abs() < 0.01);
+        assert!(info.resets_at_ms.is_none());
+    }
+
+    #[test]
+    fn routing_info_anthropic_empty() {
+        let data = serde_json::Map::new();
+        let info = AnyUsageData::Anthropic(data).routing_info().unwrap();
+        assert!((info.utilization_pct - 0.0).abs() < 0.01);
+    }
+
+    // -- Polling tests -------------------------------------------------------
 
     #[tokio::test]
     async fn poll_all_empty_accounts_no_panic() {
