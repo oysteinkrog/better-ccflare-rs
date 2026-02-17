@@ -5,20 +5,22 @@ pub const HAIKU_3_5: &str = "claude-3-5-haiku-20241022";
 pub const SONNET_3_5: &str = "claude-3-5-sonnet-20241022";
 pub const SONNET_4: &str = "claude-sonnet-4-20250514";
 pub const SONNET_4_5: &str = "claude-sonnet-4-5-20250929";
+pub const SONNET_4_6: &str = "claude-sonnet-4-6";
 pub const HAIKU_4_5: &str = "claude-haiku-4-5-20251001";
 pub const OPUS_4: &str = "claude-opus-4-20250514";
 pub const OPUS_4_1: &str = "claude-opus-4-1-20250805";
 pub const OPUS_4_5: &str = "claude-opus-4-5-20251101";
+pub const OPUS_4_6: &str = "claude-opus-4-6";
 pub const OPUS_3: &str = "claude-3-opus-20240229";
 pub const SONNET_3: &str = "claude-3-sonnet-20240229";
 
-pub const DEFAULT_MODEL: &str = SONNET_4_5;
-pub const DEFAULT_AGENT_MODEL: &str = SONNET_4_5;
+pub const DEFAULT_MODEL: &str = SONNET_4_6;
+pub const DEFAULT_AGENT_MODEL: &str = SONNET_4_6;
 
 /// All known model IDs.
 pub const ALL_MODEL_IDS: &[&str] = &[
-    HAIKU_3_5, SONNET_3_5, SONNET_4, SONNET_4_5, HAIKU_4_5, OPUS_4, OPUS_4_1, OPUS_4_5, OPUS_3,
-    SONNET_3,
+    HAIKU_3_5, SONNET_3_5, SONNET_4, SONNET_4_5, SONNET_4_6, HAIKU_4_5, OPUS_4, OPUS_4_1,
+    OPUS_4_5, OPUS_4_6, OPUS_3, SONNET_3,
 ];
 
 /// Get a human-readable display name for a model ID.
@@ -28,10 +30,12 @@ pub fn get_model_display_name(model_id: &str) -> &str {
         SONNET_3_5 => "Claude Sonnet 3.5 v2",
         SONNET_4 => "Claude Sonnet 4",
         SONNET_4_5 => "Claude Sonnet 4.5",
+        SONNET_4_6 => "Claude Sonnet 4.6",
         HAIKU_4_5 => "Claude Haiku 4.5",
         OPUS_4 => "Claude Opus 4",
         OPUS_4_1 => "Claude Opus 4.1",
         OPUS_4_5 => "Claude Opus 4.5",
+        OPUS_4_6 => "Claude Opus 4.6",
         OPUS_3 => "Claude Opus 3",
         SONNET_3 => "Claude Sonnet 3",
         other => other,
@@ -45,10 +49,12 @@ pub fn get_model_short_name(model_id: &str) -> &str {
         SONNET_3_5 => "claude-3.5-sonnet",
         SONNET_4 => "claude-sonnet-4",
         SONNET_4_5 => "claude-sonnet-4.5",
+        SONNET_4_6 => "claude-sonnet-4.6",
         HAIKU_4_5 => "claude-haiku-4.5",
         OPUS_4 => "claude-opus-4",
         OPUS_4_1 => "claude-opus-4.1",
         OPUS_4_5 => "claude-opus-4.5",
+        OPUS_4_6 => "claude-opus-4.6",
         OPUS_3 => "claude-3-opus",
         SONNET_3 => "claude-3-sonnet",
         other => other,
