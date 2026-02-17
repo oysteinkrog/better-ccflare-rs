@@ -31,7 +31,7 @@ const TOKEN_EXPIRY_MS: i64 = 3600 * 1000;
 const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
 
 /// Default fallback model in Vertex AI format.
-const DEFAULT_VERTEX_MODEL: &str = "claude-sonnet-4-5@20250929";
+const DEFAULT_VERTEX_MODEL: &str = "claude-sonnet-4-6";
 
 // ---------------------------------------------------------------------------
 // Vertex AI config (stored in account.custom_endpoint as JSON)
@@ -140,7 +140,7 @@ impl VertexAiProvider {
         let model = serde_json::from_slice::<serde_json::Value>(body)
             .ok()
             .and_then(|v| v.get("model")?.as_str().map(String::from))
-            .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
         // Apply account-level model mappings first
         let mapped = model_mapping::get_model_name(&model, account);
@@ -634,6 +634,6 @@ mod tests {
     fn extract_vertex_model_fallback() {
         let body = br#"{"messages":[]}"#;
         let model = VertexAiProvider::extract_vertex_model(body, None);
-        assert_eq!(model, "claude-sonnet-4-5@20250929");
+        assert_eq!(model, "claude-sonnet-4-6");
     }
 }
