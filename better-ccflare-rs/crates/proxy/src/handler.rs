@@ -94,6 +94,11 @@ pub enum AccountResult {
 ///
 /// Returns `Some(modified_bytes)` if changes were made, `None` otherwise.
 pub fn filter_thinking_blocks(body: &[u8]) -> Option<Bytes> {
+    // Fast reject: if "thinking" doesn't appear in the body, no thinking blocks exist
+    if !body.windows(8).any(|w| w == b"thinking") {
+        return None;
+    }
+
     let mut json: serde_json::Value = serde_json::from_slice(body).ok()?;
 
     let messages = json.get_mut("messages")?.as_array_mut()?;
@@ -211,7 +216,38 @@ pub fn extract_model_from_body(body: &[u8]) -> Option<String> {
 }
 
 /// Replace the model in a request body JSON, returning modified bytes.
-pub fn replace_model_in_body(body: &[u8], new_model: &str) -> Option<Bytes> {
+///
+/// Uses fast string replacement for the common case (avoiding full JSON
+/// parse/serialize of potentially multi-MB conversation bodies).
+/// Falls back to full JSON parse for unusual formatting.
+pub fn replace_model_in_body(body: &[u8], old_model: &str, new_model: &str) -> Option<Bytes> {
+    let body_str = std::str::from_utf8(body).ok()?;
+
+    // Try compact format: "model":"old_model"
+    let needle = format!("\"model\":\"{}\"", old_model);
+    if let Some(pos) = body_str.find(&needle) {
+        let replacement = format!("\"model\":\"{}\"", new_model);
+        let mut result =
+            String::with_capacity(body_str.len() + new_model.len().saturating_sub(old_model.len()));
+        result.push_str(&body_str[..pos]);
+        result.push_str(&replacement);
+        result.push_str(&body_str[pos + needle.len()..]);
+        return Some(Bytes::from(result.into_bytes()));
+    }
+
+    // Try with space after colon: "model": "old_model"
+    let needle = format!("\"model\": \"{}\"", old_model);
+    if let Some(pos) = body_str.find(&needle) {
+        let replacement = format!("\"model\": \"{}\"", new_model);
+        let mut result =
+            String::with_capacity(body_str.len() + new_model.len().saturating_sub(old_model.len()));
+        result.push_str(&body_str[..pos]);
+        result.push_str(&replacement);
+        result.push_str(&body_str[pos + needle.len()..]);
+        return Some(Bytes::from(result.into_bytes()));
+    }
+
+    // Fallback: full JSON parse (handles unusual formatting)
     let mut json: serde_json::Value = serde_json::from_slice(body).ok()?;
     json["model"] = serde_json::Value::String(new_model.to_string());
     let bytes = serde_json::to_vec(&json).ok()?;
@@ -241,7 +277,11 @@ pub fn is_session_bypass(headers: &HeaderMap) -> bool {
 /// Cap body bytes for analytics storage.
 pub fn cap_body_for_analytics(body: &[u8]) -> String {
     if body.len() <= ANALYTICS_BODY_CAP {
-        String::from_utf8_lossy(body).to_string()
+        // Fast path: valid UTF-8 (almost always true for JSON) avoids double allocation
+        match std::str::from_utf8(body) {
+            Ok(s) => s.to_string(),
+            Err(_) => String::from_utf8_lossy(body).into_owned(),
+        }
     } else {
         let truncated = &body[..ANALYTICS_BODY_CAP];
         format!(
@@ -529,7 +569,7 @@ mod tests {
     fn replace_model_works() {
         let body = serde_json::json!({"model": "old-model", "messages": []});
         let bytes = serde_json::to_vec(&body).unwrap();
-        let result = replace_model_in_body(&bytes, "new-model").unwrap();
+        let result = replace_model_in_body(&bytes, "old-model", "new-model").unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
         assert_eq!(parsed["model"], "new-model");
     }
