@@ -92,7 +92,8 @@ impl OpenAiStreamContext {
 
         let mut events = Vec::new();
 
-        // Process complete lines — use cursor to avoid O(n^2) buffer copies
+        // Process complete lines — use cursor to avoid O(n^2) buffer copies.
+        // Line must be copied into `line` because process_line borrows &mut self.
         let mut cursor = 0;
         loop {
             let remaining = &self.buffer[cursor..];
@@ -100,15 +101,15 @@ impl OpenAiStreamContext {
                 break;
             };
             let line = remaining[..pos].trim_end_matches('\r').to_string();
+            cursor += pos + 1;
 
             if let Some(sse_events) = self.process_line(&line) {
                 events.extend(sse_events);
             }
-            cursor += pos + 1;
         }
-        // Single copy at end to compact buffer
+        // Compact buffer in-place (no allocation vs previous to_string())
         if cursor > 0 {
-            self.buffer = self.buffer[cursor..].to_string();
+            self.buffer.drain(..cursor);
         }
 
         events

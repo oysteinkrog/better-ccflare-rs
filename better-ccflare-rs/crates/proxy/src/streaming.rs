@@ -210,29 +210,27 @@ impl SseParser {
         let mut events = Vec::new();
 
         // Prepend any leftover from previous chunk
-        let combined = if self.line_buffer.is_empty() {
-            text.into_owned()
+        let has_leftover = !self.line_buffer.is_empty();
+        if has_leftover {
+            self.line_buffer.push_str(&text);
+        }
+        let source = if has_leftover {
+            &self.line_buffer
         } else {
-            let mut s = std::mem::take(&mut self.line_buffer);
-            s.push_str(&text);
-            s
+            text.as_ref()
         };
 
-        let mut lines = combined.split('\n').peekable();
-        while let Some(line) = lines.next() {
-            if lines.peek().is_none() {
-                // Last segment may be incomplete
-                if !line.is_empty() {
-                    self.line_buffer = line.to_string();
-                }
+        // Process complete lines using cursor (avoids repeated allocations)
+        let mut cursor = 0;
+        loop {
+            let remaining = &source[cursor..];
+            let Some(pos) = remaining.find('\n') else {
                 break;
-            }
-
-            let line = line.trim_end_matches('\r');
+            };
+            let line = remaining[..pos].trim_end_matches('\r');
+            cursor += pos + 1;
 
             if line.is_empty() {
-                // Empty line = end of event (SSE spec)
-                // Reset current_event for next event
                 self.current_event = None;
                 continue;
             }
@@ -251,6 +249,15 @@ impl SseParser {
                     data: data.to_string(),
                 });
             }
+        }
+
+        // Keep only the incomplete trailing segment
+        let leftover = &source[cursor..];
+        if has_leftover {
+            // line_buffer was the source; drain processed portion
+            self.line_buffer.drain(..cursor);
+        } else if !leftover.is_empty() {
+            self.line_buffer = leftover.to_string();
         }
 
         events

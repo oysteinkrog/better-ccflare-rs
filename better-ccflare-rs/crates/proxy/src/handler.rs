@@ -4,6 +4,7 @@
 //! handles rate limits and auth failures with failover, and streams
 //! responses back to clients.
 
+use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::http::{HeaderMap, Method, StatusCode};
@@ -21,7 +22,9 @@ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Much cheaper than UUID: no entropy source, no formatting of 128-bit random.
 fn generate_request_id(now: i64) -> String {
     let counter = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("req-{now}-{counter}")
+    let mut id = String::with_capacity(30);
+    let _ = write!(id, "req-{now}-{counter}");
+    id
 }
 
 // ---------------------------------------------------------------------------
@@ -224,27 +227,38 @@ pub fn replace_model_in_body(body: &[u8], old_model: &str, new_model: &str) -> O
     let body_str = std::str::from_utf8(body).ok()?;
 
     // Try compact format: "model":"old_model"
-    let needle = format!("\"model\":\"{}\"", old_model);
+    // Build needle without format! to avoid allocation
+    let mut needle = String::with_capacity(10 + old_model.len()); // "model":"" = 10 chars
+    needle.push_str("\"model\":\"");
+    needle.push_str(old_model);
+    needle.push('"');
+
     if let Some(pos) = body_str.find(&needle) {
-        let replacement = format!("\"model\":\"{}\"", new_model);
-        let mut result =
-            String::with_capacity(body_str.len() + new_model.len().saturating_sub(old_model.len()));
-        result.push_str(&body_str[..pos]);
-        result.push_str(&replacement);
-        result.push_str(&body_str[pos + needle.len()..]);
-        return Some(Bytes::from(result.into_bytes()));
+        let extra = new_model.len().saturating_sub(old_model.len());
+        let mut result = Vec::with_capacity(body_str.len() + extra);
+        result.extend_from_slice(body_str[..pos].as_bytes());
+        result.extend_from_slice(b"\"model\":\"");
+        result.extend_from_slice(new_model.as_bytes());
+        result.push(b'"');
+        result.extend_from_slice(body_str[pos + needle.len()..].as_bytes());
+        return Some(Bytes::from(result));
     }
 
     // Try with space after colon: "model": "old_model"
-    let needle = format!("\"model\": \"{}\"", old_model);
+    needle.clear();
+    needle.push_str("\"model\": \"");
+    needle.push_str(old_model);
+    needle.push('"');
+
     if let Some(pos) = body_str.find(&needle) {
-        let replacement = format!("\"model\": \"{}\"", new_model);
-        let mut result =
-            String::with_capacity(body_str.len() + new_model.len().saturating_sub(old_model.len()));
-        result.push_str(&body_str[..pos]);
-        result.push_str(&replacement);
-        result.push_str(&body_str[pos + needle.len()..]);
-        return Some(Bytes::from(result.into_bytes()));
+        let extra = new_model.len().saturating_sub(old_model.len());
+        let mut result = Vec::with_capacity(body_str.len() + extra);
+        result.extend_from_slice(body_str[..pos].as_bytes());
+        result.extend_from_slice(b"\"model\": \"");
+        result.extend_from_slice(new_model.as_bytes());
+        result.push(b'"');
+        result.extend_from_slice(body_str[pos + needle.len()..].as_bytes());
+        return Some(Bytes::from(result));
     }
 
     // Fallback: full JSON parse (handles unusual formatting)
