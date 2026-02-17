@@ -428,13 +428,27 @@ pub fn get_model_pricing(model: &str) -> Option<ModelCost> {
     None
 }
 
+/// Set of models we've already warned about (avoids log spam).
+fn warned_models() -> &'static RwLock<std::collections::HashSet<String>> {
+    static WARNED: OnceLock<RwLock<std::collections::HashSet<String>>> = OnceLock::new();
+    WARNED.get_or_init(|| RwLock::new(std::collections::HashSet::new()))
+}
+
 /// Estimate the cost in USD for a given model and token breakdown.
 ///
-/// Returns 0.0 for unknown models (with a warning).
+/// Returns 0.0 for unknown models (with a warning, logged once per model).
 pub fn estimate_cost_usd(model: &str, tokens: &TokenBreakdown) -> f64 {
     let Some(cost) = get_model_pricing(model) else {
-        // Warn once pattern would be nice, but for now just trace
-        warn!(model = model, "No pricing data for model, returning 0 cost");
+        // Warn once per model to avoid log spam
+        let should_warn = {
+            let warned = warned_models().read().unwrap();
+            !warned.contains(model)
+        };
+        if should_warn {
+            warn!(model = model, "No pricing data for model, returning 0 cost");
+            let mut warned = warned_models().write().unwrap();
+            warned.insert(model.to_string());
+        }
         return 0.0;
     };
 

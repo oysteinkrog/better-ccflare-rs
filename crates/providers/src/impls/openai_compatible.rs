@@ -25,15 +25,6 @@ use super::openai_format;
 /// Default endpoint for the OpenAI API.
 pub const DEFAULT_OPENAI_ENDPOINT: &str = "https://api.openai.com";
 
-/// GPT model pricing (per 1K tokens).
-const PRICING: &[(&str, f64, f64)] = &[
-    ("gpt-3.5-turbo", 0.0005, 0.0015),
-    ("gpt-4", 0.03, 0.06),
-    ("gpt-4-turbo", 0.01, 0.03),
-    ("gpt-4o", 0.005, 0.015),
-    ("gpt-4o-mini", 0.00015, 0.0006),
-];
-const DEFAULT_PRICING: (f64, f64) = (0.001, 0.002);
 
 /// Configuration for an OpenAI-compatible provider instance.
 #[derive(Debug, Clone)]
@@ -107,16 +98,6 @@ impl OpenAiCompatibleProvider {
         }
     }
 
-    /// Calculate cost for a model based on token counts.
-    fn calculate_cost(model: &str, prompt_tokens: i64, completion_tokens: i64) -> f64 {
-        let (input_rate, output_rate) = PRICING
-            .iter()
-            .find(|(name, _, _)| model.contains(name))
-            .map(|(_, i, o)| (*i, *o))
-            .unwrap_or(DEFAULT_PRICING);
-
-        (prompt_tokens as f64 * input_rate + completion_tokens as f64 * output_rate) / 1000.0
-    }
 }
 
 #[async_trait]
@@ -255,18 +236,12 @@ impl Provider for OpenAiCompatibleProvider {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        let cost_usd = if let (Some(pt), Some(ct)) = (prompt_tokens, completion_tokens) {
-            Some(Self::calculate_cost(model, pt, ct))
-        } else {
-            None
-        };
-
         Some(UsageInfo {
             model: Some(model.to_string()),
             prompt_tokens,
             completion_tokens,
             total_tokens,
-            cost_usd,
+            cost_usd: None, // Calculated by proxy pricing engine (LiteLLM + bundled)
             input_tokens: prompt_tokens,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
@@ -401,15 +376,7 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(10));
         assert_eq!(usage.completion_tokens, Some(5));
         assert_eq!(usage.total_tokens, Some(15));
-        assert!(usage.cost_usd.is_some());
-    }
-
-    #[test]
-    fn cost_calculation() {
-        // GPT-4: $0.03 input, $0.06 output per 1K
-        let cost = OpenAiCompatibleProvider::calculate_cost("gpt-4", 1000, 500);
-        let expected = 0.03 + 0.06 * 0.5; // 0.03 + 0.03 = 0.06
-        assert!((cost - expected).abs() < 1e-10);
+        assert!(usage.cost_usd.is_none()); // Cost calculated by proxy pricing engine
     }
 
     #[tokio::test]

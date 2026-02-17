@@ -50,9 +50,10 @@ pub fn get_model_name(model: &str, account: Option<&Account>) -> String {
     }
 
     // 2. Pattern match: check if any mapping key is a pattern that matches
-    let model_lower = model.to_lowercase();
+    // Use ASCII lowercase comparison to avoid per-key allocation
+    let model_lower = model.to_ascii_lowercase();
     for (key, value) in obj {
-        let key_lower = key.to_lowercase();
+        let key_lower = key.to_ascii_lowercase();
         // Check if model contains the pattern key
         if KNOWN_PATTERNS
             .iter()

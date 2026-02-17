@@ -223,11 +223,20 @@ async fn is_auth_enabled(pool: &DbPool) -> bool {
 }
 
 /// Hash an API key for use as a cache key (avoids storing plaintext keys in memory).
+/// Uses manual hex encoding to avoid format! allocation overhead.
 fn hash_for_cache(api_key: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(api_key.as_bytes());
-    format!("{:x}", hasher.finalize())
+    let hash = hasher.finalize();
+    // Manual hex encode — 64 chars for SHA-256, avoids format! overhead
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in hash {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Verify an API key with caching and spawn_blocking.
