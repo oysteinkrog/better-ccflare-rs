@@ -5,49 +5,116 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>better-ccflare-rs — Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/dashboard/assets/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/dashboard/assets/pico.min.css">
   <style>
+    /* ================================================================
+       better-ccflare-rs — Dashboard Design System
+       Base: Pico CSS | Fonts: Inter + JetBrains Mono
+       ================================================================ */
+
     :root {
       --bccf-orange: #f38020;
-      --bccf-orange-dark: #d96e15;
+      --bccf-orange-hover: #e5730f;
+      --bccf-orange-subtle: rgba(243, 128, 32, 0.10);
       --nav-width: 220px;
-      /* Semantic colors */
-      --bccf-success: #22c55e;
-      --bccf-success-bg: rgba(34,197,94,0.12);
-      --bccf-warning: #eab308;
-      --bccf-warning-bg: rgba(234,179,8,0.12);
-      --bccf-danger: #ef4444;
-      --bccf-danger-bg: rgba(239,68,68,0.12);
-      --bccf-info: #3b82f6;
-      --bccf-info-bg: rgba(59,130,246,0.12);
-      /* Shadows */
-      --bccf-shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
-      --bccf-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
-      --bccf-shadow-md: 0 4px 6px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
+
+      /* Semantic status colors — light mode */
+      --bccf-success: #16a34a;
+      --bccf-success-bg: rgba(22, 163, 74, 0.10);
+      --bccf-warning: #ca8a04;
+      --bccf-warning-bg: rgba(202, 138, 4, 0.10);
+      --bccf-danger: #dc2626;
+      --bccf-danger-bg: rgba(220, 38, 38, 0.10);
+      --bccf-info: #2563eb;
+      --bccf-info-bg: rgba(37, 99, 235, 0.10);
+
+      /* Surfaces — light */
+      --bccf-bg: #f8f9fa;
+      --bccf-surface: #ffffff;
+      --bccf-surface-raised: #ffffff;
+      --bccf-border: #e2e5e9;
+      --bccf-border-subtle: #eff1f3;
+      --bccf-text: #111827;
+      --bccf-text-secondary: #6b7280;
+      --bccf-text-tertiary: #9ca3af;
+
+      /* Shadows — light */
+      --bccf-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --bccf-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --bccf-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --bccf-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+
       /* Transitions */
       --bccf-transition-fast: 150ms ease;
       --bccf-transition-base: 250ms ease;
     }
+
+    /* ---- Dark theme ---- */
     [data-theme="dark"] {
       --bccf-success: #4ade80;
-      --bccf-success-bg: rgba(74,222,128,0.12);
-      --bccf-warning: #facc15;
-      --bccf-warning-bg: rgba(250,204,21,0.12);
+      --bccf-success-bg: rgba(74, 222, 128, 0.10);
+      --bccf-warning: #fbbf24;
+      --bccf-warning-bg: rgba(251, 191, 36, 0.10);
       --bccf-danger: #f87171;
-      --bccf-danger-bg: rgba(248,113,113,0.12);
+      --bccf-danger-bg: rgba(248, 113, 113, 0.10);
       --bccf-info: #60a5fa;
-      --bccf-info-bg: rgba(96,165,250,0.12);
-      --bccf-shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-      --bccf-shadow: 0 2px 4px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
-      --bccf-shadow-md: 0 4px 8px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
-      --bccf-surface: #1e1e2e;
-      --bccf-surface-raised: #262637;
-      --bccf-border: #333350;
+      --bccf-info-bg: rgba(96, 165, 250, 0.10);
+
+      --bccf-bg: #0c0e14;
+      --bccf-surface: #14161e;
+      --bccf-surface-raised: #1c1f2b;
+      --bccf-border: #262a38;
+      --bccf-border-subtle: #1e2130;
+      --bccf-text: #e4e4e7;
+      --bccf-text-secondary: #9ca3af;
+      --bccf-text-tertiary: #6b7280;
+
+      --bccf-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
+      --bccf-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.2);
+      --bccf-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+      --bccf-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.2);
     }
-    /* Dark mode Pico overrides for richer look */
+
+    /* ================================================================
+       Typography Reset
+       ================================================================ */
+    * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body {
+      margin: 0;
+      display: flex;
+      min-height: 100vh;
+      font-kerning: normal;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      background: var(--bccf-bg);
+      font-size: 0.9375rem;
+      line-height: 1.5;
+    }
+    code, pre, kbd, .monospace,
+    code *, pre *, kbd * {
+      font-family: 'JetBrains Mono', 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    h2 { font-size: 1.35rem; margin-bottom: 1.25rem; }
+    h3 { font-size: 1.05rem; }
+
+    /* ================================================================
+       Pico Overrides — harmonize with our design tokens
+       ================================================================ */
     [data-theme="dark"] article {
       background: var(--bccf-surface-raised);
       border: 1px solid var(--bccf-border);
+    }
+    [data-theme="light"] article {
+      background: var(--bccf-surface);
+      border: 1px solid var(--bccf-border-subtle);
     }
     [data-theme="dark"] .sidebar {
       background: var(--bccf-surface);
@@ -57,7 +124,7 @@
       border-color: var(--bccf-border);
     }
     [data-theme="dark"] table tbody tr:hover {
-      background: rgba(255,255,255,0.03);
+      background: rgba(255, 255, 255, 0.025);
     }
     [data-theme="dark"] kbd {
       background: var(--bccf-surface);
@@ -68,23 +135,25 @@
       border-color: var(--bccf-border);
     }
     [data-theme="dark"] .sidebar nav a:hover {
-      background: rgba(255,255,255,0.06);
+      background: rgba(255, 255, 255, 0.05);
     }
     [data-theme="dark"] input, [data-theme="dark"] select {
       border-color: var(--bccf-border);
     }
     [data-theme="dark"] .usage-bar {
-      background: rgba(255,255,255,0.08);
+      background: rgba(255, 255, 255, 0.06);
     }
     [data-theme="dark"] figure {
       border-color: var(--bccf-border);
     }
-    /* Layout */
-    body { margin: 0; display: flex; min-height: 100vh; }
+
+    /* ================================================================
+       Layout — Sidebar + Main
+       ================================================================ */
     .sidebar {
       width: var(--nav-width);
       min-height: 100vh;
-      padding: 1rem;
+      padding: 1rem 0.75rem;
       border-right: 1px solid var(--pico-muted-border-color);
       display: flex;
       flex-direction: column;
@@ -95,80 +164,125 @@
       background: var(--pico-background-color);
       z-index: 10;
     }
-    .sidebar-brand {
-      font-weight: bold;
-      font-size: 1.1rem;
-      padding: 0.5rem 0.75rem;
-      margin-bottom: 0.5rem;
-      color: var(--bccf-orange);
-      text-decoration: none;
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-    }
-    .sidebar-brand small {
-      font-weight: normal;
-      font-size: 0.65rem;
-      opacity: 0.5;
-    }
-    .sidebar nav { flex: 1; }
-    .sidebar nav a {
-      display: block;
-      padding: 0.5rem 0.75rem;
-      margin: 0.15rem 0;
-      border-radius: 0.375rem;
-      text-decoration: none;
-      color: var(--pico-color);
-      font-size: 0.9rem;
-      transition: background var(--bccf-transition-fast), transform var(--bccf-transition-fast);
-    }
-    .sidebar nav a:hover { background: var(--pico-muted-border-color); transform: translateX(2px); }
-    .sidebar nav a.active {
-      background: var(--bccf-orange);
-      color: white;
-      font-weight: 600;
-    }
-    .sidebar-footer {
-      padding-top: 0.5rem;
-      border-top: 1px solid var(--pico-muted-border-color);
-      font-size: 0.8rem;
-    }
     .main-content {
       margin-left: var(--nav-width);
       flex: 1;
-      padding: 1.5rem 2rem;
+      padding: 1.75rem 2.25rem;
       min-width: 0;
+      max-width: 1400px;
     }
-    /* Theme toggle */
+
+    /* ================================================================
+       Sidebar Brand + Nav
+       ================================================================ */
+    .sidebar-brand {
+      font-weight: 700;
+      font-size: 0.95rem;
+      padding: 0.5rem 0.65rem;
+      margin-bottom: 0.75rem;
+      color: var(--bccf-orange);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      letter-spacing: -0.02em;
+    }
+    .sidebar-brand small {
+      font-weight: 500;
+      font-size: 0.6rem;
+      opacity: 0.45;
+      letter-spacing: 0;
+    }
+    .sidebar-brand .brand-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: var(--bccf-orange);
+      border-radius: 7px;
+      flex-shrink: 0;
+    }
+    .sidebar-brand .brand-icon svg {
+      width: 16px;
+      height: 16px;
+      fill: #fff;
+    }
+    .sidebar nav { flex: 1; }
+    .sidebar nav a {
+      display: flex;
+      align-items: center;
+      padding: 0.45rem 0.65rem;
+      margin: 2px 0;
+      border-radius: 0.4rem;
+      text-decoration: none;
+      color: var(--bccf-text-secondary);
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: background var(--bccf-transition-fast), color var(--bccf-transition-fast);
+    }
+    .sidebar nav a:hover {
+      background: var(--pico-muted-border-color);
+      color: var(--bccf-text);
+    }
+    .sidebar nav a.active {
+      background: var(--bccf-orange-subtle);
+      color: var(--bccf-orange);
+      font-weight: 600;
+    }
+    .sidebar-footer {
+      padding-top: 0.75rem;
+      margin-top: 0.5rem;
+      border-top: 1px solid var(--pico-muted-border-color);
+    }
+
+    /* ================================================================
+       Theme Toggle
+       ================================================================ */
     .theme-toggle {
       cursor: pointer;
       background: none;
       border: 1px solid var(--pico-muted-border-color);
-      border-radius: 0.375rem;
-      padding: 0.4rem 0.75rem;
-      font-size: 0.85rem;
-      color: var(--pico-color);
+      border-radius: 0.4rem;
+      padding: 0.35rem 0.65rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--bccf-text-secondary);
       width: 100%;
       margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: background var(--bccf-transition-fast);
     }
     .theme-toggle:hover { background: var(--pico-muted-border-color); }
+
     /* Hamburger for mobile */
     .hamburger { display: none; }
-    /* Enhanced components */
+
+    /* ================================================================
+       Cards & Articles
+       ================================================================ */
     article {
-      box-shadow: var(--bccf-shadow);
-      border-radius: 0.75rem;
-      transition: transform var(--bccf-transition-fast), box-shadow var(--bccf-transition-fast);
+      box-shadow: var(--bccf-shadow-xs);
+      border-radius: 0.625rem;
+      transition: box-shadow var(--bccf-transition-fast);
     }
     article:hover {
-      box-shadow: var(--bccf-shadow-md);
-      transform: translateY(-1px);
+      box-shadow: var(--bccf-shadow-sm);
+    }
+
+    /* ================================================================
+       Tables
+       ================================================================ */
+    table {
+      font-variant-numeric: tabular-nums;
     }
     table thead th {
       text-transform: uppercase;
-      font-size: 0.75rem;
-      letter-spacing: 0.05em;
-      color: var(--pico-muted-color);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      color: var(--bccf-text-tertiary);
       font-weight: 600;
     }
     table tbody tr {
@@ -177,9 +291,16 @@
     table tbody tr:hover {
       background: var(--pico-muted-border-color);
     }
-    kbd { border-radius: 0.25rem; box-shadow: var(--bccf-shadow-sm); }
+    kbd {
+      border-radius: 0.25rem;
+      box-shadow: var(--bccf-shadow-xs);
+      font-size: 0.82em;
+    }
     mark { border-radius: 0.25rem; }
-    /* Usage bar component */
+
+    /* ================================================================
+       Usage Bars
+       ================================================================ */
     .usage-bar {
       flex: 1;
       height: 6px;
@@ -200,27 +321,50 @@
       align-items: center;
       gap: 6px;
     }
-    /* Status badges */
+
+    /* ================================================================
+       Status Badges
+       ================================================================ */
     .badge {
       display: inline-block;
-      padding: 0.15rem 0.5rem;
-      border-radius: 0.25rem;
-      font-size: 0.75rem;
+      padding: 0.125rem 0.45rem;
+      border-radius: 0.3rem;
+      font-size: 0.7rem;
       font-weight: 600;
-      line-height: 1.4;
+      line-height: 1.5;
+      letter-spacing: 0.01em;
     }
     .badge-success { background: var(--bccf-success-bg); color: var(--bccf-success); }
     .badge-warning { background: var(--bccf-warning-bg); color: var(--bccf-warning); }
     .badge-danger { background: var(--bccf-danger-bg); color: var(--bccf-danger); }
-    .badge-muted { background: var(--pico-muted-border-color); color: var(--pico-muted-color); }
-    .badge-primary { background: color-mix(in srgb, var(--pico-primary) 15%, transparent); color: var(--pico-primary); }
-    /* Metric card styling */
-    .metric-value { font-size: 2rem; font-weight: 700; margin: 0; line-height: 1.2; }
-    .metric-label { font-size: 0.8rem; color: var(--pico-muted-color); margin: 0; text-transform: uppercase; letter-spacing: 0.03em; }
-    /* Zero-state muted display for usage */
+    .badge-muted { background: var(--pico-muted-border-color); color: var(--bccf-text-tertiary); }
+    .badge-primary { background: var(--bccf-orange-subtle); color: var(--bccf-orange); }
+
+    /* ================================================================
+       Metric Cards
+       ================================================================ */
+    .metric-value {
+      font-size: 1.85rem;
+      font-weight: 700;
+      margin: 0;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-label {
+      font-size: 0.72rem;
+      color: var(--bccf-text-tertiary);
+      margin: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
     .usage-zero { opacity: 0.35; }
     .usage-zero .usage-fill { width: 0 !important; }
-    /* Account card list */
+
+    /* ================================================================
+       Account Cards
+       ================================================================ */
     .acct-list { display: flex; flex-direction: column; gap: 0.5rem; }
     .acct-card {
       border: 1px solid var(--pico-muted-border-color);
@@ -228,13 +372,16 @@
       padding: 0.75rem 1rem;
       transition: border-color var(--bccf-transition-fast), box-shadow var(--bccf-transition-fast);
     }
-    .acct-card:hover { border-color: var(--pico-primary); box-shadow: var(--bccf-shadow-sm); }
-    .acct-card.acct-active {
-      border-color: var(--pico-primary);
-      background: color-mix(in srgb, var(--pico-primary) 5%, transparent);
-      box-shadow: var(--bccf-shadow-sm);
+    .acct-card:hover {
+      border-color: var(--bccf-border);
+      box-shadow: var(--bccf-shadow-xs);
     }
-    /* Account card: two-row layout — header + details strip */
+    .acct-card.acct-active {
+      border-color: var(--bccf-orange);
+      background: var(--bccf-orange-subtle);
+      box-shadow: var(--bccf-shadow-xs);
+    }
+    /* Header row: icon + name + badges | actions */
     .acct-header {
       display: flex;
       justify-content: space-between;
@@ -248,7 +395,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       max-width: min(400px, 45vw);
-      font-size: 0.95rem;
+      font-size: 0.9rem;
     }
     .acct-badges { display: inline-flex; gap: 0.3rem; flex-shrink: 0; }
     /* Provider icon */
@@ -256,14 +403,14 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 1.4rem;
-      height: 1.4rem;
+      width: 1.3rem;
+      height: 1.3rem;
       flex-shrink: 0;
-      color: var(--pico-muted-color);
+      color: var(--bccf-text-tertiary);
       cursor: help;
     }
     .acct-provider-icon svg { width: 100%; height: 100%; }
-    /* Icon action buttons */
+    /* Action buttons */
     .acct-actions { display: flex; gap: 0.3rem; flex-shrink: 0; }
     .acct-btn {
       display: inline-flex;
@@ -277,7 +424,7 @@
       border-radius: 0.4rem;
     }
     .acct-btn svg { width: 1rem; height: 1rem; }
-    /* Details strip — horizontal row of compact key-value chips */
+    /* Details strip: horizontal chip row */
     .acct-details {
       display: flex;
       flex-wrap: wrap;
@@ -290,41 +437,40 @@
       align-items: center;
       gap: 0.3rem;
       padding: 0.15rem 0.5rem;
-      border-radius: 0.25rem;
+      border-radius: 0.3rem;
       background: color-mix(in srgb, var(--pico-muted-border-color) 30%, transparent);
       white-space: nowrap;
     }
     [data-theme="dark"] .acct-chip {
-      background: rgba(255,255,255,0.05);
+      background: rgba(255, 255, 255, 0.04);
     }
     .acct-chip-label {
-      font-size: 0.68rem;
+      font-size: 0.65rem;
       text-transform: uppercase;
-      letter-spacing: 0.03em;
-      color: var(--pico-muted-color);
+      letter-spacing: 0.04em;
+      color: var(--bccf-text-tertiary);
+      font-weight: 600;
     }
     .acct-chip kbd { font-size: 0.72rem; white-space: nowrap; }
     .acct-editable {
       cursor: pointer;
       border-bottom: 1px dashed var(--pico-muted-border-color);
       padding-bottom: 1px;
+      transition: border-color var(--bccf-transition-fast), color var(--bccf-transition-fast);
     }
     .acct-editable:hover {
-      border-bottom-color: var(--pico-primary);
-      color: var(--pico-primary);
+      border-bottom-color: var(--bccf-orange);
+      color: var(--bccf-orange);
     }
-    /* "More" toggle — just another chip */
+    /* "More" toggle chip */
     .acct-more-toggle {
       cursor: pointer;
-      color: var(--pico-muted-color);
+      color: var(--bccf-text-tertiary);
       user-select: none;
+      font-weight: 500;
     }
-    .acct-more-toggle:hover { color: var(--pico-primary); }
-    @media (max-width: 600px) {
-      .acct-header { flex-wrap: wrap; }
-      .acct-details { gap: 0.3rem; }
-      .acct-name-group strong { max-width: min(250px, 55vw); }
-    }
+    .acct-more-toggle:hover { color: var(--bccf-orange); }
+    /* Usage section in account cards */
     .acct-usage {
       display: flex;
       flex-wrap: wrap;
@@ -334,19 +480,22 @@
       border-top: 1px solid var(--pico-muted-border-color);
     }
     .acct-usage-window { flex: 1; min-width: 180px; max-width: 320px; }
-    .acct-usage-label { font-size: 0.75rem; color: var(--pico-muted-color); }
-    .acct-usage-pct { font-size: 0.75rem; font-weight: 600; }
-    .acct-usage-reset { font-size: 0.7rem; color: var(--pico-muted-color); }
-    /* Pool usage summary */
+    .acct-usage-label { font-size: 0.72rem; color: var(--bccf-text-tertiary); font-weight: 500; }
+    .acct-usage-pct { font-size: 0.72rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .acct-usage-reset { font-size: 0.68rem; color: var(--bccf-text-tertiary); }
+
+    /* ================================================================
+       Pool Usage Summary
+       ================================================================ */
     .pool-summary {
       border: 1px solid var(--pico-muted-border-color);
       border-radius: 0.5rem;
       padding: 0.75rem 1rem;
       margin-bottom: 0.75rem;
-      background: color-mix(in srgb, var(--pico-background-color) 95%, var(--pico-primary) 5%);
+      background: color-mix(in srgb, var(--pico-background-color) 95%, var(--bccf-orange) 5%);
     }
     [data-theme="dark"] .pool-summary {
-      background: rgba(255,255,255,0.02);
+      background: rgba(255, 255, 255, 0.015);
       border-color: var(--bccf-border);
     }
     .pool-summary-header {
@@ -354,14 +503,15 @@
       align-items: center;
       gap: 0.5rem;
       margin-bottom: 0.5rem;
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 600;
     }
     .pool-status-dot {
       display: inline-block;
-      width: 10px;
-      height: 10px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
+      flex-shrink: 0;
     }
     .pool-status-dot.green { background: var(--bccf-success); }
     .pool-status-dot.yellow { background: var(--bccf-warning); }
@@ -381,24 +531,35 @@
       justify-content: space-between;
       align-items: baseline;
       margin-bottom: 4px;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
     }
-    .pool-window-label { color: var(--pico-muted-color); }
-    .pool-window-pct { font-weight: 600; }
+    .pool-window-label { color: var(--bccf-text-tertiary); font-weight: 500; }
+    .pool-window-pct { font-weight: 600; font-variant-numeric: tabular-nums; }
     .pool-window-detail {
       display: flex;
       justify-content: space-between;
       margin-top: 3px;
-      font-size: 0.7rem;
-      color: var(--pico-muted-color);
+      font-size: 0.68rem;
+      color: var(--bccf-text-tertiary);
     }
-    /* Tab content loading indicator */
-    .htmx-request #tab-content { opacity: 0.6; transition: opacity var(--bccf-transition-fast); }
-    /* Mobile */
+
+    /* ================================================================
+       Loading & Tab Content
+       ================================================================ */
+    .htmx-request #tab-content { opacity: 0.5; transition: opacity var(--bccf-transition-fast); }
+
+    /* ================================================================
+       Responsive — Mobile
+       ================================================================ */
+    @media (max-width: 600px) {
+      .acct-header { flex-wrap: wrap; }
+      .acct-details { gap: 0.3rem; }
+      .acct-name-group strong { max-width: min(250px, 55vw); }
+    }
     @media (max-width: 768px) {
       .sidebar {
         transform: translateX(-100%);
-        transition: transform 0.2s;
+        transition: transform 0.2s ease;
         width: 260px;
       }
       .sidebar.open { transform: translateX(0); }
@@ -411,7 +572,7 @@
         z-index: 20;
         background: var(--pico-background-color);
         border: 1px solid var(--pico-muted-border-color);
-        border-radius: 0.375rem;
+        border-radius: 0.4rem;
         padding: 0.5rem 0.75rem;
         font-size: 1.2rem;
         cursor: pointer;
@@ -420,8 +581,9 @@
         display: none;
         position: fixed;
         inset: 0;
-        background: rgba(0,0,0,0.4);
+        background: rgba(0, 0, 0, 0.5);
         z-index: 9;
+        backdrop-filter: blur(2px);
       }
       .sidebar.open ~ .overlay { display: block; }
     }
@@ -431,8 +593,8 @@
   <button class="hamburger" onclick="document.querySelector('.sidebar').classList.toggle('open')" aria-label="Menu">☰</button>
   <aside class="sidebar" id="sidebar">
     <a class="sidebar-brand" href="/dashboard">
-      ⚡ better-ccflare-rs
-      <small>v{{ version }}</small>
+      <span class="brand-icon"><svg viewBox="0 0 32 32"><path d="M18.5 3L8 18h7l-2.5 11L23 14h-7z"/></svg></span>
+      <span>better-ccflare<small style="display:block;">v{{ version }}</small></span>
     </a>
     <nav>
       {% for tab in tabs %}
@@ -449,7 +611,7 @@
     </nav>
     <div class="sidebar-footer">
       <button class="theme-toggle" onclick="toggleTheme()">
-        <span id="theme-icon">🌙</span> Toggle theme
+        <span id="theme-icon">☀️</span> Theme
       </button>
     </div>
   </aside>

@@ -371,7 +371,8 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                     || a.provider == "claude-oauth"
                     || a.provider == "console",
                 is_next: next_account_id.as_deref() == Some(a.id.as_str()),
-                reserve_percent: a.reserve_percent,
+                reserve_5h: a.reserve_5h,
+                reserve_weekly: a.reserve_weekly,
                 reserve_hard: a.reserve_hard,
             }
         })
@@ -621,14 +622,9 @@ fn predict_next_account(
         if a.rate_limited_until.is_some_and(|until| until >= now) {
             return false;
         }
-        // Hard reserve: exclude if at/over threshold
-        if a.reserve_hard && a.reserve_percent > 0 {
-            if let Some(info) = usage.get(&a.id) {
-                let threshold = (100 - a.reserve_percent) as f64;
-                if info.utilization_pct >= threshold {
-                    return false;
-                }
-            }
+        // Hard reserve: exclude if at/over threshold (per-window)
+        if a.reserve_hard && is_at_reserve(a, usage) {
+            return false;
         }
         true
     };
@@ -690,20 +686,40 @@ fn predict_next_account(
     available.first().map(|a| a.id.clone())
 }
 
-/// Check if an account is at or over its soft reserve threshold.
+/// Check if an account is at or over its reserve threshold (per-window).
 fn is_at_reserve(
     account: &bccf_core::types::Account,
     usage: &std::collections::HashMap<String, bccf_core::types::RoutingUsageInfo>,
 ) -> bool {
-    if account.reserve_percent <= 0 {
+    use bccf_core::types::WindowKind;
+
+    if account.reserve_5h <= 0 && account.reserve_weekly <= 0 {
         return false;
     }
-    if let Some(info) = usage.get(&account.id) {
-        let threshold = (100 - account.reserve_percent) as f64;
-        info.utilization_pct >= threshold
-    } else {
-        false
+    let Some(info) = usage.get(&account.id) else {
+        return false;
+    };
+
+    if !info.windows.is_empty() {
+        for w in &info.windows {
+            let threshold = match w.kind {
+                WindowKind::FiveHour => account.reserve_5h,
+                WindowKind::Weekly => account.reserve_weekly,
+                WindowKind::Other => account.reserve_5h,
+            };
+            if threshold > 0 && w.utilization_pct >= (100 - threshold) as f64 {
+                return true;
+            }
+        }
+        return false;
     }
+
+    // Fallback: aggregate
+    let threshold = account.reserve_5h.max(account.reserve_weekly);
+    if threshold > 0 && info.utilization_pct >= (100 - threshold) as f64 {
+        return true;
+    }
+    false
 }
 
 /// CSS class for utilization percentage.

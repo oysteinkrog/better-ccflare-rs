@@ -134,29 +134,47 @@ fn anthropic_representative_window(data: &AnthropicUsageData) -> Option<String> 
 /// Picks the window with the highest utilization and parses its `resets_at`
 /// ISO-8601 string into epoch-ms.
 fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo> {
+    use bccf_core::types::{WindowKind, WindowUsage};
+
     let mut best_util: f64 = 0.0;
     let mut best_reset: Option<i64> = None;
+    let mut windows = Vec::new();
 
-    for (_key, value) in data {
+    for (key, value) in data {
         if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
+            let reset_ms = value
+                .get("resets_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.timestamp_millis())
+                });
+
+            // Normalise to 0-100
+            let pct = if util <= 1.01 { util * 100.0 } else { util };
+
+            // Map key to WindowKind
+            let kind = match key.as_str() {
+                "five_hour" => WindowKind::FiveHour,
+                "seven_day" | "seven_day_opus" | "seven_day_sonnet" => WindowKind::Weekly,
+                _ => WindowKind::Other,
+            };
+
+            windows.push(WindowUsage {
+                kind,
+                utilization_pct: pct,
+                resets_at_ms: reset_ms,
+            });
+
             if util > best_util {
                 best_util = util;
-                best_reset = value
-                    .get("resets_at")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| {
-                        chrono::DateTime::parse_from_rfc3339(s)
-                            .ok()
-                            .map(|dt| dt.timestamp_millis())
-                    });
+                best_reset = reset_ms;
             }
         }
     }
 
-    // Anthropic utilization is 0.0-1.0 in some windows — but the existing
-    // `anthropic_utilization()` already returns raw values. The API itself
-    // reports 0-100. We normalise to 0-100 here: if max < 1.01 treat it as
-    // a fraction and multiply by 100.
+    // Normalise aggregate to 0-100
     let pct = if best_util <= 1.01 {
         best_util * 100.0
     } else {
@@ -166,6 +184,7 @@ fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo>
     Some(RoutingUsageInfo {
         utilization_pct: pct,
         resets_at_ms: best_reset,
+        windows,
     })
 }
 
@@ -174,6 +193,8 @@ fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo>
 /// Picks the most restrictive window (daily vs monthly) and uses its reset_at
 /// epoch-ms directly. `percent_used` is 0.0-1.0 → multiply by 100.
 fn nanogpt_routing_info(data: &NanoGptUsageData) -> Option<RoutingUsageInfo> {
+    use bccf_core::types::{WindowKind, WindowUsage};
+
     if !data.active {
         return None;
     }
@@ -186,9 +207,23 @@ fn nanogpt_routing_info(data: &NanoGptUsageData) -> Option<RoutingUsageInfo> {
         (monthly_pct, data.monthly.reset_at)
     };
 
+    let windows = vec![
+        WindowUsage {
+            kind: WindowKind::Other,
+            utilization_pct: daily_pct,
+            resets_at_ms: if data.daily.reset_at > 0 { Some(data.daily.reset_at) } else { None },
+        },
+        WindowUsage {
+            kind: WindowKind::Other,
+            utilization_pct: monthly_pct,
+            resets_at_ms: if data.monthly.reset_at > 0 { Some(data.monthly.reset_at) } else { None },
+        },
+    ];
+
     Some(RoutingUsageInfo {
         utilization_pct: pct,
         resets_at_ms: if reset > 0 { Some(reset) } else { None },
+        windows,
     })
 }
 
@@ -197,10 +232,18 @@ fn nanogpt_routing_info(data: &NanoGptUsageData) -> Option<RoutingUsageInfo> {
 /// Uses the tokens_limit window (the one that matters for routing).
 /// `percentage` is already 0-100, `reset_at` is `Option<i64>` epoch-ms.
 fn zai_routing_info(data: &ZaiUsageData) -> Option<RoutingUsageInfo> {
+    use bccf_core::types::{WindowKind, WindowUsage};
+
     let w = data.tokens_limit.as_ref()?;
+    let windows = vec![WindowUsage {
+        kind: WindowKind::Other,
+        utilization_pct: w.percentage,
+        resets_at_ms: w.reset_at,
+    }];
     Some(RoutingUsageInfo {
         utilization_pct: w.percentage,
         resets_at_ms: w.reset_at,
+        windows,
     })
 }
 

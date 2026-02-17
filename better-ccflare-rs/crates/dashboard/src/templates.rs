@@ -212,8 +212,10 @@ pub struct AccountRow {
     pub is_oauth: bool,
     /// Whether the load balancer would choose this account next.
     pub is_next: bool,
-    /// Reserve capacity percentage (0-100).
-    pub reserve_percent: i64,
+    /// 5-hour reserve capacity percentage (0-100).
+    pub reserve_5h: i64,
+    /// Weekly reserve capacity percentage (0-100).
+    pub reserve_weekly: i64,
     /// Whether reserve is hard (excluded) or soft (deprioritized).
     pub reserve_hard: bool,
 }

@@ -110,7 +110,8 @@ fn account_to_response(account: &Account, now: i64) -> AccountResponse {
         usage_window: None,
         usage_data: None,
         has_refresh_token: !account.refresh_token.is_empty(),
-        reserve_percent: account.reserve_percent,
+        reserve_5h: account.reserve_5h,
+        reserve_weekly: account.reserve_weekly,
         reserve_hard: account.reserve_hard,
     }
 }
@@ -654,8 +655,8 @@ pub async fn set_model_mappings(
     Json(json!({"success": true})).into_response()
 }
 
-/// POST /api/accounts/:id/reserve-percent — set reserve capacity percentage.
-pub async fn set_reserve_percent(
+/// POST /api/accounts/:id/reserve-5h — set 5-hour reserve capacity percentage.
+pub async fn set_reserve_5h(
     State(state): State<Arc<AppState>>,
     Path(account_id): Path<String>,
     Json(body): Json<serde_json::Value>,
@@ -699,11 +700,68 @@ pub async fn set_reserve_percent(
         }
     }
 
-    if let Err(e) = account_repo::set_reserve_percent(&conn, &account_id, percent) {
-        warn!("Failed to set reserve_percent for {account_id}: {e}");
+    if let Err(e) = account_repo::set_reserve_5h(&conn, &account_id, percent) {
+        warn!("Failed to set reserve_5h for {account_id}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to update reserve percent"})),
+            Json(json!({"error": "Failed to update reserve 5h"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "percent": percent})).into_response()
+}
+
+/// POST /api/accounts/:id/reserve-weekly — set weekly reserve capacity percentage.
+pub async fn set_reserve_weekly(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let percent = match body.get("percent").and_then(|v| v.as_i64()) {
+        Some(p) if (0..=100).contains(&p) => p,
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "percent must be an integer 0-100"})),
+            )
+                .into_response();
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "percent (integer 0-100) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_reserve_weekly(&conn, &account_id, percent) {
+        warn!("Failed to set reserve_weekly for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update reserve weekly"})),
         )
             .into_response();
     }
@@ -910,7 +968,8 @@ pub async fn create_account(
         auto_refresh_enabled: true,
         custom_endpoint: None,
         model_mappings: None,
-        reserve_percent: 0,
+        reserve_5h: 0,
+        reserve_weekly: 0,
         reserve_hard: false,
     };
 
@@ -994,7 +1053,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
-            reserve_percent: 0,
+            reserve_5h: 0,
+            reserve_weekly: 0,
             reserve_hard: false,
         };
         account_repo::create(&conn, &account).unwrap();
@@ -1293,7 +1353,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
-            reserve_percent: 0,
+            reserve_5h: 0,
+            reserve_weekly: 0,
             reserve_hard: false,
         };
 
@@ -1329,7 +1390,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
-            reserve_percent: 0,
+            reserve_5h: 0,
+            reserve_weekly: 0,
             reserve_hard: false,
         };
 
