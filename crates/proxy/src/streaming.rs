@@ -6,7 +6,6 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -77,7 +76,8 @@ impl AnalyticsBuffer {
 // Tee stream
 // ---------------------------------------------------------------------------
 
-/// Shared state for the analytics side of a tee'd stream.
+/// State for the analytics side of a tee'd stream.
+/// Only accessed via Pin projection (single consumer), so no Mutex needed.
 struct TeeState {
     buffer: AnalyticsBuffer,
     stream_start: Instant,
@@ -94,7 +94,7 @@ pin_project! {
     pub struct TeeStream<S> {
         #[pin]
         inner: S,
-        state: Arc<Mutex<TeeState>>,
+        state: TeeState,
         tx: Option<oneshot::Sender<AnalyticsBuffer>>,
         stream_timeout: Duration,
         chunk_timeout: Duration,
@@ -112,37 +112,32 @@ where
 
         match this.inner.poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                let mut state = this.state.lock().unwrap();
                 let now = Instant::now();
 
                 // Check timeouts
-                if now.duration_since(state.stream_start) > *this.stream_timeout {
-                    if !state.timed_out {
+                if now.duration_since(this.state.stream_start) > *this.stream_timeout {
+                    if !this.state.timed_out {
                         warn!("Stream exceeded maximum duration, aborting analytics");
-                        state.timed_out = true;
+                        this.state.timed_out = true;
                     }
-                } else if now.duration_since(state.last_chunk) > *this.chunk_timeout
-                    && !state.timed_out
+                } else if now.duration_since(this.state.last_chunk) > *this.chunk_timeout
+                    && !this.state.timed_out
                 {
                     warn!("Chunk timeout exceeded, aborting analytics");
-                    state.timed_out = true;
+                    this.state.timed_out = true;
                 }
 
-                state.last_chunk = now;
-                if !state.timed_out {
-                    state.buffer.push(&chunk);
+                this.state.last_chunk = now;
+                if !this.state.timed_out {
+                    this.state.buffer.push(&chunk);
                 }
-                drop(state);
 
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
             Poll::Ready(None) => {
                 // Stream ended — send buffer
-                let buffer = {
-                    let mut state = this.state.lock().unwrap();
-                    std::mem::replace(&mut state.buffer, AnalyticsBuffer::new())
-                };
+                let buffer = std::mem::replace(&mut this.state.buffer, AnalyticsBuffer::new());
                 if let Some(tx) = this.tx.take() {
                     let _ = tx.send(buffer);
                 }
@@ -167,16 +162,15 @@ where
 {
     let (tx, rx) = oneshot::channel();
     let now = Instant::now();
-    let state = Arc::new(Mutex::new(TeeState {
-        buffer: AnalyticsBuffer::new(),
-        stream_start: now,
-        last_chunk: now,
-        timed_out: false,
-    }));
 
     let stream = TeeStream {
         inner,
-        state,
+        state: TeeState {
+            buffer: AnalyticsBuffer::new(),
+            stream_start: now,
+            last_chunk: now,
+            timed_out: false,
+        },
         tx: Some(tx),
         stream_timeout: Duration::from_millis(STREAM_TIMEOUT_MS),
         chunk_timeout: Duration::from_millis(CHUNK_TIMEOUT_MS),
@@ -306,6 +300,12 @@ pub struct StreamUsage {
 /// - `message_delta` — contains output_tokens (authoritative final count)
 /// - `content_block_delta` — streaming text (not used for counting here)
 pub fn extract_usage_from_sse_data(data: &str, usage: &mut StreamUsage) {
+    // Fast reject: only message_start and message_delta contain usage info.
+    // content_block_delta events (95%+ of events) are skipped without parsing.
+    if !data.contains("message_start") && !data.contains("message_delta") {
+        return;
+    }
+
     let json: serde_json::Value = match serde_json::from_str(data) {
         Ok(v) => v,
         Err(_) => return,

@@ -201,6 +201,7 @@ pub trait SummaryReceiver: Send + Sync + 'static {
 /// received or all senders are dropped.
 pub fn spawn_post_processor<R: SummaryReceiver>(receiver: R) -> PostProcessorHandle {
     let (tx, mut rx) = mpsc::channel::<PostProcessorMsg>(1024);
+    let receiver = std::sync::Arc::new(receiver);
 
     tokio::spawn(async move {
         info!("Post-processor started");
@@ -235,7 +236,9 @@ pub fn spawn_post_processor<R: SummaryReceiver>(receiver: R) -> PostProcessorHan
                         api_key_name,
                         failover_attempts,
                     );
-                    receiver.on_summary(summary);
+                    // Offload DB write to blocking thread to avoid blocking the async runtime
+                    let recv = receiver.clone();
+                    tokio::task::spawn_blocking(move || recv.on_summary(summary));
                 }
                 PostProcessorMsg::ResponseComplete {
                     request_id,
@@ -265,7 +268,8 @@ pub fn spawn_post_processor<R: SummaryReceiver>(receiver: R) -> PostProcessorHan
                         api_key_name,
                         failover_attempts,
                     );
-                    receiver.on_summary(summary);
+                    let recv = receiver.clone();
+                    tokio::task::spawn_blocking(move || recv.on_summary(summary));
                 }
                 PostProcessorMsg::Shutdown => {
                     info!("Post-processor shutting down");

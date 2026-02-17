@@ -5,6 +5,7 @@
 //! Concurrent requests for the same account share a single refresh operation
 //! via per-account mutex deduplication.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use bccf_core::providers::Provider;
@@ -75,6 +76,9 @@ struct FailureRecord {
     backoff_count: u32,
 }
 
+/// Minimum interval between failure cleanup runs (60 seconds).
+const CLEANUP_INTERVAL_MS: i64 = 60_000;
+
 /// Centralized token validation and refresh with per-account deduplication.
 pub struct TokenManager {
     /// Per-account mutex for deduplicating concurrent refresh attempts.
@@ -83,6 +87,8 @@ pub struct TokenManager {
     failures: DashMap<String, FailureRecord>,
     /// Client ID for OAuth token refresh.
     client_id: String,
+    /// Last time cleanup_expired_failures ran (avoids running on every call).
+    last_cleanup: AtomicI64,
 }
 
 impl TokenManager {
@@ -91,6 +97,7 @@ impl TokenManager {
             refresh_locks: DashMap::new(),
             failures: DashMap::new(),
             client_id,
+            last_cleanup: AtomicI64::new(0),
         }
     }
 
@@ -288,10 +295,20 @@ impl TokenManager {
         self.failures.remove(account_id);
     }
 
-    /// Remove expired failure records.
+    /// Remove expired failure records (rate-limited to once per minute).
     fn cleanup_expired_failures(&self, now: i64) {
-        self.failures
-            .retain(|_, record| now - record.timestamp <= FAILURE_TTL_MS);
+        let last = self.last_cleanup.load(Ordering::Relaxed);
+        if now - last < CLEANUP_INTERVAL_MS {
+            return;
+        }
+        if self
+            .last_cleanup
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.failures
+                .retain(|_, record| now - record.timestamp <= FAILURE_TTL_MS);
+        }
     }
 }
 

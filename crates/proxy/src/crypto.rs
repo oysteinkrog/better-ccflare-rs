@@ -113,8 +113,15 @@ pub fn key_suffix(api_key: &str) -> String {
 
 /// Hex encoding/decoding helpers (avoiding an extra dependency).
 mod hex {
+    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
     pub fn encode(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            s.push(HEX_CHARS[(b >> 4) as usize] as char);
+            s.push(HEX_CHARS[(b & 0x0f) as usize] as char);
+        }
+        s
     }
 
     pub fn decode(s: &str) -> Result<Vec<u8>, ()> {

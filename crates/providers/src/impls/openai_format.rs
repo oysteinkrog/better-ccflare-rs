@@ -19,14 +19,14 @@ use serde_json::{json, Map, Value};
 /// - Messages content blocks → flattened OpenAI messages
 /// - Tools (Anthropic schema) → OpenAI function tools
 pub fn anthropic_to_openai_request(body: &[u8]) -> Option<Vec<u8>> {
-    let input: Value = serde_json::from_slice(body).ok()?;
-    let obj = input.as_object()?;
+    let mut input: Value = serde_json::from_slice(body).ok()?;
+    let obj = input.as_object_mut()?;
 
     let mut oai: Map<String, Value> = Map::new();
 
-    // Model
-    if let Some(model) = obj.get("model") {
-        oai.insert("model".into(), model.clone());
+    // Model — take() avoids cloning the string
+    if let Some(model) = obj.get_mut("model").map(Value::take) {
+        oai.insert("model".into(), model);
     }
 
     // Build messages array
@@ -39,7 +39,6 @@ pub fn anthropic_to_openai_request(body: &[u8]) -> Option<Vec<u8>> {
                 messages.push(json!({"role": "system", "content": s}));
             }
         } else if let Some(arr) = system.as_array() {
-            // System can be an array of content blocks
             let text: String = arr
                 .iter()
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
@@ -51,23 +50,20 @@ pub fn anthropic_to_openai_request(body: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    // Convert Anthropic messages to OpenAI messages
-    if let Some(msgs) = obj.get("messages").and_then(|v| v.as_array()) {
-        for msg in msgs {
-            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            let content = msg.get("content");
+    // Convert Anthropic messages to OpenAI messages — take() the array to avoid cloning
+    if let Some(msgs) = obj.get_mut("messages").and_then(|v| v.as_array_mut()) {
+        for msg in msgs.iter_mut() {
+            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let content = msg.get_mut("content").map(Value::take);
 
             match content {
-                // Simple string content
                 Some(Value::String(text)) => {
                     messages.push(json!({"role": role, "content": text}));
                 }
-                // Array of content blocks
                 Some(Value::Array(blocks)) => {
-                    convert_content_blocks(&mut messages, role, blocks);
+                    convert_content_blocks(&mut messages, &role, &blocks);
                 }
                 _ => {
-                    // Pass through with null content (e.g. assistant with tool_calls only)
                     messages.push(json!({"role": role, "content": null}));
                 }
             }
@@ -76,49 +72,48 @@ pub fn anthropic_to_openai_request(body: &[u8]) -> Option<Vec<u8>> {
 
     oai.insert("messages".into(), Value::Array(messages));
 
-    // max_tokens
-    if let Some(mt) = obj.get("max_tokens") {
-        oai.insert("max_tokens".into(), mt.clone());
+    // Scalar fields — take() avoids cloning
+    if let Some(mt) = obj.get_mut("max_tokens").map(Value::take) {
+        oai.insert("max_tokens".into(), mt);
     }
 
-    // temperature, top_p — pass through
     for key in ["temperature", "top_p", "top_k"] {
-        if let Some(v) = obj.get(key) {
-            oai.insert(key.into(), v.clone());
+        if let Some(v) = obj.get_mut(key).map(Value::take) {
+            oai.insert(key.into(), v);
         }
     }
 
     // stop_sequences → stop
-    if let Some(stops) = obj.get("stop_sequences") {
-        oai.insert("stop".into(), stops.clone());
+    if let Some(stops) = obj.get_mut("stop_sequences").map(Value::take) {
+        oai.insert("stop".into(), stops);
     }
 
     // stream
-    if let Some(stream) = obj.get("stream") {
-        oai.insert("stream".into(), stream.clone());
-        // Include usage in stream responses
-        if stream.as_bool() == Some(true) {
+    if let Some(stream) = obj.get_mut("stream").map(Value::take) {
+        let is_streaming = stream.as_bool() == Some(true);
+        oai.insert("stream".into(), stream);
+        if is_streaming {
             oai.insert("stream_options".into(), json!({"include_usage": true}));
         }
     }
 
-    // Tools (Anthropic → OpenAI function format)
-    if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
+    // Tools (Anthropic → OpenAI function format) — take() the tools array
+    if let Some(Value::Array(tools)) = obj.get_mut("tools").map(Value::take) {
         let oai_tools: Vec<Value> = tools
-            .iter()
-            .filter_map(|tool| {
-                let name = tool.get("name")?.as_str()?;
+            .into_iter()
+            .filter_map(|mut tool| {
+                let name = tool.get("name")?.as_str()?.to_string();
                 let mut func = json!({
                     "type": "function",
                     "function": {
                         "name": name,
                     }
                 });
-                if let Some(desc) = tool.get("description") {
-                    func["function"]["description"] = desc.clone();
+                if let Some(desc) = tool.get_mut("description").map(Value::take) {
+                    func["function"]["description"] = desc;
                 }
-                if let Some(schema) = tool.get("input_schema") {
-                    func["function"]["parameters"] = schema.clone();
+                if let Some(schema) = tool.get_mut("input_schema").map(Value::take) {
+                    func["function"]["parameters"] = schema;
                 }
                 Some(func)
             })
@@ -225,9 +220,10 @@ fn convert_content_blocks(messages: &mut Vec<Value>, role: &str, blocks: &[Value
 /// Convert an OpenAI Chat Completions response body into an Anthropic Messages
 /// API response body.
 pub fn openai_to_anthropic_response(body: &[u8]) -> Option<Vec<u8>> {
-    let input: Value = serde_json::from_slice(body).ok()?;
-    let choice = input.get("choices")?.as_array()?.first()?;
-    let message = choice.get("message")?;
+    let mut input: Value = serde_json::from_slice(body).ok()?;
+    let choices = input.get_mut("choices")?.as_array_mut()?;
+    let choice = choices.first_mut()?;
+    let message = choice.get_mut("message")?;
 
     let mut content: Vec<Value> = Vec::new();
 
@@ -239,11 +235,14 @@ pub fn openai_to_anthropic_response(body: &[u8]) -> Option<Vec<u8>> {
     }
 
     // Tool calls → tool_use blocks
-    if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
-        for tc in tool_calls {
-            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(func) = tc.get("function") {
-                let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if let Some(tool_calls) = message
+        .get_mut("tool_calls")
+        .and_then(|v| v.as_array_mut())
+    {
+        for tc in tool_calls.iter_mut() {
+            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            if let Some(func) = tc.get_mut("function") {
+                let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
                 let args_str = func
                     .get("arguments")
                     .and_then(|v| v.as_str())
@@ -269,15 +268,20 @@ pub fn openai_to_anthropic_response(body: &[u8]) -> Option<Vec<u8>> {
         _ => "end_turn",
     };
 
-    // Usage
-    let usage = input.get("usage").cloned().unwrap_or(json!({}));
+    // Usage — take() to avoid cloning the usage object
+    let usage = input
+        .get_mut("usage")
+        .map(Value::take)
+        .unwrap_or(json!({}));
     let model = input
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+        .unwrap_or("unknown")
+        .to_owned();
+    let id = input.get_mut("id").map(Value::take).unwrap_or(json!("msg_unknown"));
 
     let response = json!({
-        "id": input.get("id").cloned().unwrap_or(json!("msg_unknown")),
+        "id": id,
         "type": "message",
         "role": "assistant",
         "model": model,
