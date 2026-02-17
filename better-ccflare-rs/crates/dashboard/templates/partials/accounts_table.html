@@ -102,6 +102,7 @@
                style="margin:0;"
                onchange="toggleFallback('{{ acct.id }}', this.checked)">
       </div>
+      {% if acct.has_usage %}
       <div class="acct-chip" title="5-hour reserve — keep this % of 5h window unused (click to edit)">
         <span class="acct-chip-label">Res 5h</span>
         <span class="acct-editable"
@@ -122,6 +123,7 @@
           Hard
         </label>
       </div>
+      {% endif %}
       {% endif %}
       <span class="acct-chip acct-more-toggle" title="Show request stats and session info"
             onclick="toggleMore(this)">More ›</span>
