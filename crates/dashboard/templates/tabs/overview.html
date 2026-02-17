@@ -24,7 +24,7 @@
     </article>
     <article>
       <header><span class="metric-label">Output Speed</span></header>
-      <p class="metric-value">{{ self.fmt_speed(avg_tokens_per_second) }} tok/s</p>
+      <p class="metric-value">{{ self.fmt_speed(avg_tokens_per_second) }} <span style="font-size:0.5em;font-weight:500;letter-spacing:0;color:var(--bccf-text-secondary)">tok/s</span></p>
     </article>
     <article>
       <header><span class="metric-label">Total Tokens</span></header>
@@ -35,22 +35,22 @@
   <!-- Account Health -->
   <article>
     <header><span class="metric-label">Account Health</span></header>
-    <div class="grid">
+    <div class="grid" style="text-align:center;">
       <div>
+        <p style="font-size:1.5rem;font-weight:700;margin:0;font-variant-numeric:tabular-nums;">{{ total_accounts }}</p>
         <small class="metric-label">Total</small>
-        <p style="font-size:1.5rem;font-weight:600;margin:0">{{ total_accounts }}</p>
       </div>
       <div>
+        <p style="font-size:1.5rem;font-weight:700;margin:0;color:var(--bccf-success);font-variant-numeric:tabular-nums;">{{ healthy_accounts }}</p>
         <small class="metric-label">Healthy</small>
-        <p style="font-size:1.5rem;font-weight:600;margin:0;color:var(--bccf-success)">{{ healthy_accounts }}</p>
       </div>
       <div>
+        <p style="font-size:1.5rem;font-weight:700;margin:0;color:var(--bccf-warning);font-variant-numeric:tabular-nums;">{{ rate_limited_accounts }}</p>
         <small class="metric-label">Rate Limited</small>
-        <p style="font-size:1.5rem;font-weight:600;margin:0;color:var(--bccf-warning)">{{ rate_limited_accounts }}</p>
       </div>
       <div>
+        <p style="font-size:1.5rem;font-weight:700;margin:0;color:var(--bccf-text-tertiary);font-variant-numeric:tabular-nums;">{{ paused_accounts }}</p>
         <small class="metric-label">Paused</small>
-        <p style="font-size:1.5rem;font-weight:600;margin:0;color:var(--pico-muted-color)">{{ paused_accounts }}</p>
       </div>
     </div>
   </article>
@@ -58,22 +58,22 @@
   <!-- Token Breakdown -->
   <article>
     <header><span class="metric-label">Token Breakdown</span></header>
-    <div class="grid">
+    <div class="grid" style="text-align:center;">
       <div>
+        <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(input_tokens) }}</p>
         <small class="metric-label">Input</small>
-        <p style="font-weight:600;margin:0">{{ self.fmt_int(input_tokens) }}</p>
       </div>
       <div>
+        <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(output_tokens) }}</p>
         <small class="metric-label">Output</small>
-        <p style="font-weight:600;margin:0">{{ self.fmt_int(output_tokens) }}</p>
       </div>
       <div>
+        <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(cache_read_tokens) }}</p>
         <small class="metric-label">Cache Read</small>
-        <p style="font-weight:600;margin:0">{{ self.fmt_int(cache_read_tokens) }}</p>
       </div>
       <div>
+        <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(cache_creation_tokens) }}</p>
         <small class="metric-label">Cache Create</small>
-        <p style="font-weight:600;margin:0">{{ self.fmt_int(cache_creation_tokens) }}</p>
       </div>
     </div>
   </article>
@@ -84,14 +84,14 @@
     <header><span class="metric-label">Top Models</span></header>
     <table role="grid">
       <thead>
-        <tr><th>Model</th><th>Requests</th><th>%</th></tr>
+        <tr><th>Model</th><th style="text-align:right">Requests</th><th style="text-align:right">%</th></tr>
       </thead>
       <tbody>
         {% for m in top_models %}
         <tr>
-          <td>{{ m.name }}</td>
-          <td>{{ self.fmt_int(m.count) }}</td>
-          <td>{{ self.fmt_pct(m.percentage) }}%</td>
+          <td><kbd>{{ m.name }}</kbd></td>
+          <td style="text-align:right">{{ self.fmt_int(m.count) }}</td>
+          <td style="text-align:right">{{ self.fmt_pct(m.percentage) }}%</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -103,15 +103,15 @@
   <article>
     <header><span class="metric-label">System Status</span></header>
     {% if recent_errors.is_empty() %}
-    <p style="color:var(--bccf-success);font-weight:600">All Systems Operational</p>
+    <p style="color:var(--bccf-success);font-weight:600;margin:0;">All Systems Operational</p>
     {% else %}
-    <p style="color:var(--bccf-danger);font-weight:600">{{ recent_errors.len() }} Recent Error{% if recent_errors.len() != 1 %}s{% endif %}</p>
-    <ul>
+    <p style="color:var(--bccf-danger);font-weight:600;margin-bottom:0.5rem;">{{ recent_errors.len() }} Recent Error{% if recent_errors.len() != 1 %}s{% endif %}</p>
+    <ul style="margin:0;">
       {% for err in recent_errors %}
       <li><small>{{ err }}</small></li>
       {% endfor %}
     </ul>
     {% endif %}
-    <small class="secondary">Version {{ version }}</small>
+    <small class="secondary" style="display:block;margin-top:0.5rem;">Version {{ version }}</small>
   </article>
 </div>

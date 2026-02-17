@@ -52,7 +52,7 @@ impl SessionStrategy {
     /// Any `SessionReset` values should be persisted by the caller.
     ///
     /// `usage` provides per-account utilization data from the usage polling
-    /// cache. Accounts with `reserve_percent > 0` that have exceeded their
+    /// cache. Accounts with `reserve_5h/reserve_weekly > 0` that have exceeded their
     /// reserve threshold are deprioritised (soft) or excluded (hard).
     /// Within a priority tier, accounts with soonest reset are preferred so
     /// their remaining capacity isn't wasted.
@@ -255,8 +255,8 @@ impl Default for SessionStrategy {
 /// Check if an account is available for routing.
 ///
 /// An account is unavailable if it's paused, rate-limited, or has hit its
-/// hard reserve threshold (when `reserve_hard` is true and usage data shows
-/// utilization at or above `100 - reserve_percent`).
+/// hard reserve threshold (when `reserve_hard` is true and any usage window
+/// exceeds its per-window reserve threshold).
 pub fn is_account_available(
     account: &Account,
     usage: &HashMap<String, RoutingUsageInfo>,
@@ -268,13 +268,10 @@ pub fn is_account_available(
     if account.rate_limited_until.is_some_and(|until| until >= now) {
         return false;
     }
-    // Hard reserve: exclude account when utilization >= (100 - reserve_percent)
-    if account.reserve_hard && account.reserve_percent > 0 {
-        if let Some(info) = usage.get(&account.id) {
-            let threshold = (100 - account.reserve_percent) as f64;
-            if info.utilization_pct >= threshold {
-                return false;
-            }
+    // Hard reserve: exclude account when any window hits its reserve threshold
+    if account.reserve_hard {
+        if is_at_reserve(account, usage) {
+            return false;
         }
     }
     true
@@ -316,17 +313,42 @@ fn sort_accounts_usage_aware(accounts: &mut [Account], usage: &HashMap<String, R
 }
 
 /// Whether an account is at or over its reserve threshold.
-/// Returns false if no reserve is configured or no usage data is available.
+///
+/// Checks per-window thresholds: `reserve_5h` for `FiveHour` windows,
+/// `reserve_weekly` for `Weekly` windows, and `reserve_5h` as fallback for `Other`.
+/// Returns `true` if any window exceeds its threshold.
+/// Returns `false` if no reserve is configured or no usage data is available.
 fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -> bool {
-    if account.reserve_percent == 0 {
+    use bccf_core::types::WindowKind;
+
+    if account.reserve_5h == 0 && account.reserve_weekly == 0 {
         return false;
     }
-    if let Some(info) = usage.get(&account.id) {
-        let threshold = (100 - account.reserve_percent) as f64;
-        info.utilization_pct >= threshold
-    } else {
-        false // no data = assume under reserve
+    let Some(info) = usage.get(&account.id) else {
+        return false; // no data = assume under reserve
+    };
+
+    // Check per-window thresholds
+    if !info.windows.is_empty() {
+        for w in &info.windows {
+            let threshold = match w.kind {
+                WindowKind::FiveHour => account.reserve_5h,
+                WindowKind::Weekly => account.reserve_weekly,
+                WindowKind::Other => account.reserve_5h, // fallback to 5h for non-Anthropic
+            };
+            if threshold > 0 && w.utilization_pct >= (100 - threshold) as f64 {
+                return true;
+            }
+        }
+        return false;
     }
+
+    // Fallback for accounts with no per-window data: use aggregate
+    let threshold = account.reserve_5h.max(account.reserve_weekly);
+    if threshold > 0 && info.utilization_pct >= (100 - threshold) as f64 {
+        return true;
+    }
+    false
 }
 
 /// Check if a provider string requires session duration tracking.
@@ -363,7 +385,8 @@ mod tests {
             auto_refresh_enabled: false,
             custom_endpoint: None,
             model_mappings: None,
-            reserve_percent: 0,
+            reserve_5h: 0,
+            reserve_weekly: 0,
             reserve_hard: false,
         }
     }
@@ -700,6 +723,17 @@ mod tests {
         RoutingUsageInfo {
             utilization_pct: pct,
             resets_at_ms,
+            windows: vec![],
+        }
+    }
+
+    fn make_usage_with_windows(windows: Vec<bccf_core::types::WindowUsage>) -> RoutingUsageInfo {
+        let pct = windows.iter().map(|w| w.utilization_pct).fold(0.0_f64, f64::max);
+        let resets_at_ms = windows.iter().filter_map(|w| w.resets_at_ms).min();
+        RoutingUsageInfo {
+            utilization_pct: pct,
+            resets_at_ms,
+            windows,
         }
     }
 
@@ -707,7 +741,7 @@ mod tests {
     fn hard_reserve_excludes_account() {
         let strategy = SessionStrategy::default();
         let mut a = make_account("a", "zai", 1);
-        a.reserve_percent = 20;
+        a.reserve_5h = 20;
         a.reserve_hard = true;
 
         let b = make_account("b", "zai", 2);
@@ -725,7 +759,7 @@ mod tests {
     fn hard_reserve_allows_under_threshold() {
         let strategy = SessionStrategy::default();
         let mut a = make_account("a", "zai", 1);
-        a.reserve_percent = 20;
+        a.reserve_5h = 20;
         a.reserve_hard = true;
 
         let b = make_account("b", "zai", 2);
@@ -743,7 +777,7 @@ mod tests {
     fn soft_reserve_deprioritizes_within_tier() {
         let strategy = SessionStrategy::default();
         let mut a = make_account("a", "zai", 1);
-        a.reserve_percent = 20;
+        a.reserve_5h = 20;
         // reserve_hard = false (default) — soft reserve
 
         let b = make_account("b", "zai", 1); // same priority
@@ -800,7 +834,7 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut anthropic = make_account("oauth", "anthropic", 1);
         anthropic.session_start = Some(NOW - time::HOUR); // active session
-        anthropic.reserve_percent = 20;
+        anthropic.reserve_5h = 20;
         anthropic.reserve_hard = true;
 
         let fallback = make_account("fallback", "zai", 5);
@@ -819,7 +853,7 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut anthropic = make_account("oauth", "anthropic", 1);
         anthropic.session_start = Some(NOW - time::HOUR); // active session
-        anthropic.reserve_percent = 20;
+        anthropic.reserve_5h = 20;
         // reserve_hard = false (default)
 
         let fallback = make_account("fallback", "zai", 5);
@@ -837,7 +871,7 @@ mod tests {
     #[test]
     fn is_account_available_hard_reserve() {
         let mut a = make_account("a", "zai", 1);
-        a.reserve_percent = 25;
+        a.reserve_5h = 25;
         a.reserve_hard = true;
 
         let mut usage = HashMap::new();
@@ -852,5 +886,121 @@ mod tests {
         // No usage data → available (assume under reserve)
         let empty = no_usage();
         assert!(is_account_available(&a, &empty, NOW));
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-window reserve capacity tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn per_window_5h_reserve_triggered_weekly_not() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "anthropic", 1);
+        a.reserve_5h = 20;
+        a.reserve_weekly = 10;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 85.0, resets_at_ms: None },
+                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 50.0, resets_at_ms: None },
+            ]),
+        );
+
+        // 5h at 85% ≥ (100-20)=80% → at reserve
+        assert!(is_at_reserve(&a, &usage));
+    }
+
+    #[test]
+    fn per_window_weekly_reserve_triggered_5h_not() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "anthropic", 1);
+        a.reserve_5h = 20;
+        a.reserve_weekly = 10;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 95.0, resets_at_ms: None },
+            ]),
+        );
+
+        // weekly at 95% ≥ (100-10)=90% → at reserve
+        assert!(is_at_reserve(&a, &usage));
+    }
+
+    #[test]
+    fn per_window_both_under_reserve() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "anthropic", 1);
+        a.reserve_5h = 20;
+        a.reserve_weekly = 10;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 50.0, resets_at_ms: None },
+            ]),
+        );
+
+        // Both under threshold → not at reserve
+        assert!(!is_at_reserve(&a, &usage));
+    }
+
+    #[test]
+    fn per_window_hard_reserve_excludes_on_either_window() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let strategy = SessionStrategy::default();
+
+        let mut a = make_account("a", "anthropic", 1);
+        a.reserve_5h = 20;
+        a.reserve_weekly = 10;
+        a.reserve_hard = true;
+
+        let b = make_account("b", "zai", 2);
+
+        // Only weekly hits threshold
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 92.0, resets_at_ms: None },
+            ]),
+        );
+
+        let (result, _) = strategy.select(&[a, b], &usage, &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "b"); // a excluded by hard reserve on weekly
+    }
+
+    #[test]
+    fn per_window_only_5h_reserve_set() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "anthropic", 1);
+        a.reserve_5h = 20;
+        a.reserve_weekly = 0; // no weekly reserve
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 99.0, resets_at_ms: None },
+            ]),
+        );
+
+        // Weekly at 99% but reserve_weekly=0 → not checked, 5h at 50% < 80% → not at reserve
+        assert!(!is_at_reserve(&a, &usage));
     }
 }

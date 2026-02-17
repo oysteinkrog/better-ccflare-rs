@@ -1,13 +1,13 @@
-<div id="logs-controls" style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+<div id="logs-controls" style="display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center;">
   <button id="logs-pause-btn" class="outline secondary" onclick="toggleLogPause()"
-          style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">
+          style="padding: 0.25rem 0.75rem; font-size: 0.8rem;">
     Pause
   </button>
   <button class="outline secondary" onclick="clearLogs()"
-          style="padding: 0.25rem 0.75rem; font-size: 0.85rem;">
+          style="padding: 0.25rem 0.75rem; font-size: 0.8rem;">
     Clear
   </button>
-  <label style="display: flex; align-items: center; gap: 0.3rem; margin-left: auto; font-size: 0.85rem;">
+  <label style="display: flex; align-items: center; gap: 0.3rem; margin-left: auto; font-size: 0.8rem; color: var(--bccf-text-secondary);">
     <input type="checkbox" id="logs-autoscroll" checked
            style="margin: 0;" onchange="logsAutoScroll = this.checked">
     Auto-scroll
@@ -15,14 +15,14 @@
 </div>
 
 <div id="logs-container"
-     style="max-height: 500px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; background: var(--pico-code-background-color); border-radius: 4px; padding: 0.75rem;">
+     style="max-height: 500px; overflow-y: auto; font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace; font-size: 0.78rem; background: var(--bccf-surface-raised); border: 1px solid var(--bccf-border); border-radius: 0.5rem; padding: 0.75rem; line-height: 1.5;">
   <div id="logs-output">
-    <p class="secondary"><em>Connecting to log stream...</em></p>
+    <p style="color: var(--bccf-text-tertiary);"><em>Connecting to log stream...</em></p>
   </div>
   <div id="logs-end"></div>
 </div>
 
-<small class="secondary" id="logs-status">Streaming</small>
+<small style="color: var(--bccf-text-tertiary);" id="logs-status">Streaming</small>
 
 <script>
 (function() {
@@ -36,10 +36,10 @@
 
   function getLogColor(level) {
     switch ((level || '').toUpperCase()) {
-      case 'ERROR': return 'var(--pico-color-red-500, #d9534f)';
-      case 'WARN': return 'var(--pico-color-yellow-500, #f0ad4e)';
-      case 'INFO': return 'var(--pico-color-green-500, #5cb85c)';
-      case 'DEBUG': return 'var(--pico-secondary-color, #888)';
+      case 'ERROR': return 'var(--bccf-danger)';
+      case 'WARN': return 'var(--bccf-warning)';
+      case 'INFO': return 'var(--bccf-success)';
+      case 'DEBUG': return 'var(--bccf-text-tertiary)';
       default: return 'inherit';
     }
   }
@@ -57,24 +57,25 @@
     if (!output) return;
 
     // Remove the "Connecting..." placeholder on first log
-    var placeholder = output.querySelector('p.secondary');
+    var placeholder = output.querySelector('p');
     if (placeholder) placeholder.remove();
 
     var div = document.createElement('div');
     div.style.display = 'flex';
     div.style.gap = '0.5rem';
-    div.style.lineHeight = '1.4';
+    div.style.lineHeight = '1.5';
 
     var ts = document.createElement('span');
-    ts.style.color = 'var(--pico-secondary-color, #888)';
+    ts.style.color = 'var(--bccf-text-tertiary)';
     ts.style.flexShrink = '0';
     ts.textContent = formatTs(entry.ts || entry.timestamp);
 
     var lvl = document.createElement('span');
-    lvl.style.fontWeight = '600';
+    lvl.style.fontWeight = '500';
     lvl.style.color = getLogColor(entry.level);
     lvl.style.flexShrink = '0';
-    lvl.textContent = '[' + (entry.level || 'LOG').toUpperCase() + ']';
+    lvl.style.minWidth = '3.5em';
+    lvl.textContent = (entry.level || 'LOG').toUpperCase();
 
     var msg = document.createElement('span');
     msg.style.flex = '1';
@@ -108,7 +109,7 @@
         var data = JSON.parse(e.data);
         if (data.connected) {
           var status = document.getElementById('logs-status');
-          if (status) status.textContent = 'Connected — streaming';
+          if (status) status.textContent = 'Connected';
           return;
         }
         // Handle log_entry events
@@ -124,7 +125,7 @@
 
     evtSource.onerror = function() {
       var status = document.getElementById('logs-status');
-      if (status) status.textContent = 'Disconnected — will retry...';
+      if (status) status.textContent = 'Disconnected — retrying...';
     };
   }
 
@@ -138,7 +139,7 @@
 
   window.clearLogs = function() {
     var output = document.getElementById('logs-output');
-    if (output) output.innerHTML = '<p class="secondary"><em>Logs cleared</em></p>';
+    if (output) output.innerHTML = '<p style="color:var(--bccf-text-tertiary);"><em>Logs cleared</em></p>';
   };
 
   // Start on load

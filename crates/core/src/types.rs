@@ -30,7 +30,8 @@ pub struct Account {
     pub auto_refresh_enabled: bool,
     pub custom_endpoint: Option<String>,
     pub model_mappings: Option<String>,
-    pub reserve_percent: i64,
+    pub reserve_5h: i64,
+    pub reserve_weekly: i64,
     pub reserve_hard: bool,
 }
 
@@ -61,7 +62,8 @@ pub struct AccountResponse {
     pub usage_window: Option<String>,
     pub usage_data: Option<serde_json::Value>,
     pub has_refresh_token: bool,
-    pub reserve_percent: i64,
+    pub reserve_5h: i64,
+    pub reserve_weekly: i64,
     pub reserve_hard: bool,
 }
 
@@ -80,12 +82,31 @@ pub enum TokenStatus {
 ///
 /// Abstracts across provider-specific usage formats (Anthropic, Zai, NanoGPT)
 /// into a single struct the load balancer can use.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RoutingUsageInfo {
-    /// Utilization percentage (0-100).
+    /// Utilization percentage (0-100) — max across all windows (backwards compat).
     pub utilization_pct: f64,
     /// Epoch-ms timestamp when the most restrictive window resets.
     pub resets_at_ms: Option<i64>,
+    /// Per-window breakdown for fine-grained reserve checks.
+    pub windows: Vec<WindowUsage>,
+}
+
+/// Per-window usage data for reserve capacity checks.
+#[derive(Debug, Clone)]
+pub struct WindowUsage {
+    pub kind: WindowKind,
+    pub utilization_pct: f64,
+    pub resets_at_ms: Option<i64>,
+}
+
+/// The kind of usage window, used to match against per-window reserve thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowKind {
+    FiveHour,
+    Weekly,
+    /// NanoGPT daily/monthly, Zai tokens, etc.
+    Other,
 }
 
 /// Account creation options.

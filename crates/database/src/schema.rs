@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     auto_refresh_enabled INTEGER DEFAULT 1,
     custom_endpoint TEXT,
     model_mappings TEXT,
-    reserve_percent INTEGER DEFAULT 0,
+    reserve_5h INTEGER DEFAULT 0,
+    reserve_weekly INTEGER DEFAULT 0,
     reserve_hard INTEGER DEFAULT 0
 );
 
@@ -251,7 +252,8 @@ mod tests {
             "auto_refresh_enabled",
             "custom_endpoint",
             "model_mappings",
-            "reserve_percent",
+            "reserve_5h",
+            "reserve_weekly",
             "reserve_hard",
         ];
 

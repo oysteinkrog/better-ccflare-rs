@@ -102,21 +102,27 @@
                style="margin:0;"
                onchange="toggleFallback('{{ acct.id }}', this.checked)">
       </div>
-      <div class="acct-chip" title="Reserve capacity — keep this % unused for non-proxy use (click to edit)">
-        <span class="acct-chip-label">Reserve</span>
+      <div class="acct-chip" title="5-hour reserve — keep this % of 5h window unused (click to edit)">
+        <span class="acct-chip-label">Res 5h</span>
         <span class="acct-editable"
-              onclick="startEditReserve(this, '{{ acct.id }}', {{ acct.reserve_percent }})">{{ acct.reserve_percent }}%</span>
-        {% if acct.reserve_percent > 0 %}
-        <label style="display:inline-flex;align-items:center;gap:0.25rem;margin:0;font-size:0.72rem;color:var(--pico-muted-color);"
-               title="Hard reserve: when enabled, completely excludes account at reserve threshold instead of just deprioritizing">
+              onclick="startEditReserve5h(this, '{{ acct.id }}', {{ acct.reserve_5h }})">{{ acct.reserve_5h }}%</span>
+      </div>
+      <div class="acct-chip" title="Weekly reserve — keep this % of weekly window unused (click to edit)">
+        <span class="acct-chip-label">Res Wk</span>
+        <span class="acct-editable"
+              onclick="startEditReserveWeekly(this, '{{ acct.id }}', {{ acct.reserve_weekly }})">{{ acct.reserve_weekly }}%</span>
+      </div>
+      {% if acct.reserve_5h > 0 || acct.reserve_weekly > 0 %}
+      <div class="acct-chip" title="Hard reserve: when enabled, completely excludes account at reserve threshold instead of just deprioritizing">
+        <label style="display:inline-flex;align-items:center;gap:0.25rem;margin:0;font-size:0.72rem;color:var(--pico-muted-color);">
           <input type="checkbox"
                  {% if acct.reserve_hard %}checked{% endif %}
                  style="margin:0;width:0.9rem;height:0.9rem;"
                  onchange="toggleReserveHard('{{ acct.id }}', this.checked)">
           Hard
         </label>
-        {% endif %}
       </div>
+      {% endif %}
       <span class="acct-chip acct-more-toggle" title="Show request stats and session info"
             onclick="toggleMore(this)">More ›</span>
       <div class="acct-chip" title="Total requests routed to this account (session count in parentheses)" data-more="{{ acct.id }}" style="display:none">
@@ -300,8 +306,13 @@ function submitReauthCode() {
     });
 }
 
-function updateReserve(id, value) {
-  apiPost('/api/accounts/' + id + '/reserve-percent', {percent: parseInt(value)})
+function updateReserve5h(id, value) {
+  apiPost('/api/accounts/' + id + '/reserve-5h', {percent: parseInt(value)})
+    .then(refreshAccounts);
+}
+
+function updateReserveWeekly(id, value) {
+  apiPost('/api/accounts/' + id + '/reserve-weekly', {percent: parseInt(value)})
     .then(refreshAccounts);
 }
 
@@ -310,7 +321,15 @@ function toggleReserveHard(id, checked) {
     .then(refreshAccounts);
 }
 
-function startEditReserve(el, id, currentVal) {
+function startEditReserve5h(el, id, currentVal) {
+  startEditReserveGeneric(el, id, currentVal, updateReserve5h);
+}
+
+function startEditReserveWeekly(el, id, currentVal) {
+  startEditReserveGeneric(el, id, currentVal, updateReserveWeekly);
+}
+
+function startEditReserveGeneric(el, id, currentVal, updateFn) {
   var input = document.createElement('input');
   input.type = 'number';
   input.min = '0';
@@ -321,7 +340,7 @@ function startEditReserve(el, id, currentVal) {
   function commit() {
     var v = parseInt(input.value);
     if (!isNaN(v) && v >= 0 && v <= 100 && v !== currentVal) {
-      updateReserve(id, v);
+      updateFn(id, v);
     } else {
       refreshAccounts();
     }

@@ -21,7 +21,8 @@ const ACCOUNT_SELECT: &str = "
         COALESCE(auto_refresh_enabled, 0) as auto_refresh_enabled,
         custom_endpoint,
         model_mappings,
-        COALESCE(reserve_percent, 0) as reserve_percent,
+        COALESCE(reserve_5h, 0) as reserve_5h,
+        COALESCE(reserve_weekly, 0) as reserve_weekly,
         COALESCE(reserve_hard, 0) as reserve_hard
     FROM accounts
 ";
@@ -56,7 +57,8 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         auto_refresh_enabled: row.get::<_, i64>("auto_refresh_enabled")? != 0,
         custom_endpoint: row.get("custom_endpoint")?,
         model_mappings: row.get("model_mappings")?,
-        reserve_percent: row.get::<_, Option<i64>>("reserve_percent")?.unwrap_or(0),
+        reserve_5h: row.get::<_, Option<i64>>("reserve_5h")?.unwrap_or(0),
+        reserve_weekly: row.get::<_, Option<i64>>("reserve_weekly")?.unwrap_or(0),
         reserve_hard: row.get::<_, i64>("reserve_hard")? != 0,
     })
 }
@@ -274,14 +276,27 @@ pub fn set_model_mappings(
     Ok(())
 }
 
-/// Set reserve percent (0-100).
-pub fn set_reserve_percent(
+/// Set 5-hour reserve percent (0-100).
+pub fn set_reserve_5h(
     conn: &Connection,
     account_id: &str,
     percent: i64,
 ) -> Result<(), DbError> {
     conn.execute(
-        "UPDATE accounts SET reserve_percent = ?1 WHERE id = ?2",
+        "UPDATE accounts SET reserve_5h = ?1 WHERE id = ?2",
+        params![percent, account_id],
+    )?;
+    Ok(())
+}
+
+/// Set weekly reserve percent (0-100).
+pub fn set_reserve_weekly(
+    conn: &Connection,
+    account_id: &str,
+    percent: i64,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET reserve_weekly = ?1 WHERE id = ?2",
         params![percent, account_id],
     )?;
     Ok(())
@@ -336,10 +351,10 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             rate_limited_until, session_start, session_request_count, paused,
             rate_limit_reset, rate_limit_status, rate_limit_remaining,
             priority, auto_fallback_enabled, auto_refresh_enabled,
-            custom_endpoint, model_mappings, reserve_percent, reserve_hard
+            custom_endpoint, model_mappings, reserve_5h, reserve_weekly, reserve_hard
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
         )",
         params![
             account.id,
@@ -365,7 +380,8 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             account.auto_refresh_enabled as i64,
             account.custom_endpoint,
             account.model_mappings,
-            account.reserve_percent,
+            account.reserve_5h,
+            account.reserve_weekly,
             account.reserve_hard as i64,
         ],
     )?;
@@ -409,7 +425,8 @@ mod tests {
             auto_refresh_enabled: true,
             custom_endpoint: None,
             model_mappings: None,
-            reserve_percent: 0,
+            reserve_5h: 0,
+            reserve_weekly: 0,
             reserve_hard: false,
         }
     }

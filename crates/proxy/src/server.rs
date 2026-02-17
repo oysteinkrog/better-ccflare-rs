@@ -132,8 +132,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(accounts::set_model_mappings),
         )
         .route(
-            "/api/accounts/{id}/reserve-percent",
-            post(accounts::set_reserve_percent),
+            "/api/accounts/{id}/reserve-5h",
+            post(accounts::set_reserve_5h),
+        )
+        .route(
+            "/api/accounts/{id}/reserve-weekly",
+            post(accounts::set_reserve_weekly),
         )
         .route(
             "/api/accounts/{id}/reserve-hard",

@@ -215,10 +215,33 @@ pub fn run_schema_migrations(conn: &rusqlite::Connection) -> Result<(), DbError>
         );
         add_column_if_missing(conn, "accounts", "custom_endpoint", "TEXT", &cols);
         add_column_if_missing(conn, "accounts", "model_mappings", "TEXT", &cols);
+        // Rename reserve_percent → reserve_5h (if old column exists)
+        if cols.iter().any(|c| c == "reserve_percent") && !cols.iter().any(|c| c == "reserve_5h") {
+            if let Err(e) = conn.execute(
+                "ALTER TABLE accounts RENAME COLUMN reserve_percent TO reserve_5h",
+                [],
+            ) {
+                tracing::warn!("Failed to rename reserve_percent → reserve_5h: {e}");
+                // Fallback: add as new column if rename not supported (old SQLite)
+                add_column_if_missing(conn, "accounts", "reserve_5h", "INTEGER DEFAULT 0", &cols);
+            } else {
+                tracing::info!("Renamed accounts.reserve_percent → reserve_5h");
+            }
+        } else {
+            add_column_if_missing(
+                conn,
+                "accounts",
+                "reserve_5h",
+                "INTEGER DEFAULT 0",
+                &cols,
+            );
+        }
+        // Re-read cols after potential rename
+        let cols = table_columns(conn, "accounts");
         add_column_if_missing(
             conn,
             "accounts",
-            "reserve_percent",
+            "reserve_weekly",
             "INTEGER DEFAULT 0",
             &cols,
         );
