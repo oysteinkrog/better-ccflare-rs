@@ -380,8 +380,11 @@ pub async fn fetch_anthropic_usage(
             Some(data)
         }
         Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
             warn!(
-                status = %r.status(),
+                %status,
+                body = body.chars().take(200).collect::<String>(),
                 "Failed to fetch Anthropic usage data"
             );
             None
@@ -463,8 +466,12 @@ pub async fn fetch_zai_usage(client: &reqwest::Client, api_key: &str) -> Option<
 /// Default polling interval (90 seconds).
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(90);
 
-/// Max retries per poll cycle with exponential backoff.
-const MAX_RETRIES: u32 = 10;
+/// Delay before the very first poll so startup token refresh can complete.
+const STARTUP_DELAY: Duration = Duration::from_secs(10);
+
+/// Max retries per poll cycle.
+/// Usage data is non-critical display info — fail fast and retry next cycle.
+const MAX_RETRIES: u32 = 2;
 
 /// Usage polling service that runs background tasks to fetch account usage.
 pub struct UsagePollingService {
@@ -490,8 +497,13 @@ impl UsagePollingService {
         let handle = tokio::spawn(async move {
             info!("Usage polling service started");
             let mut interval = tokio::time::interval(DEFAULT_POLL_INTERVAL);
+            // Consume the immediate first tick so the loop only fires at the
+            // regular 90s cadence (not immediately upon entering it).
+            interval.tick().await;
 
-            // Do an immediate first poll
+            // Brief delay so startup token refresh can write fresh tokens to DB
+            // before the first poll reads them.
+            tokio::time::sleep(STARTUP_DELAY).await;
             poll_all_accounts(&account_source, &cache_inner, &client).await;
 
             loop {
@@ -576,9 +588,9 @@ async fn poll_single_account(
         return;
     }
 
-    // Retry with exponential backoff
-    let mut backoff = Duration::from_secs(1);
-
+    // Try up to MAX_RETRIES times with a brief pause between attempts.
+    // Usage data is non-critical — fail fast and wait for the next 90s cycle
+    // rather than tying up the poll loop with a long backoff.
     for attempt in 1..=MAX_RETRIES {
         let result = fetch_usage_for_provider(
             &account.provider,
@@ -603,17 +615,15 @@ async fn poll_single_account(
                 debug!(
                     account_id = %account.id,
                     attempt,
-                    backoff_ms = backoff.as_millis(),
-                    "Usage fetch failed, retrying"
+                    "Usage fetch failed, retrying in 2s"
                 );
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(60));
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
             None => {
                 warn!(
                     account_id = %account.id,
                     provider = %account.provider,
-                    "Usage fetch failed after {MAX_RETRIES} attempts"
+                    "Usage fetch failed after {MAX_RETRIES} attempts, will retry next cycle"
                 );
             }
         }

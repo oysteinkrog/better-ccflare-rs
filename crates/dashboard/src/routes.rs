@@ -346,9 +346,18 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 }
             });
 
-            // Build usage windows from the real provider API data
-            let usage_windows = build_usage_windows(usage_cache, &a.id, now);
-            let has_usage = !usage_windows.is_empty();
+            // Build usage windows from the real provider API data.
+            // has_usage is true for any provider that supports usage tracking,
+            // regardless of whether the cache currently has data (e.g. token expired).
+            let has_usage = matches!(
+                a.provider.as_str(),
+                "claude-oauth" | "anthropic" | "nanogpt" | "zai"
+            );
+            let usage_windows = if has_usage {
+                build_usage_windows(usage_cache, &a.id, now)
+            } else {
+                Vec::new()
+            };
 
             AccountRow {
                 id: a.id.clone(),
