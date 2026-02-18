@@ -203,10 +203,11 @@ pub struct AccountRow {
     pub request_count: i64,
     pub total_requests: i64,
     pub last_used_relative: Option<String>,
+    /// Raw last-used timestamp (ms) for sort-by-last-used; not displayed in template.
+    pub last_used_ms: Option<i64>,
     pub custom_endpoint: Option<String>,
     /// Per-window usage data from provider API (empty if provider doesn't support it).
     pub usage_windows: Vec<UsageWindowDisplay>,
-    /// Whether this account supports usage tracking.
     /// Whether this account supports usage tracking.
     pub has_usage: bool,
     pub is_oauth: bool,

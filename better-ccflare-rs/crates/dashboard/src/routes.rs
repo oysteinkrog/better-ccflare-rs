@@ -266,8 +266,17 @@ fn overview_defaults(version: String) -> OverviewTab {
 // Accounts table partial
 // ---------------------------------------------------------------------------
 
+/// Query parameters for the accounts table partial.
+#[derive(Debug, Deserialize, Default)]
+struct AccountsTableQuery {
+    sort: Option<String>,
+}
+
 /// GET /dashboard/partials/accounts-table — render the accounts table.
-async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response {
+async fn accounts_table_partial(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AccountsTableQuery>,
+) -> Response {
     let now = chrono::Utc::now().timestamp_millis();
 
     let accounts = match state.db_pool::<DbPool>() {
@@ -299,7 +308,7 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
     // Mirrors the SessionStrategy logic without incrementing round-robin.
     let next_account_id = predict_next_account(&accounts, &usage_map, now);
 
-    let rows: Vec<AccountRow> = accounts
+    let mut rows: Vec<AccountRow> = accounts
         .iter()
         .map(|a| {
             let token_status_str = match a.expires_at {
@@ -377,6 +386,7 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
                 request_count: a.request_count,
                 total_requests: a.total_requests,
                 last_used_relative,
+                last_used_ms: a.last_used,
                 custom_endpoint: a.custom_endpoint.clone(),
                 usage_windows,
                 has_usage,
@@ -391,6 +401,8 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
         })
         .collect();
 
+    sort_account_rows(&mut rows, query.sort.as_deref());
+
     let pool_summary = build_pool_summary(&rows);
 
     let tpl = AccountsTablePartial {
@@ -403,6 +415,83 @@ async fn accounts_table_partial(State(state): State<Arc<AppState>>) -> Response 
             tracing::error!("Accounts table render error: {e}");
             Html("<p>Error rendering accounts table</p>".to_string()).into_response()
         }
+    }
+}
+
+/// Sort account rows according to the requested sort key.
+///
+/// The DB already returns rows in priority-ASC order, so "priority" (default)
+/// is a no-op here. All other sorts are stable — ties fall back to priority order.
+fn sort_account_rows(rows: &mut Vec<AccountRow>, sort: Option<&str>) {
+    match sort {
+        Some("name") => {
+            rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
+        Some("usage-asc") => {
+            // Most capacity left first: lowest max-window-usage comes first.
+            // Accounts without usage data (API key accounts) go last.
+            rows.sort_by(|a, b| match (max_usage_pct(a), max_usage_pct(b)) {
+                (Some(ap), Some(bp)) => ap.cmp(&bp),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.priority.cmp(&b.priority),
+            });
+        }
+        Some("usage-desc") => {
+            // Most constrained first: highest max-window-usage comes first.
+            // Accounts without usage data go last.
+            rows.sort_by(|a, b| match (max_usage_pct(a), max_usage_pct(b)) {
+                (Some(ap), Some(bp)) => bp.cmp(&ap),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.priority.cmp(&b.priority),
+            });
+        }
+        Some("active-first") => {
+            // Available (not paused, not rate-limited) accounts before unavailable ones.
+            // Within each group, preserve priority order.
+            rows.sort_by(|a, b| {
+                let a_ok = !a.paused && a.rate_limit_status == "OK";
+                let b_ok = !b.paused && b.rate_limit_status == "OK";
+                match (a_ok, b_ok) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.priority.cmp(&b.priority),
+                }
+            });
+        }
+        Some("last-used") => {
+            // Most recently used first; accounts never used go last.
+            rows.sort_by(|a, b| {
+                b.last_used_ms
+                    .unwrap_or(0)
+                    .cmp(&a.last_used_ms.unwrap_or(0))
+            });
+        }
+        Some("requests") => {
+            // Most total requests first.
+            rows.sort_by(|a, b| b.total_requests.cmp(&a.total_requests));
+        }
+        Some("provider") => {
+            // Group by provider name, then by priority within each group.
+            rows.sort_by(|a, b| {
+                a.provider
+                    .cmp(&b.provider)
+                    .then_with(|| a.priority.cmp(&b.priority))
+            });
+        }
+        _ => {} // "priority" or unknown — already sorted by DB query (priority ASC)
+    }
+}
+
+/// Returns the highest usage percentage across all windows for a row,
+/// or `None` if the account has no usage data.
+fn max_usage_pct(row: &AccountRow) -> Option<i64> {
+    let valid: Vec<i64> = row.usage_windows.iter().map(|w| w.pct).filter(|&p| p >= 0).collect();
+    if valid.is_empty() {
+        None
+    } else {
+        valid.into_iter().max()
     }
 }
 

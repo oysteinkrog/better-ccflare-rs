@@ -21,7 +21,7 @@
   </div>
 </details>
 
-<div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem;">
+<div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap;">
   <label style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
     <input type="checkbox" role="switch" id="auto-refresh-toggle" checked style="margin: 0;">
     <small>Auto-refresh</small>
@@ -32,6 +32,17 @@
   <button class="outline" id="add-account-btn" onclick="toggleAddForm()" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; margin: 0;">
     + Add Account
   </button>
+</div>
+<div style="display: flex; gap: 0.35rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap;">
+  <small style="color: var(--pico-muted-color); margin-right: 0.1rem;">Sort:</small>
+  <button id="sort-btn-priority"   class="sort-btn"          data-sort=""           onclick="setSort('')"            style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Priority</button>
+  <button id="sort-btn-name"       class="sort-btn outline secondary" data-sort="name"       onclick="setSort('name')"        style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">A→Z</button>
+  <button id="sort-btn-usage-asc"  class="sort-btn outline secondary" data-sort="usage-asc"  onclick="setSort('usage-asc')"   style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Usage ↑</button>
+  <button id="sort-btn-usage-desc" class="sort-btn outline secondary" data-sort="usage-desc" onclick="setSort('usage-desc')"  style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Usage ↓</button>
+  <button id="sort-btn-active"     class="sort-btn outline secondary" data-sort="active-first" onclick="setSort('active-first')" style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Active first</button>
+  <button id="sort-btn-last-used"  class="sort-btn outline secondary" data-sort="last-used"  onclick="setSort('last-used')"   style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Last used</button>
+  <button id="sort-btn-requests"   class="sort-btn outline secondary" data-sort="requests"   onclick="setSort('requests')"    style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Requests</button>
+  <button id="sort-btn-provider"   class="sort-btn outline secondary" data-sort="provider"   onclick="setSort('provider')"    style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Provider</button>
 </div>
 
 <div id="add-account-form" style="display: none; margin-bottom: 1rem;">
@@ -85,15 +96,33 @@
 
 <script>
 var autoRefreshEnabled = true;
+var currentSort = '';
 
 document.getElementById('auto-refresh-toggle').addEventListener('change', function() {
   autoRefreshEnabled = this.checked;
-  // Re-process HTMX triggers
   htmx.process(document.getElementById('accounts-table-container'));
 });
 
+function sortUrl(sort) {
+  return '/dashboard/partials/accounts-table' + (sort ? '?sort=' + encodeURIComponent(sort) : '');
+}
+
+function setSort(sort) {
+  currentSort = sort;
+  // Update button styles: active = filled (primary), others = outline secondary
+  document.querySelectorAll('.sort-btn').forEach(function(b) {
+    var isActive = b.dataset.sort === sort;
+    b.className = isActive ? 'sort-btn' : 'sort-btn outline secondary';
+  });
+  // Update container's hx-get so the every-30s auto-refresh uses the same sort
+  var container = document.getElementById('accounts-table-container');
+  container.setAttribute('hx-get', sortUrl(sort));
+  htmx.process(container);
+  htmx.ajax('GET', sortUrl(sort), '#accounts-table-container');
+}
+
 function refreshAccounts() {
-  htmx.ajax('GET', '/dashboard/partials/accounts-table', '#accounts-table-container');
+  htmx.ajax('GET', sortUrl(currentSort), '#accounts-table-container');
 }
 
 var OAUTH_MODES = ['claude-oauth'];

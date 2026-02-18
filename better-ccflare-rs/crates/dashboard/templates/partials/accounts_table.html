@@ -184,9 +184,8 @@
 {% endif %}
 
 <script>
-function refreshAccounts() {
-  htmx.ajax('GET', '/dashboard/partials/accounts-table', '#accounts-table-container');
-}
+// refreshAccounts() is defined in the accounts tab — accounts_table.html is always
+// loaded inside that tab, so the function is available when these handlers fire.
 
 function toggleMore(el) {
   var card = el.closest('.acct-card');
