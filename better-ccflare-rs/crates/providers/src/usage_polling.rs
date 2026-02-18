@@ -95,11 +95,6 @@ fn anthropic_utilization(data: &AnthropicUsageData) -> Option<f64> {
     let mut max_util: Option<f64> = None;
 
     for (_key, value) in data {
-        // Check if this is a usage window object with "utilization" field
-        if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
-            max_util = Some(max_util.map_or(util, |m: f64| m.max(util)));
-        }
-        // Also check extra_usage
         if let Some(util) = value.get("utilization").and_then(|v| v.as_f64()) {
             max_util = Some(max_util.map_or(util, |m: f64| m.max(util)));
         }
