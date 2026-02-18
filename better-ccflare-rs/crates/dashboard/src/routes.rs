@@ -195,7 +195,11 @@ fn build_overview(state: &AppState) -> OverviewTab {
         .iter()
         .filter(|a| a.rate_limited_until.map(|rl| rl > now).unwrap_or(false))
         .count();
-    let healthy_accounts = total_accounts - paused_accounts - rate_limited_accounts;
+    // Count healthy directly to avoid undercount if an account is both paused and rate-limited
+    let healthy_accounts = accounts
+        .iter()
+        .filter(|a| !a.paused && a.rate_limited_until.map(|rl| rl <= now).unwrap_or(true))
+        .count();
 
     // Top models
     let top_models = bccf_database::repositories::stats::get_top_models(&conn, 5)
@@ -638,12 +642,11 @@ fn predict_next_account(
         true
     };
 
-    // 1. Auto-fallback candidates
+    // 1. Auto-fallback candidates (any provider, mirrors SessionStrategy::check_auto_fallback_accounts)
     let mut fallback: Vec<_> = accounts
         .iter()
         .filter(|a| {
             a.auto_fallback_enabled
-                && a.provider == "anthropic"
                 && a.rate_limit_reset.is_some_and(|reset| reset < now - 1000)
                 && is_available(a)
         })
