@@ -229,14 +229,13 @@ impl SessionStrategy {
                     return false;
                 }
 
-                // Check if the Anthropic usage window has reset
-                let anthropic_window_reset = a.provider == Provider::Anthropic.to_string()
-                    && a.rate_limit_reset.is_some_and(|reset| reset < now - 1000);
+                // Check if the usage window has reset (works for all providers)
+                let window_reset = a.rate_limit_reset.is_some_and(|reset| reset < now - 1000);
 
                 // Check not currently rate-limited
                 let not_rate_limited = a.rate_limited_until.is_none_or(|until| until <= now);
 
-                anthropic_window_reset && not_rate_limited
+                window_reset && not_rate_limited
             })
             .cloned()
             .collect();
