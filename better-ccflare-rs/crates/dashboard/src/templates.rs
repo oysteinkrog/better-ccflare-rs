@@ -205,6 +205,12 @@ pub struct AccountRow {
     pub last_used_relative: Option<String>,
     /// Raw last-used timestamp (ms) for sort-by-last-used; not displayed in template.
     pub last_used_ms: Option<i64>,
+    /// Raw session_start timestamp (ms) — used for LB-order sort; not displayed.
+    pub session_start_ms: Option<i64>,
+    /// Raw rate_limit_reset timestamp (ms) — used for LB-order sort; not displayed.
+    pub rate_limit_reset_ms: Option<i64>,
+    /// Soonest window reset timestamp (ms) from usage — used for LB-order sort; not displayed.
+    pub resets_at_ms: Option<i64>,
     pub custom_endpoint: Option<String>,
     /// Per-window usage data from provider API (empty if provider doesn't support it).
     pub usage_windows: Vec<UsageWindowDisplay>,

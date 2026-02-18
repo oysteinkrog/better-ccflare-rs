@@ -387,6 +387,9 @@ async fn accounts_table_partial(
                 total_requests: a.total_requests,
                 last_used_relative,
                 last_used_ms: a.last_used,
+                session_start_ms: a.session_start,
+                rate_limit_reset_ms: a.rate_limit_reset,
+                resets_at_ms: usage_map.get(&a.id).and_then(|u| u.resets_at_ms),
                 custom_endpoint: a.custom_endpoint.clone(),
                 usage_windows,
                 has_usage,
@@ -480,7 +483,86 @@ fn sort_account_rows(rows: &mut Vec<AccountRow>, sort: Option<&str>) {
                     .then_with(|| a.priority.cmp(&b.priority))
             });
         }
+        Some("lb-order") => {
+            // Sort in the exact order the load balancer would pick accounts.
+            // Group 0: auto-fallback recovery candidates (window just reset, fallback enabled)
+            // Group 1: active OAuth session (within 5-hour window)
+            // Group 2: available, under soft-reserve threshold
+            // Group 3: available, at/over soft-reserve (still usable, deprioritised)
+            // Group 4: unavailable (paused or rate-limited)
+            // Within each group: priority ASC, then soonest reset first.
+            rows.sort_by(|a, b| {
+                lb_sort_group(a, b)
+            });
+        }
         _ => {} // "priority" or unknown — already sorted by DB query (priority ASC)
+    }
+}
+
+/// Assign a sort group that mirrors the load balancer's selection order.
+fn lb_group(row: &AccountRow, now: i64) -> u8 {
+    const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
+    const RESET_DEBOUNCE_MS: i64 = 1000;
+
+    let is_available = !row.paused && row.rate_limit_status == "OK";
+    let at_reserve = row.reserve_hard && max_usage_pct(row)
+        .map(|p| {
+            let threshold = row.reserve_5h.max(row.reserve_weekly);
+            threshold > 0 && p >= (100 - threshold).max(0)
+        })
+        .unwrap_or(false);
+
+    if !is_available || at_reserve {
+        return 4; // unavailable / hard-excluded
+    }
+
+    // Group 0: auto-fallback recovery
+    if row.auto_fallback_enabled {
+        if let Some(reset) = row.rate_limit_reset_ms {
+            if reset < now - RESET_DEBOUNCE_MS {
+                return 0;
+            }
+        }
+    }
+
+    // Group 1: active OAuth session
+    let is_oauth = matches!(row.provider.as_str(), "anthropic" | "claude-oauth");
+    if is_oauth {
+        if let Some(start) = row.session_start_ms {
+            if start <= now && now - start < SESSION_DURATION_MS {
+                return 1;
+            }
+        }
+    }
+
+    // Group 2/3: available, split by soft reserve
+    let soft_at_reserve = max_usage_pct(row)
+        .map(|p| {
+            let threshold = row.reserve_5h.max(row.reserve_weekly);
+            threshold > 0 && p >= (100 - threshold).max(0)
+        })
+        .unwrap_or(false);
+
+    if soft_at_reserve { 3 } else { 2 }
+}
+
+fn lb_sort_group(a: &AccountRow, b: &AccountRow) -> std::cmp::Ordering {
+    let now = chrono::Utc::now().timestamp_millis();
+    let ga = lb_group(a, now);
+    let gb = lb_group(b, now);
+    if ga != gb {
+        return ga.cmp(&gb);
+    }
+    // Within group: priority ASC, then soonest reset first (None last)
+    let pri = a.priority.cmp(&b.priority);
+    if pri != std::cmp::Ordering::Equal {
+        return pri;
+    }
+    match (a.resets_at_ms, b.resets_at_ms) {
+        (Some(ar), Some(br)) => ar.cmp(&br),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     }
 }
 

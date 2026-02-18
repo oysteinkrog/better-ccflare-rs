@@ -21,7 +21,7 @@
   </div>
 </details>
 
-<div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap;">
+<div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap;">
   <label style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
     <input type="checkbox" role="switch" id="auto-refresh-toggle" checked style="margin: 0;">
     <small>Auto-refresh</small>
@@ -29,20 +29,23 @@
   <button class="outline secondary" onclick="refreshAccounts()" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; margin: 0;">
     Refresh
   </button>
+  <label style="margin: 0; display: flex; align-items: center; gap: 0.4rem;">
+    <small style="color: var(--pico-muted-color); white-space: nowrap;">Sort:</small>
+    <select id="sort-select" onchange="setSort(this.value)" style="margin: 0; padding: 0.2rem 0.4rem; font-size: 0.8rem; width: auto;">
+      <option value="">Priority</option>
+      <option value="name">A→Z</option>
+      <option value="usage-asc">Usage ↑ (most free)</option>
+      <option value="usage-desc">Usage ↓ (most used)</option>
+      <option value="active-first">Active first</option>
+      <option value="last-used">Last used</option>
+      <option value="requests">Requests</option>
+      <option value="provider">Provider</option>
+      <option value="lb-order">LB order</option>
+    </select>
+  </label>
   <button class="outline" id="add-account-btn" onclick="toggleAddForm()" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; margin: 0;">
     + Add Account
   </button>
-</div>
-<div style="display: flex; gap: 0.35rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap;">
-  <small style="color: var(--pico-muted-color); margin-right: 0.1rem;">Sort:</small>
-  <button id="sort-btn-priority"   class="sort-btn"          data-sort=""           onclick="setSort('')"            style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Priority</button>
-  <button id="sort-btn-name"       class="sort-btn outline secondary" data-sort="name"       onclick="setSort('name')"        style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">A→Z</button>
-  <button id="sort-btn-usage-asc"  class="sort-btn outline secondary" data-sort="usage-asc"  onclick="setSort('usage-asc')"   style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Usage ↑</button>
-  <button id="sort-btn-usage-desc" class="sort-btn outline secondary" data-sort="usage-desc" onclick="setSort('usage-desc')"  style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Usage ↓</button>
-  <button id="sort-btn-active"     class="sort-btn outline secondary" data-sort="active-first" onclick="setSort('active-first')" style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Active first</button>
-  <button id="sort-btn-last-used"  class="sort-btn outline secondary" data-sort="last-used"  onclick="setSort('last-used')"   style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Last used</button>
-  <button id="sort-btn-requests"   class="sort-btn outline secondary" data-sort="requests"   onclick="setSort('requests')"    style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Requests</button>
-  <button id="sort-btn-provider"   class="sort-btn outline secondary" data-sort="provider"   onclick="setSort('provider')"    style="padding:0.15rem 0.55rem;font-size:0.75rem;margin:0;border-radius:99px;">Provider</button>
 </div>
 
 <div id="add-account-form" style="display: none; margin-bottom: 1rem;">
