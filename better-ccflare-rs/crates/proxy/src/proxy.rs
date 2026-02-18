@@ -6,7 +6,9 @@
 //! back to clients, and sends analytics to the post-processor.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::RwLock;
 use std::time::Instant;
 
 use axum::body::Body;
@@ -64,7 +66,7 @@ async fn get_accounts_cached(
 ) -> Result<Arc<Vec<bccf_core::types::Account>>, String> {
     // Check cache (read lock) — Arc::clone is a single atomic op
     {
-        let cache = accounts_cache().read().unwrap();
+        let cache = accounts_cache().read();
         if let Some(ref entry) = *cache {
             if entry.fetched_at.elapsed().as_secs() < ACCOUNTS_CACHE_TTL_SECS {
                 return Ok(Arc::clone(&entry.accounts));
@@ -84,7 +86,7 @@ async fn get_accounts_cached(
         Ok(Ok(accounts)) => {
             let accounts = Arc::new(accounts);
             // Update cache
-            let mut cache = accounts_cache().write().unwrap();
+            let mut cache = accounts_cache().write();
             *cache = Some(CachedAccounts {
                 accounts: Arc::clone(&accounts),
                 fetched_at: Instant::now(),
@@ -113,12 +115,18 @@ pub async fn proxy_handler(
 ) -> Response {
     let start_time = Instant::now();
 
-    // Extract auth info (set by auth middleware)
+    // Extract auth info (set by auth middleware).
+    // Defense in depth: the middleware already rejects unauthenticated requests,
+    // but we verify here in case the middleware stack is reconfigured.
     let auth_info = req
         .extensions()
         .get::<AuthInfo>()
         .cloned()
         .unwrap_or_default();
+
+    if !auth_info.is_authenticated {
+        return error_response(StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
 
     let method = req.method().clone();
     let path = req.uri().path().to_string();

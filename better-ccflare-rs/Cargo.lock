@@ -428,6 +428,7 @@ dependencies = [
  "http",
  "metrics",
  "metrics-exporter-prometheus",
+ "parking_lot",
  "pin-project-lite",
  "r2d2",
  "r2d2_sqlite",

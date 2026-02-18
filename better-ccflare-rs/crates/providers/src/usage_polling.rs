@@ -492,6 +492,9 @@ impl UsagePollingService {
         let handle = tokio::spawn(async move {
             info!("Usage polling service started");
             let mut interval = tokio::time::interval(DEFAULT_POLL_INTERVAL);
+            // Delay missed ticks instead of bursting to catch up — prevents
+            // back-to-back polls after a long system sleep or suspend.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Consume the immediate first tick so the loop only fires at the
             // regular 90s cadence (not immediately upon entering it).
             interval.tick().await;

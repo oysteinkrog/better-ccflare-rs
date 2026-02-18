@@ -63,9 +63,9 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     })
 }
 
-/// Fetch all accounts ordered by priority descending.
+/// Fetch all accounts ordered by priority ascending (lower number = higher priority).
 pub fn find_all(conn: &Connection) -> Result<Vec<Account>, DbError> {
-    let sql = format!("{ACCOUNT_SELECT} ORDER BY priority DESC");
+    let sql = format!("{ACCOUNT_SELECT} ORDER BY priority ASC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_account)?;
     let mut accounts = Vec::new();
@@ -516,16 +516,16 @@ mod tests {
     #[test]
     fn priority_and_ordering() {
         let conn = setup_db();
-        let mut a1 = test_account("a1", "Low");
-        a1.priority = 1;
-        let mut a2 = test_account("a2", "High");
+        let mut a1 = test_account("a1", "FirstPri");
+        a1.priority = 1; // lower number = higher priority (comes first)
+        let mut a2 = test_account("a2", "SecondPri");
         a2.priority = 10;
         create(&conn, &a1).unwrap();
         create(&conn, &a2).unwrap();
 
         let all = find_all(&conn).unwrap();
-        assert_eq!(all[0].name, "High"); // higher priority first
-        assert_eq!(all[1].name, "Low");
+        assert_eq!(all[0].name, "FirstPri"); // priority=1 (lower value) comes first
+        assert_eq!(all[1].name, "SecondPri");
     }
 
     #[test]

@@ -181,7 +181,9 @@ pub fn parse_zai_usage_response(body: &[u8]) -> Option<ZaiUsageData> {
     };
 
     for limit in limits {
-        let limit_type = limit.get("type")?.as_str()?;
+        let Some(limit_type) = limit.get("type").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let current_value = limit
             .get("currentValue")
             .and_then(|v| v.as_f64())

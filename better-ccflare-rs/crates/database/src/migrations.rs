@@ -182,6 +182,23 @@ fn add_column_if_missing(
 /// 3. Restructuring `request_payloads` from (id, json) → (request_id, request_body, response_body)
 /// 4. Restructuring `agent_preferences` from (agent_id, model, updated_at) → expanded columns
 pub fn run_schema_migrations(conn: &rusqlite::Connection) -> Result<(), DbError> {
+    // Run all migrations inside a single transaction so a crash mid-migration
+    // leaves the schema fully migrated or fully un-migrated (never partial).
+    let tx = conn.unchecked_transaction()?;
+    let result = run_schema_migrations_impl(&tx);
+    match result {
+        Ok(()) => {
+            tx.commit()?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = tx.rollback();
+            Err(e)
+        }
+    }
+}
+
+fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError> {
     // -- accounts table --
     if table_exists(conn, "accounts") {
         let cols = table_columns(conn, "accounts");
