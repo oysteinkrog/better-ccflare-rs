@@ -225,6 +225,8 @@ pub struct AccountRow {
     pub reserve_weekly: i64,
     /// Whether reserve is hard (excluded) or soft (deprioritized).
     pub reserve_hard: bool,
+    /// Human-readable subscription tier for OAuth accounts (e.g. "Max 20x", "Pro").
+    pub subscription_tier: Option<String>,
 }
 
 /// Aggregate pool usage summary shown above account cards.

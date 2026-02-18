@@ -142,6 +142,7 @@ fn seed_test_data(pool: &DbPool) {
         reserve_5h: 0,
         reserve_weekly: 0,
         reserve_hard: false,
+        subscription_tier: None,
     };
 
     let acc2 = Account {
@@ -171,6 +172,7 @@ fn seed_test_data(pool: &DbPool) {
         reserve_5h: 0,
         reserve_weekly: 0,
         reserve_hard: false,
+        subscription_tier: None,
     };
 
     account_repo::create(&conn, &acc1).unwrap();

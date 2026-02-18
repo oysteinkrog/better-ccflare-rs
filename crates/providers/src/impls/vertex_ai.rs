@@ -317,6 +317,7 @@ impl Provider for VertexAiProvider {
             access_token: access_token.to_string(),
             expires_at: chrono::Utc::now().timestamp_millis() + TOKEN_EXPIRY_MS,
             refresh_token: String::new(), // ADC handles refresh internally
+            subscription_tier: None,
         })
     }
 

@@ -31,6 +31,7 @@ pub fn test_account_with_key(api_key: &str) -> Account {
         reserve_5h: 0,
         reserve_weekly: 0,
         reserve_hard: false,
+        subscription_tier: None,
     }
 }
 

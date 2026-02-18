@@ -31,6 +31,8 @@ pub struct TokenRefreshResult {
     pub expires_at: i64,
     /// Updated refresh token (may be same as before).
     pub refresh_token: String,
+    /// Human-readable subscription tier, populated for claude-oauth only (e.g. "Max 20x", "Pro").
+    pub subscription_tier: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -67,6 +67,7 @@ impl Provider for StubProvider {
                 .unwrap_or_else(|| "stub-token".into()),
             expires_at: chrono::Utc::now().timestamp_millis() + 86_400_000,
             refresh_token: String::new(),
+            subscription_tier: None,
         })
     }
 
