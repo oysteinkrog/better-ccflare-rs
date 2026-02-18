@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     model_mappings TEXT,
     reserve_5h INTEGER DEFAULT 0,
     reserve_weekly INTEGER DEFAULT 0,
-    reserve_hard INTEGER DEFAULT 0
+    reserve_hard INTEGER DEFAULT 0,
+    subscription_tier TEXT
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -255,6 +256,7 @@ mod tests {
             "reserve_5h",
             "reserve_weekly",
             "reserve_hard",
+            "subscription_tier",
         ];
 
         for col in &expected {

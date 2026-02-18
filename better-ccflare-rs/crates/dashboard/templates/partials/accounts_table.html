@@ -55,6 +55,9 @@
           {% else %}
             <span class="badge badge-muted" title="Auth token has expired — re-authenticate to restore">Expired</span>
           {% endif %}
+          {% if let Some(tier) = acct.subscription_tier %}
+            <span class="badge badge-tier" title="Anthropic subscription plan">{{ tier }}</span>
+          {% endif %}
         </div>
         {% if let Some(ep) = acct.custom_endpoint %}
         <small style="color:var(--pico-muted-color);font-size:0.72rem;" title="Custom API endpoint URL">{{ ep }}</small>

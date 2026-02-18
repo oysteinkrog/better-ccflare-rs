@@ -400,6 +400,7 @@ async fn accounts_table_partial(
                 reserve_5h: a.reserve_5h,
                 reserve_weekly: a.reserve_weekly,
                 reserve_hard: a.reserve_hard,
+                subscription_tier: a.subscription_tier.clone(),
             }
         })
         .collect();

@@ -196,6 +196,7 @@ impl Provider for OpenAiCompatibleProvider {
             access_token: token,
             expires_at: chrono::Utc::now().timestamp_millis() + 30 * 24 * 60 * 60 * 1000,
             refresh_token: String::new(),
+            subscription_tier: None,
         })
     }
 

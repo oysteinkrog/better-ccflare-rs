@@ -297,11 +297,67 @@ impl ClaudeOAuthProvider {
             .unwrap_or_default()
             .to_string();
 
+        // Extract subscription tier from rateLimitTier (preferred) or subscriptionType.
+        // Known rateLimitTier values: "default_claude_max_20x", "default_claude_max_5x",
+        // "default_claude_pro", "default_claude_team_*", "default_claude_enterprise_*".
+        let subscription_tier = json["rateLimitTier"]
+            .as_str()
+            .map(Self::normalize_rate_limit_tier)
+            .or_else(|| {
+                json["subscriptionType"]
+                    .as_str()
+                    .map(Self::normalize_subscription_type)
+            });
+
         Ok(TokenRefreshResult {
             access_token,
             expires_at,
             refresh_token,
+            subscription_tier,
         })
+    }
+
+    /// Map a `rateLimitTier` value to a human-readable plan name.
+    fn normalize_rate_limit_tier(tier: &str) -> String {
+        match tier {
+            "default_claude_max_20x" => "Max 20x".to_string(),
+            "default_claude_max_5x" => "Max 5x".to_string(),
+            "default_claude_pro" => "Pro".to_string(),
+            _ if tier.contains("team_premium") => "Team Premium".to_string(),
+            _ if tier.contains("team") => "Team".to_string(),
+            _ if tier.contains("enterprise") => "Enterprise".to_string(),
+            _ if tier.contains("max_20") => "Max 20x".to_string(),
+            _ if tier.contains("max_5") || tier.contains("max_x5") => "Max 5x".to_string(),
+            _ if tier.contains("max") => "Max".to_string(),
+            _ if tier.contains("pro") => "Pro".to_string(),
+            _ => {
+                // Strip "default_claude_" prefix if present and title-case
+                let s = tier.strip_prefix("default_claude_").unwrap_or(tier);
+                let mut chars = s.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            }
+        }
+    }
+
+    /// Map a `subscriptionType` value to a human-readable plan name.
+    fn normalize_subscription_type(st: &str) -> String {
+        match st {
+            "max" => "Max".to_string(),
+            "pro" => "Pro".to_string(),
+            "team" => "Team".to_string(),
+            "enterprise" => "Enterprise".to_string(),
+            "free" => "Free".to_string(),
+            _ => {
+                let mut chars = st.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            }
+        }
     }
 }
 
@@ -412,6 +468,7 @@ impl Provider for ClaudeOAuthProvider {
                 // API keys don't expire; set 24h to avoid repeated checks
                 expires_at: chrono::Utc::now().timestamp_millis() + 24 * 60 * 60 * 1000,
                 refresh_token: String::new(),
+                subscription_tier: None,
             });
         }
 

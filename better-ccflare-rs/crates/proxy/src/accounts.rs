@@ -113,6 +113,7 @@ fn account_to_response(account: &Account, now: i64) -> AccountResponse {
         reserve_5h: account.reserve_5h,
         reserve_weekly: account.reserve_weekly,
         reserve_hard: account.reserve_hard,
+        subscription_tier: account.subscription_tier.clone(),
     }
 }
 
@@ -971,6 +972,7 @@ pub async fn create_account(
         reserve_5h: 0,
         reserve_weekly: 0,
         reserve_hard: false,
+        subscription_tier: None,
     };
 
     if let Err(e) = account_repo::create(&conn, &account) {
@@ -1056,6 +1058,7 @@ mod tests {
             reserve_5h: 0,
             reserve_weekly: 0,
             reserve_hard: false,
+            subscription_tier: None,
         };
         account_repo::create(&conn, &account).unwrap();
     }
@@ -1356,6 +1359,7 @@ mod tests {
             reserve_5h: 0,
             reserve_weekly: 0,
             reserve_hard: false,
+            subscription_tier: None,
         };
 
         let resp = account_to_response(&account, now);
@@ -1393,6 +1397,7 @@ mod tests {
             reserve_5h: 0,
             reserve_weekly: 0,
             reserve_hard: false,
+            subscription_tier: None,
         };
 
         let resp = account_to_response(&account, now);

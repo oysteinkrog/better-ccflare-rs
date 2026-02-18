@@ -269,6 +269,7 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
             "INTEGER DEFAULT 0",
             &cols,
         );
+        add_column_if_missing(conn, "accounts", "subscription_tier", "TEXT", &cols);
 
         // Make name UNIQUE if not already (TS schema didn't enforce this)
         // We can't ALTER an existing constraint, so we just ignore duplicates

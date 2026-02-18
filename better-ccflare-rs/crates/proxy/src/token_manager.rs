@@ -62,6 +62,10 @@ pub trait TokenPersister: Send + Sync {
         refresh_token: &str,
     );
 
+    /// Persist subscription tier when it changes (e.g. after a token refresh).
+    /// Default is a no-op; override in DB-backed implementors.
+    fn persist_subscription_tier(&self, _account_id: &str, _tier: Option<&str>) {}
+
     /// Try to load an account from DB (for backoff recovery).
     fn load_account(&self, account_id: &str) -> Option<Account>;
 }
@@ -251,6 +255,12 @@ impl TokenManager {
                     result.expires_at,
                     &result.refresh_token,
                 );
+                if result.subscription_tier.is_some() {
+                    persister.persist_subscription_tier(
+                        &account.id,
+                        result.subscription_tier.as_deref(),
+                    );
+                }
 
                 // Update in-memory account
                 let new_token = result.access_token.clone();
@@ -258,6 +268,9 @@ impl TokenManager {
                 account.expires_at = Some(result.expires_at);
                 if !result.refresh_token.is_empty() {
                     account.refresh_token = result.refresh_token;
+                }
+                if let Some(tier) = result.subscription_tier {
+                    account.subscription_tier = Some(tier);
                 }
 
                 // Clear failure record
@@ -357,6 +370,7 @@ mod tests {
             reserve_5h: 0,
             reserve_weekly: 0,
             reserve_hard: false,
+            subscription_tier: None,
         }
     }
 
@@ -388,6 +402,7 @@ mod tests {
             reserve_5h: 0,
             reserve_weekly: 0,
             reserve_hard: false,
+            subscription_tier: None,
         }
     }
 
@@ -416,6 +431,7 @@ mod tests {
                 access_token: "at_new".to_string(),
                 expires_at: NOW + 5 * time::HOUR,
                 refresh_token: "rt_new".to_string(),
+                subscription_tier: None,
             })
         }
     }

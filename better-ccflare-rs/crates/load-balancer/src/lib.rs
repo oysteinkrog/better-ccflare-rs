@@ -401,6 +401,7 @@ mod tests {
             reserve_5h: 0,
             reserve_weekly: 0,
             reserve_hard: false,
+            subscription_tier: None,
         }
     }
 
