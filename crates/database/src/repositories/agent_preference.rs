@@ -64,8 +64,11 @@ pub fn set_preference(
     now: i64,
 ) -> Result<(), DbError> {
     conn.execute(
-        "INSERT OR REPLACE INTO agent_preferences (agent_id, preferred_model, updated_at)
-         VALUES (?1, ?2, ?3)",
+        "INSERT INTO agent_preferences (agent_id, preferred_model, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(agent_id) DO UPDATE SET
+             preferred_model = excluded.preferred_model,
+             updated_at = excluded.updated_at",
         params![agent_id, model, now],
     )?;
     Ok(())
@@ -96,8 +99,11 @@ pub fn set_bulk_preferences(
     let tx = conn.unchecked_transaction()?;
     {
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO agent_preferences (agent_id, preferred_model, updated_at)
-             VALUES (?1, ?2, ?3)",
+            "INSERT INTO agent_preferences (agent_id, preferred_model, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(agent_id) DO UPDATE SET
+                 preferred_model = excluded.preferred_model,
+                 updated_at = excluded.updated_at",
         )?;
         for &agent_id in agent_ids {
             stmt.execute(params![agent_id, model, now])?;

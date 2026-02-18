@@ -8,7 +8,9 @@
 //! computations on every request.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::RwLock;
 use std::time::Instant;
 
 use axum::body::Body;
@@ -196,7 +198,7 @@ fn count_active_api_keys_sync(pool: &DbPool) -> i64 {
 async fn is_auth_enabled(pool: &DbPool) -> bool {
     // Check cache (read lock — concurrent readers allowed)
     {
-        let cache = auth_enabled_cache().read().unwrap();
+        let cache = auth_enabled_cache().read();
         if let Some(ref entry) = *cache {
             if entry.checked_at.elapsed().as_secs() < AUTH_ENABLED_CACHE_TTL_SECS {
                 return entry.enabled;
@@ -212,7 +214,7 @@ async fn is_auth_enabled(pool: &DbPool) -> bool {
 
     // Update cache (write lock)
     {
-        let mut cache = auth_enabled_cache().write().unwrap();
+        let mut cache = auth_enabled_cache().write();
         *cache = Some(AuthEnabledCache {
             enabled,
             checked_at: Instant::now(),
@@ -249,7 +251,7 @@ async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, 
 
     // Check cache (read lock — concurrent readers allowed)
     {
-        let cache = api_key_cache().read().unwrap();
+        let cache = api_key_cache().read();
         if let Some(entry) = cache.get(&cache_key) {
             if entry.verified_at.elapsed().as_secs() < API_KEY_CACHE_TTL_SECS {
                 return Some((entry.id.clone(), entry.name.clone()));
@@ -267,7 +269,7 @@ async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, 
 
     // Cache successful result (write lock)
     if let Some((ref id, ref name)) = result {
-        let mut cache = api_key_cache().write().unwrap();
+        let mut cache = api_key_cache().write();
         // Evict oldest entries if cache is too large
         if cache.len() >= API_KEY_CACHE_MAX_SIZE {
             if let Some(oldest_key) = cache

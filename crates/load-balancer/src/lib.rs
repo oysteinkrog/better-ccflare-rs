@@ -11,6 +11,10 @@ use bccf_core::constants::time;
 use bccf_core::providers::Provider;
 use bccf_core::types::{Account, RoutingUsageInfo};
 
+/// Debounce for rate-limit-reset detection: a window must have reset at least
+/// this many ms ago before we act on the reset timestamp.
+const RESET_DEBOUNCE_MS: i64 = 1000;
+
 /// Metadata about an incoming request, used by the strategy to make routing decisions.
 #[derive(Debug, Clone, Default)]
 pub struct SelectionMeta {
@@ -193,7 +197,7 @@ impl SessionStrategy {
         let rate_limit_window_reset = account.provider == Provider::Anthropic.to_string()
             && account
                 .rate_limit_reset
-                .is_some_and(|reset| reset < now - 1000);
+                .is_some_and(|reset| reset < now - RESET_DEBOUNCE_MS);
 
         if fixed_duration_expired || rate_limit_window_reset {
             account.session_start = Some(now);
@@ -214,7 +218,10 @@ impl SessionStrategy {
             return false;
         }
         match account.session_start {
-            Some(start) => now - start < self.session_duration_ms,
+            // Guard start <= now to handle clock skew / future timestamps:
+            // a future session_start would make now-start negative (i64), which
+            // is always < session_duration_ms, falsely claiming an active session.
+            Some(start) => start <= now && now - start < self.session_duration_ms,
             None => false,
         }
     }
@@ -235,7 +242,7 @@ impl SessionStrategy {
                 }
 
                 // Check if the usage window has reset (works for all providers)
-                let window_reset = a.rate_limit_reset.is_some_and(|reset| reset < now - 1000);
+                let window_reset = a.rate_limit_reset.is_some_and(|reset| reset < now - RESET_DEBOUNCE_MS);
 
                 // Must pass full availability check (paused, rate-limited, hard reserve)
                 window_reset && is_account_available(a, usage, now)
@@ -338,7 +345,10 @@ fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -
                 WindowKind::Weekly => account.reserve_weekly,
                 WindowKind::Other => account.reserve_5h, // fallback to 5h for non-Anthropic
             };
-            if threshold > 0 && w.utilization_pct >= (100 - threshold) as f64 {
+            // Clamp to [0, 100]: reserve values >100 would produce negative target
+            // utilization, incorrectly marking every account as at-reserve.
+            let trigger_at = (100_i64.saturating_sub(threshold)).max(0) as f64;
+            if threshold > 0 && w.utilization_pct >= trigger_at {
                 return true;
             }
         }
@@ -347,7 +357,8 @@ fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -
 
     // Fallback for accounts with no per-window data: use aggregate
     let threshold = account.reserve_5h.max(account.reserve_weekly);
-    if threshold > 0 && info.utilization_pct >= (100 - threshold) as f64 {
+    let trigger_at = (100_i64.saturating_sub(threshold)).max(0) as f64;
+    if threshold > 0 && info.utilization_pct >= trigger_at {
         return true;
     }
     false
