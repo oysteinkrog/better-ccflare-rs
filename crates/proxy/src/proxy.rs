@@ -96,41 +96,14 @@ async fn get_accounts_cached(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Model mapping cache — avoids re-parsing JSON per request
-// ---------------------------------------------------------------------------
-
-fn model_mapping_cache() -> &'static RwLock<HashMap<String, HashMap<String, String>>> {
-    static CACHE: OnceLock<RwLock<HashMap<String, HashMap<String, String>>>> = OnceLock::new();
-    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-/// Get parsed model mappings for an account, caching the parsed result.
-fn get_model_mapping<'a>(
-    account_id: &str,
+/// Get parsed model mapping for a given model from a JSON mappings string.
+fn get_model_mapping(
+    _account_id: &str,
     mappings_json: &str,
     model: &str,
 ) -> Option<String> {
-    // Check cache
-    {
-        let cache = model_mapping_cache().read().unwrap();
-        if let Some(mappings) = cache.get(account_id) {
-            return mappings.get(model).cloned();
-        }
-    }
-
-    // Parse and cache
-    let parsed: HashMap<String, String> = match serde_json::from_str(mappings_json) {
-        Ok(m) => m,
-        Err(_) => return None,
-    };
-
-    let result = parsed.get(model).cloned();
-
-    let mut cache = model_mapping_cache().write().unwrap();
-    cache.insert(account_id.to_string(), parsed);
-
-    result
+    let parsed: HashMap<String, String> = serde_json::from_str(mappings_json).ok()?;
+    parsed.get(model).cloned()
 }
 
 /// Main proxy handler for `/v1/messages` and `/v1/*` routes.
@@ -383,7 +356,9 @@ pub async fn proxy_handler(
                     // Mark account as rate-limited in DB (fire-and-forget)
                     if let Some(pool) = state.db_pool::<DbPool>() {
                         let pool_c = pool.clone();
-                        let until = rate_info.reset_time.unwrap_or(now + 60_000);
+                        let until = rate_info
+                        .reset_time
+                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() + 60_000);
                         let account_id = account.id.clone();
                         tokio::task::spawn_blocking(move || {
                             if let Ok(conn) = pool_c.get() {

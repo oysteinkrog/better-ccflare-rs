@@ -74,7 +74,7 @@ impl SessionStrategy {
         }
 
         // Check for auto-fallback candidates first
-        let fallback_candidates = self.check_auto_fallback_accounts(accounts, now);
+        let fallback_candidates = self.check_auto_fallback_accounts(accounts, usage, now);
         if !fallback_candidates.is_empty() {
             let mut chosen = fallback_candidates[0].clone();
             if !meta.bypass_session {
@@ -221,7 +221,12 @@ impl SessionStrategy {
 
     /// Find higher-priority accounts eligible for auto-fallback.
     /// These are accounts whose rate limit window has reset and are no longer rate-limited.
-    fn check_auto_fallback_accounts(&self, accounts: &[Account], now: i64) -> Vec<Account> {
+    fn check_auto_fallback_accounts(
+        &self,
+        accounts: &[Account],
+        usage: &HashMap<String, RoutingUsageInfo>,
+        now: i64,
+    ) -> Vec<Account> {
         let mut candidates: Vec<Account> = accounts
             .iter()
             .filter(|a| {
@@ -232,10 +237,8 @@ impl SessionStrategy {
                 // Check if the usage window has reset (works for all providers)
                 let window_reset = a.rate_limit_reset.is_some_and(|reset| reset < now - 1000);
 
-                // Check not currently rate-limited
-                let not_rate_limited = a.rate_limited_until.is_none_or(|until| until <= now);
-
-                window_reset && not_rate_limited
+                // Must pass full availability check (paused, rate-limited, hard reserve)
+                window_reset && is_account_available(a, usage, now)
             })
             .cloned()
             .collect();

@@ -147,7 +147,7 @@ fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo>
                 });
 
             // Normalise to 0-100
-            let pct = if util <= 1.01 { util * 100.0 } else { util };
+            let pct = if util < 2.0 { util * 100.0 } else { util };
 
             // Map key to WindowKind
             let kind = match key.as_str() {
@@ -170,7 +170,7 @@ fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo>
     }
 
     // Normalise aggregate to 0-100
-    let pct = if best_util <= 1.01 {
+    let pct = if best_util < 2.0 {
         best_util * 100.0
     } else {
         best_util
