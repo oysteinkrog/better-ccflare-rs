@@ -2,12 +2,12 @@
 export const COLORS = {
 	primary: "oklch(0.70 0.175 44)",   // ccflare orange
 	success: "oklch(0.70 0.150 168)",  // green
-	warning: "oklch(0.78 0.155 76)",   // amber
+	warning: "oklch(0.80 0.155 90)",   // yellow — H90 avoids confusion with orange primary (H44)
 	error: "oklch(0.60 0.215 22)",     // red
 	blue: "oklch(0.62 0.190 255)",
 	purple: "oklch(0.60 0.185 300)",
 	pink: "oklch(0.64 0.205 350)",
-	indigo: "oklch(0.57 0.200 275)",
+	indigo: "oklch(0.65 0.190 275)",   // raised from L0.57 — readable on dark backgrounds
 	cyan: "oklch(0.74 0.138 198)",
 } as const;
 
