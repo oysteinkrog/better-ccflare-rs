@@ -21,8 +21,8 @@
     </div>
   </div>
 
-  <!-- View: Bars (default) -->
-  <div id="pool-view-bars">
+  <!-- View: Bars (default) — starts hidden; JS restores the saved view -->
+  <div id="pool-view-bars" style="display:none">
     {% if !ps.windows.is_empty() %}
     <div class="pool-windows">
       {% for w in ps.windows %}
@@ -46,9 +46,18 @@
 
   <!-- View: Timeline (SVG stepped line, no library needed) -->
   <div id="pool-view-timeline" style="display:none">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:4px;flex-wrap:wrap;">
+      <span style="font-size:0.72rem;color:var(--pico-muted-color);">Projection:</span>
+      <select id="pool-proj-select" style="font-size:0.72rem;padding:0.1rem 0.35rem;margin:0;height:auto;border-radius:4px;" onchange="onProjChange(this.value)">
+        <option value="optimistic">Optimistic (no decay)</option>
+        <option value="current">Current pace</option>
+        <option value="24h">Last 24h avg</option>
+        <option value="7d">Last 7d avg</option>
+      </select>
+    </div>
     <div id="pool-timeline-svg" style="width:100%;overflow:hidden;"></div>
-    <div style="font-size:0.7rem;color:var(--pico-muted-color);margin-top:2px;">
-      Projected available pool capacity over the next 7 days &middot; <em>optimistic: assumes windows reset to full</em>
+    <div style="font-size:0.7rem;color:var(--pico-muted-color);margin-top:2px;" id="pool-timeline-legend">
+      Projected available pool capacity over the next 7 days
     </div>
   </div>
 
@@ -113,21 +122,82 @@
       b.className = b.className.replace(' active','') + (b.dataset.view === view ? ' active' : '');
     });
     localStorage.setItem('poolView', view);
-    if (view === 'timeline') renderTimeline();
+    if (view === 'timeline') {
+      var proj = localStorage.getItem('poolProj') || 'optimistic';
+      var sel = document.getElementById('pool-proj-select');
+      if (sel) sel.value = proj;
+      renderTimeline(proj);
+    }
     else if (view === 'events')  renderEvents();
     else if (view === 'heatmap') renderHeatmap();
     else if (view === 'gauges')  renderGauges();
   };
 
+  window.onProjChange = function(proj) {
+    localStorage.setItem('poolProj', proj);
+    renderTimeline(proj);
+  };
+
+  // ── Timeline helpers ─────────────────────────────────────────────────────
+  // Returns the window duration in ms (used to infer decay period)
+  function getWindowDurMs(label) {
+    if (label === '5-hour' || label === 'Daily') return 5 * 3600000;
+    if (label === 'Weekly' || label === 'Opus (Wk)' || label === 'Sonnet (Wk)') return 7 * 24 * 3600000;
+    if (label === 'Monthly') return 30 * 24 * 3600000;
+    return 24 * 3600000; // fallback: 1 day
+  }
+
+  // Returns burn rate in pct/ms for a window under the given projection.
+  // win: {pct, resets_at_ms, label, req_rates:{h1,h24,d7}}
+  // proj: 'optimistic'|'current'|'24h'|'7d'
+  function computeBurnRatePerMs(win, proj) {
+    if (proj === 'optimistic') return 0;
+    var now = poolData.now_ms;
+    var winDurMs = getWindowDurMs(win.label);
+    // "current" burn: pct consumed / elapsed time since window started
+    var elapsed = win.resets_at_ms ? (winDurMs - (win.resets_at_ms - now)) : winDurMs;
+    if (elapsed <= 0) elapsed = winDurMs;
+    var currentBurn = win.pct / elapsed; // pct/ms
+    if (proj === 'current') return currentBurn;
+    // For 24h/7d: scale current burn rate by ratio of historical to current request rate
+    var rr = win.req_rates || {h1:0, h24:0, d7:0};
+    var h1 = rr.h1 || 0;
+    if (h1 <= 0) {
+      // No current rate data — fall back to current burn
+      return currentBurn;
+    }
+    if (proj === '24h') {
+      var ratio = (rr.h24 || 0) / h1;
+      return currentBurn * ratio;
+    }
+    if (proj === '7d') {
+      var ratio = (rr.d7 || 0) / h1;
+      return currentBurn * ratio;
+    }
+    return currentBurn;
+  }
+
   // ── Timeline (SVG stepped line) ──────────────────────────────────────────
-  function renderTimeline() {
+  function renderTimeline(proj) {
+    if (!proj) proj = 'optimistic';
     var data = poolData, now = data.now_ms;
-    var sevenDays = 7*24*3600000, fiveH = 5*3600000;
+    var sevenDays = 7*24*3600000;
     var pairs = [];
     data.accounts.forEach(function(a) {
       if (!a.paused) a.windows.forEach(function(w) {
-        pairs.push({pct: w.pct, resets_at_ms: w.resets_at_ms, label: w.label, name: a.name});
+        pairs.push({
+          pct: w.pct,
+          resets_at_ms: w.resets_at_ms,
+          label: w.label,
+          name: a.name,
+          req_rates: a.req_rates || {h1:0,h24:0,d7:0}
+        });
       });
+    });
+
+    // Compute burn rate for each pair
+    var burnRates = pairs.map(function(p) {
+      return computeBurnRatePerMs(p, proj);
     });
 
     // Build reset events, projecting 5h windows forward for 7 days
@@ -135,39 +205,57 @@
     pairs.forEach(function(p, i) {
       if (!p.resets_at_ms) return;
       var t = p.resets_at_ms, n = 0;
-      while (t <= now + sevenDays && n++ < 50) {
-        if (t > now) events.push({ms: t, idx: i});
-        if (p.label === '5-hour' || p.label === 'Daily') t += fiveH;
+      var dur = getWindowDurMs(p.label);
+      var isRecurring = p.label === '5-hour' || p.label === 'Daily';
+      while (t <= now + sevenDays && n++ < 60) {
+        if (t > now) events.push({ms: t, idx: i, dur: dur});
+        if (isRecurring) t += dur;
         else break;
       }
     });
     events.sort(function(a,b){return a.ms - b.ms;});
 
+    // Sample average available % at time T using burn rates
+    // pct[i] decays at burnRates[i] per ms; resets to 0 at each event
     var pctArr = pairs.map(function(p){return p.pct;});
-    function avgAvail() {
+    var lastEventMs = Array(pairs.length).fill(now);
+
+    function avgAvailAt(t) {
       if (!pctArr.length) return 100;
-      return pctArr.reduce(function(s,p){return s+(100-p);},0)/pctArr.length;
+      var sum = 0;
+      for (var i = 0; i < pctArr.length; i++) {
+        var elapsed = t - lastEventMs[i];
+        var decayed = Math.min(100, pctArr[i] + burnRates[i] * elapsed);
+        sum += (100 - decayed);
+      }
+      return sum / pctArr.length;
     }
 
-    // Build SVG path
+    // Build SVG path by sampling at each event boundary
     var W = 560, H = 120, pL = 32, pR = 8, pT = 8, pB = 20;
     var pW = W-pL-pR, pH = H-pT-pB;
     function tx(ms) { return pL + (ms-now)/sevenDays*pW; }
     function ty(pct) { return pT + pH - pct/100*pH; }
 
-    var pathD = 'M'+tx(now)+','+ty(avgAvail()).toFixed(1);
+    var pathD = 'M'+tx(now)+','+ty(avgAvailAt(now)).toFixed(1);
     var fillD = pathD;
+
     events.forEach(function(e) {
-      var x = tx(e.ms).toFixed(1), y1 = ty(avgAvail()).toFixed(1);
+      var avBefore = avgAvailAt(e.ms);
+      var x = tx(e.ms).toFixed(1), y1 = ty(avBefore).toFixed(1);
       pathD += ' H'+x+' V'+y1;
       fillD += ' H'+x+' V'+y1;
+      // Apply reset: that pair's pct drops to 0, lastEventMs updates
       pctArr[e.idx] = 0;
-      var y2 = ty(avgAvail()).toFixed(1);
+      lastEventMs[e.idx] = e.ms;
+      var y2 = ty(avgAvailAt(e.ms)).toFixed(1);
       pathD += ' V'+y2;
       fillD += ' V'+y2;
     });
-    pathD += ' H'+tx(now+sevenDays).toFixed(1);
-    fillD += ' H'+tx(now+sevenDays).toFixed(1)+' V'+(pT+pH)+' H'+pL+' Z';
+    var endX = tx(now+sevenDays).toFixed(1);
+    var endY = ty(avgAvailAt(now+sevenDays)).toFixed(1);
+    pathD += ' H'+endX+' V'+endY;
+    fillD += ' H'+endX+' V'+endY+' V'+(pT+pH)+' H'+pL+' Z';
 
     // Y-axis grid
     var grid = '';
@@ -194,6 +282,18 @@
       + '<path d="'+pathD+'" fill="none" stroke="var(--bccf-success)" stroke-width="1.8"/>'
       + '</svg>';
     document.getElementById('pool-timeline-svg').innerHTML = svg;
+
+    // Update legend
+    var legendEl = document.getElementById('pool-timeline-legend');
+    if (legendEl) {
+      var desc = {
+        optimistic: 'assumes windows reset to full and stay full',
+        current: 'projects decay at current usage pace',
+        '24h': 'projects decay at last 24h average usage pace',
+        '7d': 'projects decay at last 7-day average usage pace'
+      };
+      legendEl.innerHTML = 'Projected available pool capacity over the next 7 days &middot; <em>' + (desc[proj]||proj) + '</em>';
+    }
   }
 
   // ── Events ───────────────────────────────────────────────────────────────
@@ -351,6 +451,10 @@
   // ── Init ─────────────────────────────────────────────────────────────────
   var saved = localStorage.getItem('poolView') || 'bars';
   if (_pv.indexOf(saved) < 0) saved = 'bars';
+  // Restore projection selector before calling setPoolView (which may call renderTimeline)
+  var savedProj = localStorage.getItem('poolProj') || 'optimistic';
+  var projSel = document.getElementById('pool-proj-select');
+  if (projSel) projSel.value = savedProj;
   setPoolView(saved);
 })();
 </script>

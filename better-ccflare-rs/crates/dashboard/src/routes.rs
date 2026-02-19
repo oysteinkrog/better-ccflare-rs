@@ -409,7 +409,14 @@ async fn accounts_table_partial(
     sort_account_rows(&mut rows, query.sort.as_deref());
 
     let pool_summary = build_pool_summary(&rows);
-    let chart_data_json = build_chart_data_json(&rows, now);
+    let req_rates = match state.db_pool::<DbPool>() {
+        Some(pool) => match pool.get() {
+            Ok(conn) => query_account_request_rates(&conn, now),
+            Err(_) => std::collections::HashMap::new(),
+        },
+        None => std::collections::HashMap::new(),
+    };
+    let chart_data_json = build_chart_data_json(&rows, now, &req_rates);
 
     let tpl = AccountsTablePartial {
         accounts: rows,
@@ -684,8 +691,72 @@ fn build_pool_window(label: String, entries: &[(i64, String, Option<i64>)]) -> P
     }
 }
 
+/// Per-account request rates used for capacity projection in the timeline chart.
+#[derive(serde::Serialize, Default, Clone)]
+struct ReqRates {
+    /// Requests per hour in the last 1 hour.
+    h1: f64,
+    /// Requests per hour in the last 24 hours.
+    h24: f64,
+    /// Requests per hour averaged over the last 7 days.
+    d7: f64,
+}
+
+/// Query per-account request rates for different lookback windows.
+///
+/// Returns a map of account_id → ReqRates.
+fn query_account_request_rates(
+    conn: &rusqlite::Connection,
+    now: i64,
+) -> std::collections::HashMap<String, ReqRates> {
+    let h1_cutoff = now - 3_600_000;
+    let h24_cutoff = now - 86_400_000;
+    let d7_cutoff = now - 7 * 86_400_000;
+
+    let sql = "SELECT account_used,
+        SUM(CASE WHEN timestamp > ?1 THEN 1 ELSE 0 END) AS cnt_1h,
+        SUM(CASE WHEN timestamp > ?2 THEN 1 ELSE 0 END) AS cnt_24h,
+        COUNT(*) AS cnt_7d
+    FROM requests
+    WHERE timestamp > ?3 AND account_used IS NOT NULL
+    GROUP BY account_used";
+
+    let mut map = std::collections::HashMap::new();
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return map;
+    };
+    let Ok(rows) = stmt.query_map(
+        rusqlite::params![h1_cutoff, h24_cutoff, d7_cutoff],
+        |row| {
+            let id: String = row.get(0)?;
+            let cnt_1h: i64 = row.get(1)?;
+            let cnt_24h: i64 = row.get(2)?;
+            let cnt_7d: i64 = row.get(3)?;
+            Ok((id, cnt_1h, cnt_24h, cnt_7d))
+        },
+    ) else {
+        return map;
+    };
+    for row in rows.flatten() {
+        let (id, cnt_1h, cnt_24h, cnt_7d) = row;
+        map.insert(
+            id,
+            ReqRates {
+                h1: cnt_1h as f64,           // count over 1h = req/h
+                h24: cnt_24h as f64 / 24.0,  // normalise to req/h
+                d7: cnt_7d as f64 / 168.0,   // 7*24 hours
+            },
+        );
+    }
+    map
+}
+
 /// Serialize per-account usage data to JSON for client-side chart visualizations.
-fn build_chart_data_json(rows: &[AccountRow], now: i64) -> String {
+fn build_chart_data_json(
+    rows: &[AccountRow],
+    now: i64,
+    req_rates: &std::collections::HashMap<String, ReqRates>,
+) -> String {
     #[derive(serde::Serialize)]
     struct CWindow {
         label: String,
@@ -693,18 +764,20 @@ fn build_chart_data_json(rows: &[AccountRow], now: i64) -> String {
         resets_at_ms: Option<i64>,
     }
     #[derive(serde::Serialize)]
-    struct CAccount {
+    struct CAccount<'a> {
         id: String,
         name: String,
         paused: bool,
         windows: Vec<CWindow>,
+        req_rates: &'a ReqRates,
     }
     #[derive(serde::Serialize)]
-    struct CData {
+    struct CData<'a> {
         now_ms: i64,
-        accounts: Vec<CAccount>,
+        accounts: Vec<CAccount<'a>>,
     }
 
+    let default_rates = ReqRates::default();
     let data = CData {
         now_ms: now,
         accounts: rows
@@ -714,6 +787,7 @@ fn build_chart_data_json(rows: &[AccountRow], now: i64) -> String {
                 id: r.id.clone(),
                 name: r.name.clone(),
                 paused: r.paused,
+                req_rates: req_rates.get(&r.id).unwrap_or(&default_rates),
                 windows: r
                     .usage_windows
                     .iter()
