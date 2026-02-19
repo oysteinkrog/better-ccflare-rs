@@ -96,7 +96,9 @@
   <div class="stat"><div class="stat-value" id="t-success">-</div><div class="stat-label">Success Rate</div></div>
   <div class="stat"><div class="stat-value" id="t-resp-time">-</div><div class="stat-label">Avg Response</div></div>
   <div class="stat"><div class="stat-value" id="t-tokens">-</div><div class="stat-label">Total Tokens</div></div>
-  <div class="stat"><div class="stat-value" id="t-cost">-</div><div class="stat-label">Cost (USD)</div></div>
+  <div class="stat"><div class="stat-value" id="t-cost">-</div><div class="stat-label">API Value</div></div>
+  <div class="stat"><div class="stat-value" id="t-saved" style="color:#22c55e">-</div><div class="stat-label">Money Saved</div></div>
+  <div class="stat"><div class="stat-value" id="t-savings-rate">-</div><div class="stat-label">Savings Rate</div></div>
   <div class="stat"><div class="stat-value" id="t-speed">-</div><div class="stat-label">Avg tok/s</div></div>
 </div>
 
@@ -125,6 +127,28 @@
   <div class="chart-card">
     <h3>Model Distribution</h3>
     <canvas id="chart-models"></canvas>
+  </div>
+</div>
+
+<!-- Cost by Account table -->
+<div class="chart-card" style="margin-top:1rem;">
+  <h3>Cost by Account</h3>
+  <div style="overflow-x:auto;">
+    <table style="width:100%;font-size:0.82rem;border-collapse:collapse;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--bccf-border);">
+          <th style="text-align:left;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Account</th>
+          <th style="text-align:left;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Provider</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Requests</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">API Value</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Saved</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Actual Cost</th>
+        </tr>
+      </thead>
+      <tbody id="cost-by-account-body">
+        <tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--bccf-text-tertiary);font-style:italic;">Loading...</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -237,6 +261,34 @@
     document.getElementById('t-tokens').textContent = fmtNum(totals.totalTokens);
     document.getElementById('t-cost').textContent = fmtUsd(totals.totalCostUsd);
     document.getElementById('t-speed').textContent = fmtSpeed(totals.avgTokensPerSecond);
+    var saved = totals.totalMoneySavedUsd || 0;
+    document.getElementById('t-saved').textContent = fmtUsd(saved);
+    var savingsRate = totals.totalCostUsd > 0 ? (saved / totals.totalCostUsd * 100) : 0;
+    var rateEl = document.getElementById('t-savings-rate');
+    rateEl.textContent = savingsRate.toFixed(1) + '%';
+    rateEl.style.color = savingsRate >= 80 ? '#22c55e' : savingsRate >= 40 ? '#eab308' : '#ef4444';
+
+    // Cost by account table
+    var costByAccount = data.costByAccount || [];
+    var tbody = document.getElementById('cost-by-account-body');
+    if (tbody) {
+      if (costByAccount.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:1.5rem;color:var(--bccf-text-tertiary);font-style:italic;">No account data for this range</td></tr>';
+      } else {
+        tbody.innerHTML = costByAccount.map(function(a) {
+          var isFree = a.provider === 'anthropic' || a.provider === 'claude-oauth';
+          var actualCost = a.costUsd - a.moneySavedUsd;
+          var providerLabel = { 'anthropic': 'Claude OAuth', 'claude-oauth': 'Claude OAuth', 'claude-console-api': 'Claude API', 'zai': 'Zai / Z.AI', 'minimax': 'MiniMax', 'nanogpt': 'NanoGPT', 'vertex-ai': 'Vertex AI' }[a.provider] || a.provider;
+          var badge = isFree
+            ? '<span style="display:inline-flex;align-items:center;gap:0.2rem;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:9999px;background:rgba(34,197,94,0.13);color:#22c55e;font-weight:600;">✓ ' + providerLabel + '</span>'
+            : '<span style="display:inline-flex;align-items:center;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:9999px;background:rgba(59,130,246,0.12);color:#3b82f6;font-weight:500;">' + providerLabel + '</span>';
+          var savedCell = a.moneySavedUsd > 0
+            ? '<td style="text-align:right;color:#22c55e;font-weight:600;">' + fmtUsd(a.moneySavedUsd) + '</td>'
+            : '<td style="text-align:right;color:var(--bccf-text-tertiary);">—</td>';
+          return '<tr><td style="padding:0.45rem 0.5rem;font-weight:500;">' + a.name + '</td><td style="padding:0.45rem 0.5rem;">' + badge + '</td><td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + fmtNum(a.requests) + '</td><td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + fmtUsd(a.costUsd) + '</td>' + savedCell + '<td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + (actualCost > 0.00005 ? fmtUsd(actualCost) : '$0.00') + '</td></tr>';
+        }).join('');
+      }
+    }
 
     if (ts.length === 0 && modelDist.length === 0) {
       document.getElementById('analytics-status').textContent = 'No data for this range';
@@ -292,21 +344,34 @@
       ]
     }, tokenOpts);
 
-    // 4. Cost (line)
+    // 4. Cost vs Money Saved (dual line)
     var costOpts = baseOpts();
     costOpts.scales.y.ticks.callback = function(v) { return fmtUsd(v); };
+    costOpts.plugins.legend = { display: true, position: 'bottom', labels: { color: textColor(), boxWidth: 12, font: { size: 11, family: 'Inter' } } };
     makeChart('chart-cost', 'line', {
       labels: labels,
-      datasets: [{
-        label: 'Cost (USD)',
-        data: ts.map(function(p) { return p.costUsd; }),
-        borderColor: COLORS.green,
-        backgroundColor: COLORS.green + '18',
-        fill: true,
-        tension: 0.35,
-        pointRadius: ts.length > 50 ? 0 : 2,
-        borderWidth: 2,
-      }]
+      datasets: [
+        {
+          label: 'API-equivalent value',
+          data: ts.map(function(p) { return p.costUsd; }),
+          borderColor: COLORS.orange,
+          backgroundColor: COLORS.orange + '22',
+          fill: true,
+          tension: 0.35,
+          pointRadius: ts.length > 50 ? 0 : 2,
+          borderWidth: 2,
+        },
+        {
+          label: 'Money saved',
+          data: ts.map(function(p) { return p.moneySavedUsd; }),
+          borderColor: COLORS.green,
+          backgroundColor: COLORS.green + '22',
+          fill: true,
+          tension: 0.35,
+          pointRadius: ts.length > 50 ? 0 : 2,
+          borderWidth: 2,
+        },
+      ]
     }, costOpts);
 
     // 5. Token Speed (line)
