@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     reserve_weekly INTEGER DEFAULT 0,
     reserve_hard INTEGER DEFAULT 0,
     subscription_tier TEXT,
-    email TEXT
+    email TEXT,
+    monthly_cost_usd REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS requests (

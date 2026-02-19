@@ -1,13 +1,19 @@
 <h2>Analytics</h2>
 
 <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.5rem;flex-wrap:wrap;">
-  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);">Time range</span>
+  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);">Rolling</span>
   <div role="group" id="range-selector" style="display:flex;gap:0;">
     <button class="range-btn" data-range="1h">1h</button>
     <button class="range-btn" data-range="6h">6h</button>
     <button class="range-btn active" data-range="24h">24h</button>
     <button class="range-btn" data-range="7d">7d</button>
     <button class="range-btn" data-range="30d">30d</button>
+  </div>
+  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);">Period</span>
+  <div role="group" style="display:flex;gap:0;">
+    <button class="range-btn" data-range="today">Today</button>
+    <button class="range-btn" data-range="this_week">This Week</button>
+    <button class="range-btn" data-range="this_month">This Month</button>
   </div>
   <span id="analytics-status" style="font-size:0.75rem;color:var(--bccf-text-tertiary);"></span>
 </div>
@@ -142,6 +148,7 @@
           <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Requests</th>
           <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">API Value</th>
           <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Saved</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" title="Prorated monthly subscription cost for this period">Sub Cost</th>
           <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Actual Cost</th>
         </tr>
       </thead>
@@ -269,23 +276,32 @@
     rateEl.style.color = savingsRate >= 80 ? '#22c55e' : savingsRate >= 40 ? '#eab308' : '#ef4444';
 
     // Cost by account table
+    var days = (data.meta && data.meta.days) || 1;
     var costByAccount = data.costByAccount || [];
     var tbody = document.getElementById('cost-by-account-body');
     if (tbody) {
       if (costByAccount.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:1.5rem;color:var(--bccf-text-tertiary);font-style:italic;">No account data for this range</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--bccf-text-tertiary);font-style:italic;">No account data for this range</td></tr>';
       } else {
         tbody.innerHTML = costByAccount.map(function(a) {
           var isFree = a.provider === 'anthropic' || a.provider === 'claude-oauth';
-          var actualCost = a.costUsd - a.moneySavedUsd;
-          var providerLabel = { 'anthropic': 'Claude OAuth', 'claude-oauth': 'Claude OAuth', 'claude-console-api': 'Claude API', 'zai': 'Zai / Z.AI', 'minimax': 'MiniMax', 'nanogpt': 'NanoGPT', 'vertex-ai': 'Vertex AI' }[a.provider] || a.provider;
+          var perTokenCost = a.costUsd - a.moneySavedUsd;
+          var subCostForPeriod = (a.monthlyCostUsd || 0) * days / 30.0;
+          var actualCost = isFree ? subCostForPeriod : (perTokenCost + subCostForPeriod);
+          var providerLabel = { 'anthropic': 'Claude OAuth', 'claude-oauth': 'Claude OAuth', 'console': 'Console OAuth', 'claude-console-api': 'Claude API', 'zai': 'Zai / Z.AI', 'minimax': 'MiniMax', 'nanogpt': 'NanoGPT', 'vertex-ai': 'Vertex AI', 'anthropic-compatible': 'API-compatible', 'openai-compatible': 'OpenAI-compat' }[a.provider] || a.provider;
           var badge = isFree
             ? '<span style="display:inline-flex;align-items:center;gap:0.2rem;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:9999px;background:rgba(34,197,94,0.13);color:#22c55e;font-weight:600;">✓ ' + providerLabel + '</span>'
             : '<span style="display:inline-flex;align-items:center;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:9999px;background:rgba(59,130,246,0.12);color:#3b82f6;font-weight:500;">' + providerLabel + '</span>';
           var savedCell = a.moneySavedUsd > 0
-            ? '<td style="text-align:right;color:#22c55e;font-weight:600;">' + fmtUsd(a.moneySavedUsd) + '</td>'
-            : '<td style="text-align:right;color:var(--bccf-text-tertiary);">—</td>';
-          return '<tr><td style="padding:0.45rem 0.5rem;font-weight:500;">' + a.name + '</td><td style="padding:0.45rem 0.5rem;">' + badge + '</td><td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + fmtNum(a.requests) + '</td><td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + fmtUsd(a.costUsd) + '</td>' + savedCell + '<td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + (actualCost > 0.00005 ? fmtUsd(actualCost) : '$0.00') + '</td></tr>';
+            ? '<td style="padding:0.45rem 0.5rem;text-align:right;color:#22c55e;font-weight:600;">' + fmtUsd(a.moneySavedUsd) + '</td>'
+            : '<td style="padding:0.45rem 0.5rem;text-align:right;color:var(--bccf-text-tertiary);">—</td>';
+          var subCell = subCostForPeriod > 0.005
+            ? '<td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;color:var(--bccf-text-secondary);" title="$' + (a.monthlyCostUsd||0).toFixed(0) + '/mo × ' + days.toFixed(1) + 'd / 30">' + fmtUsd(subCostForPeriod) + '</td>'
+            : '<td style="padding:0.45rem 0.5rem;text-align:right;color:var(--bccf-text-tertiary);">—</td>';
+          var actualCell = actualCost > 0.005
+            ? '<td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#ef4444;">' + fmtUsd(actualCost) + '</td>'
+            : '<td style="padding:0.45rem 0.5rem;text-align:right;color:var(--bccf-text-tertiary);">$0.00</td>';
+          return '<tr style="border-bottom:1px solid var(--bccf-border);"><td style="padding:0.45rem 0.5rem;font-weight:500;">' + a.name + '</td><td style="padding:0.45rem 0.5rem;">' + badge + '</td><td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + fmtNum(a.requests) + '</td><td style="padding:0.45rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums;">' + fmtUsd(a.costUsd) + '</td>' + savedCell + subCell + actualCell + '</tr>';
         }).join('');
       }
     }

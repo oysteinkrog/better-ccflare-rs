@@ -52,47 +52,102 @@ struct BucketConfig {
 }
 
 fn get_range_config(range: &str) -> (i64, BucketConfig) {
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now();
+    let now_ms = now.timestamp_millis();
     let hour: i64 = 60 * 60 * 1000;
     let day: i64 = 24 * hour;
 
     match range {
         "1h" => (
-            now - hour,
+            now_ms - hour,
             BucketConfig {
                 bucket_ms: 60_000,
                 display_name: "1m",
             },
         ),
         "6h" => (
-            now - 6 * hour,
+            now_ms - 6 * hour,
             BucketConfig {
                 bucket_ms: 5 * 60_000,
                 display_name: "5m",
             },
         ),
         "7d" => (
-            now - 7 * day,
+            now_ms - 7 * day,
             BucketConfig {
                 bucket_ms: hour,
                 display_name: "1h",
             },
         ),
         "30d" => (
-            now - 30 * day,
+            now_ms - 30 * day,
             BucketConfig {
                 bucket_ms: day,
                 display_name: "1d",
             },
         ),
+        "today" => {
+            use chrono::Timelike;
+            let start = now
+                .with_hour(0).unwrap()
+                .with_minute(0).unwrap()
+                .with_second(0).unwrap()
+                .with_nanosecond(0).unwrap()
+                .timestamp_millis();
+            (start, BucketConfig { bucket_ms: 60_000, display_name: "1m" })
+        }
+        "this_week" => {
+            use chrono::Datelike;
+            // Monday of current week
+            let days_since_monday = now.weekday().num_days_from_monday() as i64;
+            let start = (now_ms - days_since_monday * day) / day * day;
+            (start, BucketConfig { bucket_ms: hour, display_name: "1h" })
+        }
+        "this_month" => {
+            use chrono::Datelike;
+            let days_since_month_start = (now.day() as i64) - 1;
+            let start = (now_ms - days_since_month_start * day) / day * day;
+            (start, BucketConfig { bucket_ms: day, display_name: "1d" })
+        }
         _ => (
             // Default: 24h
-            now - day,
+            now_ms - day,
             BucketConfig {
                 bucket_ms: hour,
                 display_name: "1h",
             },
         ),
+    }
+}
+
+/// Days covered by a range (for prorating monthly subscription costs).
+fn range_days(range: &str) -> f64 {
+    match range {
+        "1h" => 1.0 / 24.0,
+        "6h" => 6.0 / 24.0,
+        "24h" => 1.0,
+        "7d" => 7.0,
+        "30d" => 30.0,
+        "today" | "this_week" | "this_month" => {
+            // Compute actual elapsed days for calendar periods
+            let now = chrono::Utc::now();
+            match range {
+                "today" => {
+                    use chrono::Timelike;
+                    (now.hour() as f64 * 3600.0 + now.minute() as f64 * 60.0 + now.second() as f64) / 86400.0
+                }
+                "this_week" => {
+                    use chrono::Datelike;
+                    now.weekday().num_days_from_monday() as f64 + range_days("today")
+                }
+                "this_month" => {
+                    use chrono::Datelike;
+                    (now.day() as f64 - 1.0) + range_days("today")
+                }
+                _ => 1.0,
+            }
+        }
+        _ => 1.0,
     }
 }
 
@@ -189,6 +244,7 @@ pub async fn get_analytics(
     };
 
     let (start_ms, bucket) = get_range_config(&query.range);
+    let days = range_days(&query.range);
     let is_cumulative = query.mode == "cumulative";
     let include_model_breakdown = query.model_breakdown.as_deref() == Some("true");
 
@@ -567,11 +623,12 @@ pub async fn get_analytics(
                 COALESCE(a.provider, 'unknown') as provider,
                 COUNT(r.id) as requests,
                 SUM(COALESCE(r.cost_usd, 0)) as cost_usd,
-                SUM(CASE WHEN a.provider IN ('anthropic', 'claude-oauth') THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as money_saved_usd
+                SUM(CASE WHEN a.provider IN ('anthropic', 'claude-oauth') THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as money_saved_usd,
+                COALESCE(a.monthly_cost_usd, 0) as monthly_cost_usd
              FROM requests r
              LEFT JOIN accounts a ON a.id = r.account_used
              WHERE {where_clause}
-             GROUP BY r.account_used, a.name, a.provider
+             GROUP BY r.account_used, a.name, a.provider, a.monthly_cost_usd
              HAVING requests > 0
              ORDER BY cost_usd DESC
              LIMIT 20"
@@ -579,12 +636,14 @@ pub async fn get_analytics(
         let mut cba_stmt = conn.prepare(&cba_sql)?;
         let cost_by_account: Vec<serde_json::Value> = cba_stmt
             .query_map(rusqlite::params_from_iter(fb.params.iter()), |row| {
+                let monthly: f64 = row.get::<_, Option<f64>>(5)?.unwrap_or(0.0);
                 Ok(json!({
                     "name": row.get::<_, Option<String>>(0)?.unwrap_or_default(),
                     "provider": row.get::<_, Option<String>>(1)?.unwrap_or_else(|| "unknown".to_string()),
                     "requests": row.get::<_, i64>(2)?,
                     "costUsd": row.get::<_, f64>(3)?,
                     "moneySavedUsd": row.get::<_, f64>(4)?,
+                    "monthlyCostUsd": monthly,
                 }))
             })?
             .filter_map(|r| r.ok())
@@ -598,6 +657,7 @@ pub async fn get_analytics(
                 "range": query.range,
                 "bucket": bucket.display_name,
                 "cumulative": is_cumulative,
+                "days": days,
             },
             "totals": totals,
             "timeSeries": time_series,
