@@ -752,6 +752,31 @@ fn query_account_request_rates(
 }
 
 /// Serialize per-account usage data to JSON for client-side chart visualizations.
+/// Parse the Nx rate-limit multiplier from a subscription tier string.
+/// "Max 20x" → 20.0, "Max 5x" → 5.0, "Pro" → 1.0, "Team" → 2.0, unknown → 1.0.
+fn parse_tier_multiplier(tier: &Option<String>) -> f64 {
+    let t = match tier {
+        Some(s) => s.as_str(),
+        None => return 1.0,
+    };
+    // Match "Max Nx" / "Max N x" patterns, e.g. "Max 20x" → 20.0
+    if let Some(x_pos) = t.rfind('x') {
+        let before = t[..x_pos].trim_end();
+        if let Some(sp) = before.rfind(|c: char| !c.is_ascii_digit() && c != '.') {
+            if let Ok(n) = before[sp + 1..].parse::<f64>() {
+                if n >= 1.0 {
+                    return n;
+                }
+            }
+        }
+    }
+    let lower = t.to_lowercase();
+    if lower.contains("team") {
+        return 2.0;
+    }
+    1.0 // Pro, Free, Enterprise, unknown → treat as 1x baseline
+}
+
 fn build_chart_data_json(
     rows: &[AccountRow],
     now: i64,
@@ -770,6 +795,8 @@ fn build_chart_data_json(
         paused: bool,
         windows: Vec<CWindow>,
         req_rates: &'a ReqRates,
+        /// Rate-limit multiplier derived from subscription tier (e.g. 20.0 for "Max 20x").
+        multiplier_x: f64,
     }
     #[derive(serde::Serialize)]
     struct CData<'a> {
@@ -788,6 +815,7 @@ fn build_chart_data_json(
                 name: r.name.clone(),
                 paused: r.paused,
                 req_rates: req_rates.get(&r.id).unwrap_or(&default_rates),
+                multiplier_x: parse_tier_multiplier(&r.subscription_tier),
                 windows: r
                     .usage_windows
                     .iter()

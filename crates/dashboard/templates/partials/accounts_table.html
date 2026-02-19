@@ -18,6 +18,7 @@
       <button class="pool-view-btn" data-view="events" onclick="setPoolView('events')" title="Upcoming renewal events">Events</button>
       <button class="pool-view-btn" data-view="heatmap" onclick="setPoolView('heatmap')" title="7-day availability heatmap">Heatmap</button>
       <button class="pool-view-btn" data-view="gauges" onclick="setPoolView('gauges')" title="Arc gauge dials">Gauges</button>
+      <button class="pool-view-btn" data-view="capacity" onclick="setPoolView('capacity')" title="Absolute pool capacity in Nx units over the next 7 days">Capacity</button>
     </div>
   </div>
 
@@ -75,6 +76,11 @@
   <div id="pool-view-gauges" style="display:none">
     <div id="pool-gauges-grid" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:flex-start;padding:0.25rem 0;"></div>
   </div>
+
+  <!-- View: Capacity (absolute Nx bar chart) -->
+  <div id="pool-view-capacity" style="display:none">
+    <div id="pool-capacity-content"></div>
+  </div>
 </div>
 
 <script id="pool-chart-data" type="application/json">{{ chart_data_json|safe }}</script>
@@ -99,7 +105,7 @@
   // Parse chart data embedded above
   var _cd = document.getElementById('pool-chart-data');
   var poolData = _cd ? JSON.parse(_cd.textContent) : {now_ms: Date.now(), accounts: []};
-  var _pv = ['bars','timeline','events','heatmap','gauges'];
+  var _pv = ['bars','timeline','events','heatmap','gauges','capacity'];
 
   function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -128,9 +134,10 @@
       if (sel) sel.value = proj;
       renderTimeline(proj);
     }
-    else if (view === 'events')  renderEvents();
-    else if (view === 'heatmap') renderHeatmap();
-    else if (view === 'gauges')  renderGauges();
+    else if (view === 'events')    renderEvents();
+    else if (view === 'heatmap')   renderHeatmap();
+    else if (view === 'gauges')    renderGauges();
+    else if (view === 'capacity')  renderCapacity();
   };
 
   window.onProjChange = function(proj) {
@@ -446,6 +453,146 @@
         + '</div>';
     });
     el.innerHTML = html;
+  }
+
+  // ── Capacity (absolute Nx bar chart) ────────────────────────────────────
+  function renderCapacity() {
+    var data = poolData, now = data.now_ms;
+    var slotMs = 5 * 3600000;                               // 5 hours
+    var numSlots = Math.ceil(7 * 24 * 3600000 / slotMs) + 1; // ~34 slots
+
+    // Build per-account data with pre-computed reset timelines per window
+    var accounts = [];
+    data.accounts.forEach(function(a) {
+      if (a.paused) return;
+      var mx = (a.multiplier_x != null) ? a.multiplier_x : 1;
+      var wins = (a.windows || []).map(function(w) {
+        var resets = [];
+        if (w.resets_at_ms) {
+          var t = w.resets_at_ms;
+          var dur = getWindowDurMs(w.label);
+          var recurring = (w.label === '5-hour' || w.label === 'Daily');
+          for (var n = 0; t <= now + numSlots * slotMs && n < 60; n++) {
+            if (t > now) resets.push(t);
+            if (recurring) t += dur; else break;
+          }
+        }
+        return {pct: w.pct, resets: resets};
+      });
+      accounts.push({mx: mx, windows: wins, name: a.name});
+    });
+
+    // Max pool Nx when all accounts are fully reset
+    var maxNx = 0;
+    data.accounts.forEach(function(a) {
+      if (!a.paused) maxNx += ((a.multiplier_x != null) ? a.multiplier_x : 1);
+    });
+    if (maxNx === 0) {
+      document.getElementById('pool-capacity-content').innerHTML =
+        '<small style="color:var(--pico-muted-color)">No Nx data — add OAuth accounts with known tiers to see capacity</small>';
+      return;
+    }
+
+    // Nx contribution of one account at time t (most-constrained window wins)
+    function accountNxAt(acct, t) {
+      if (!acct.windows.length) return acct.mx; // no window data → assume full
+      var maxPct = 0;
+      acct.windows.forEach(function(w) {
+        var pct = w.pct;
+        for (var r = 0; r < w.resets.length; r++) {
+          if (w.resets[r] <= t) { pct = 0; break; }
+        }
+        if (pct > maxPct) maxPct = pct;
+      });
+      return acct.mx * Math.max(0, 1 - maxPct / 100);
+    }
+
+    // Sample total pool Nx at each 5h slot boundary
+    var slotValues = [];
+    for (var s = 0; s < numSlots; s++) {
+      var t = now + s * slotMs;
+      var nx = 0;
+      accounts.forEach(function(acct) { nx += accountNxAt(acct, t); });
+      slotValues.push(Math.max(0, nx));
+    }
+
+    var curNx = slotValues[0];
+
+    // Next slot where pool is at or near full (≥95% of max, better than now)
+    var nextFullMs = null;
+    for (var s = 1; s < slotValues.length; s++) {
+      if (slotValues[s] >= maxNx * 0.95 && slotValues[s] > curNx + 0.5) {
+        nextFullMs = now + s * slotMs; break;
+      }
+    }
+
+    // Minimum Nx point over the next 7 days
+    var minNx = curNx, minIdx = 0;
+    for (var s = 1; s < slotValues.length; s++) {
+      if (slotValues[s] < minNx) { minNx = slotValues[s]; minIdx = s; }
+    }
+    var minMs = now + minIdx * slotMs;
+
+    // ── Header runway card ───────────────────────────────────────────────
+    var pctNow = curNx / maxNx;
+    var clrNow = pctNow >= 0.6 ? 'var(--bccf-success)' : pctNow >= 0.2 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
+    var h = '<div style="display:flex;gap:1.25rem;align-items:baseline;flex-wrap:wrap;margin-bottom:5px;">';
+    h += '<div><span style="font-size:1.55rem;font-weight:700;font-family:\'JetBrains Mono\',monospace;letter-spacing:-0.5px;color:' + clrNow + ';">' + curNx.toFixed(1) + 'x</span>'
+       + '<span style="font-size:0.72rem;color:var(--pico-muted-color);margin-left:3px;">now</span></div>';
+    h += '<div style="font-size:0.8rem;color:var(--pico-muted-color);">of <strong style="color:var(--pico-color);">' + maxNx.toFixed(1) + 'x</strong> max</div>';
+    if (nextFullMs) {
+      h += '<div style="font-size:0.74rem;color:var(--pico-muted-color);">full in <strong>' + esc(msToRel(nextFullMs)) + '</strong></div>';
+    }
+    if (minNx < curNx - 0.4 && minIdx > 0) {
+      var minLabel = new Date(minMs).toLocaleDateString('en', {weekday:'short', hour:'numeric', hour12:true});
+      h += '<div style="font-size:0.72rem;color:var(--pico-muted-color);">low <strong>' + minNx.toFixed(1) + 'x</strong> <span style="opacity:0.65;">(' + esc(minLabel) + ')</span></div>';
+    }
+    h += '</div>';
+
+    // ── SVG bar chart ─────────────────────────────────────────────────────
+    var W = 560, H = 96, pL = 10, pR = 6, pT = 5, pB = 15;
+    var pW = W - pL - pR, pH = H - pT - pB;
+    var barW = pW / numSlots;
+    var bw = Math.max(1.5, barW - Math.max(0.5, barW * 0.12));
+
+    var bars = '';
+    slotValues.forEach(function(nx, i) {
+      var pct = nx / maxNx;
+      var bh = Math.max(1.5, pct * pH);
+      var x = (pL + i * barW).toFixed(1);
+      var y = (pT + pH - bh).toFixed(1);
+      var clr = pct >= 0.6 ? 'var(--bccf-success)' : pct >= 0.2 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
+      // Fade bars further in the future; highlight the "now" bar
+      var op = i === 0 ? '1' : i <= 6 ? '0.72' : '0.5';
+      var dateStr = i === 0 ? 'Now' : new Date(now + i * slotMs).toLocaleDateString('en', {weekday:'short', month:'short', day:'numeric', hour:'numeric', hour12:true});
+      bars += '<rect x="' + x + '" y="' + y + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" fill="' + clr + '" opacity="' + op + '" rx="1.5">'
+            + '<title>' + esc(dateStr) + ': ' + nx.toFixed(1) + 'x (' + Math.round(pct * 100) + '% of max)</title></rect>';
+    });
+
+    // "Now" column highlight
+    var nowGlow = '<rect x="' + pL + '" y="' + pT + '" width="' + bw.toFixed(1) + '" height="' + pH + '" fill="var(--bccf-orange)" opacity="0.07" rx="1.5"/>';
+
+    // Max capacity ceiling line
+    var maxY = pT.toFixed(1);
+    var grid = '<line x1="' + pL + '" y1="' + maxY + '" x2="' + (pL + pW) + '" y2="' + maxY + '" stroke="currentColor" stroke-width="0.5" opacity="0.12" stroke-dasharray="2,3"/>'
+             + '<text x="' + (pL + 2) + '" y="' + (pT + 9) + '" font-size="8" fill="currentColor" opacity="0.35">' + esc(maxNx.toFixed(maxNx % 1 ? 1 : 0) + 'x max') + '</text>';
+
+    // Day labels every 24h
+    var labels = '';
+    for (var d = 0; d <= 7; d++) {
+      var xd = (pL + (d * 24 * 3600000 / slotMs) * barW).toFixed(1);
+      var lbl = d === 0 ? 'now' : new Date(now + d * 24 * 3600000).toLocaleDateString('en', {weekday:'short'});
+      labels += '<text x="' + xd + '" y="' + (H - 1) + '" text-anchor="middle" font-size="8" fill="currentColor" opacity="0.45">' + esc(lbl) + '</text>';
+    }
+
+    var svg = '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg" style="display:block;">'
+            + grid + nowGlow + bars + labels + '</svg>';
+
+    var legend = '<div style="font-size:0.68rem;color:var(--pico-muted-color);margin-top:3px;">'
+               + 'Pool capacity in rate-limit multiplier units &middot; each bar = one 5-hour window &middot; optimistic (resets to full)'
+               + '</div>';
+
+    document.getElementById('pool-capacity-content').innerHTML = h + svg + legend;
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────
