@@ -33,6 +33,8 @@ pub struct TokenRefreshResult {
     pub refresh_token: String,
     /// Human-readable subscription tier, populated for claude-oauth only (e.g. "Max 20x", "Pro").
     pub subscription_tier: Option<String>,
+    /// Email address of the authenticated user (claude-oauth only).
+    pub email: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

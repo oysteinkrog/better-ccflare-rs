@@ -93,6 +93,7 @@ fn make_account(id: &str, name: &str, api_key: &str, priority: i64) -> Account {
         reserve_weekly: 0,
         reserve_hard: false,
         subscription_tier: None,
+        email: None,
     }
 }
 

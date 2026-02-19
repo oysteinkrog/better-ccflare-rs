@@ -185,6 +185,8 @@ pub struct UsageWindowDisplay {
     pub css_class: String,
     /// Human-readable time until reset (e.g. "2h 15m"), empty if unknown.
     pub reset_text: String,
+    /// Unix timestamp (ms) when this window resets; used by chart visualizations.
+    pub resets_at_ms: Option<i64>,
 }
 
 /// A single account row in the accounts table partial.
@@ -227,6 +229,8 @@ pub struct AccountRow {
     pub reserve_hard: bool,
     /// Human-readable subscription tier for OAuth accounts (e.g. "Max 20x", "Pro").
     pub subscription_tier: Option<String>,
+    /// Email address of the authenticated OAuth user.
+    pub email: Option<String>,
 }
 
 /// Aggregate pool usage summary shown above account cards.
@@ -254,6 +258,8 @@ pub struct PoolWindowSummary {
 pub struct AccountsTablePartial {
     pub accounts: Vec<AccountRow>,
     pub pool_summary: Option<PoolUsageSummary>,
+    /// Pre-serialized JSON for quota visualization charts (safe to embed in script tag).
+    pub chart_data_json: String,
 }
 
 /// A single account stats entry for the stats table partial.

@@ -35,6 +35,8 @@ pub struct Account {
     pub reserve_hard: bool,
     /// Human-readable subscription tier for OAuth accounts (e.g. "Max 20x", "Pro").
     pub subscription_tier: Option<String>,
+    /// Email address of the authenticated OAuth user.
+    pub email: Option<String>,
 }
 
 /// API response for an account — what clients receive.
@@ -69,6 +71,8 @@ pub struct AccountResponse {
     pub reserve_hard: bool,
     /// Human-readable subscription tier for OAuth accounts (e.g. "Max 20x", "Pro").
     pub subscription_tier: Option<String>,
+    /// Email address of the authenticated OAuth user.
+    pub email: Option<String>,
 }
 
 /// Token validity status.

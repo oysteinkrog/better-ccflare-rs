@@ -417,6 +417,7 @@ mod tests {
             reserve_weekly: 0,
             reserve_hard: false,
             subscription_tier: None,
+            email: None,
         }
     }
 

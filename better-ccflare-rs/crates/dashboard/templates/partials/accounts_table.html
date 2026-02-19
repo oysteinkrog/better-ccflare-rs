@@ -6,31 +6,354 @@
 </details>
 {% else %}
 {% if let Some(ps) = pool_summary %}
-<div class="pool-summary">
+<div class="pool-summary" id="pool-summary-card">
   <div class="pool-summary-header">
-    <span class="pool-status-dot {{ ps.pool_status }}"></span>
-    <span>{{ ps.status_text }} &mdash; {{ ps.available_accounts }}/{{ ps.total_accounts }} accounts available</span>
-  </div>
-  {% if !ps.windows.is_empty() %}
-  <div class="pool-windows">
-    {% for w in ps.windows %}
-    <div class="pool-window">
-      <div class="pool-window-header">
-        <span class="pool-window-label">{{ w.label }}</span>
-        <span class="pool-window-pct">{{ w.avg_pct }}% avg</span>
-      </div>
-      <div class="usage-bar" style="height:8px;border-radius:4px;">
-        <div class="usage-fill {{ w.css_class }}" style="width:{{ w.avg_pct }}%;border-radius:4px;transition:width 700ms ease-out;"></div>
-      </div>
-      <div class="pool-window-detail">
-        <span>max {{ w.max_pct }}% ({{ w.account_count }} acct{% if w.account_count != 1 %}s{% endif %})</span>
-        {% if !w.next_reset.is_empty() %}<span>resets in {{ w.next_reset }}</span>{% endif %}
-      </div>
+    <div style="display:flex;align-items:center;gap:0.5rem;flex:1;min-width:0;">
+      <span class="pool-status-dot {{ ps.pool_status }}"></span>
+      <span style="font-size:0.82rem;">{{ ps.status_text }} &mdash; {{ ps.available_accounts }}/{{ ps.total_accounts }} available</span>
     </div>
-    {% endfor %}
+    <div class="pool-view-tabs" id="pool-view-tabs">
+      <button class="pool-view-btn" data-view="bars" onclick="setPoolView('bars')" title="Progress bars">Bars</button>
+      <button class="pool-view-btn" data-view="timeline" onclick="setPoolView('timeline')" title="Capacity over time">Timeline</button>
+      <button class="pool-view-btn" data-view="events" onclick="setPoolView('events')" title="Upcoming renewal events">Events</button>
+      <button class="pool-view-btn" data-view="heatmap" onclick="setPoolView('heatmap')" title="7-day availability heatmap">Heatmap</button>
+      <button class="pool-view-btn" data-view="gauges" onclick="setPoolView('gauges')" title="Arc gauge dials">Gauges</button>
+    </div>
   </div>
-  {% endif %}
+
+  <!-- View: Bars (default) -->
+  <div id="pool-view-bars">
+    {% if !ps.windows.is_empty() %}
+    <div class="pool-windows">
+      {% for w in ps.windows %}
+      <div class="pool-window">
+        <div class="pool-window-header">
+          <span class="pool-window-label">{{ w.label }}</span>
+          <span class="pool-window-pct">{{ w.avg_pct }}% avg</span>
+        </div>
+        <div class="usage-bar" style="height:8px;border-radius:4px;">
+          <div class="usage-fill {{ w.css_class }}" style="width:{{ w.avg_pct }}%;border-radius:4px;transition:width 700ms ease-out;"></div>
+        </div>
+        <div class="pool-window-detail">
+          <span>max {{ w.max_pct }}% ({{ w.account_count }} acct{% if w.account_count != 1 %}s{% endif %})</span>
+          {% if !w.next_reset.is_empty() %}<span>resets in {{ w.next_reset }}</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- View: Timeline (SVG stepped line, no library needed) -->
+  <div id="pool-view-timeline" style="display:none">
+    <div id="pool-timeline-svg" style="width:100%;overflow:hidden;"></div>
+    <div style="font-size:0.7rem;color:var(--pico-muted-color);margin-top:2px;">
+      Projected available pool capacity over the next 7 days &middot; <em>optimistic: assumes windows reset to full</em>
+    </div>
+  </div>
+
+  <!-- View: Events -->
+  <div id="pool-view-events" style="display:none">
+    <div id="pool-events-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+  </div>
+
+  <!-- View: Heatmap -->
+  <div id="pool-view-heatmap" style="display:none">
+    <div id="pool-heatmap-grid"></div>
+  </div>
+
+  <!-- View: Gauges -->
+  <div id="pool-view-gauges" style="display:none">
+    <div id="pool-gauges-grid" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:flex-start;padding:0.25rem 0;"></div>
+  </div>
 </div>
+
+<script id="pool-chart-data" type="application/json">{{ chart_data_json|safe }}</script>
+
+<style>
+.pool-view-tabs{display:flex;gap:2px;flex-shrink:0;}
+.pool-view-btn{padding:0.15rem 0.55rem;font-size:0.72rem;border:1px solid var(--bccf-border);border-radius:4px;background:transparent;color:var(--pico-muted-color);cursor:pointer;transition:background 150ms,color 150ms;}
+.pool-view-btn:hover{background:var(--bccf-border-subtle);color:var(--pico-color);}
+.pool-view-btn.active{background:var(--bccf-orange-subtle);border-color:var(--bccf-orange);color:var(--bccf-orange);}
+.pool-event-row{display:flex;align-items:center;gap:0.4rem;padding:3px 6px;border-radius:4px;background:var(--bccf-border-subtle);font-size:0.78rem;}
+.pool-event-time{font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--pico-muted-color);min-width:3.2rem;}
+.pool-event-acct{font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pool-event-win{font-size:0.7rem;color:var(--pico-muted-color);border:1px solid var(--bccf-border);border-radius:3px;padding:0 4px;}
+.pool-event-free{font-size:0.7rem;font-weight:600;border-radius:3px;padding:0 5px;}
+.pool-event-free.good{background:var(--bccf-success-bg);color:var(--bccf-success);}
+.pool-event-free.warn{background:var(--bccf-warning-bg);color:var(--bccf-warning);}
+.pool-event-free.bad{background:var(--bccf-danger-bg);color:var(--bccf-danger);}
+</style>
+
+<script>
+(function() {
+  // Parse chart data embedded above
+  var _cd = document.getElementById('pool-chart-data');
+  var poolData = _cd ? JSON.parse(_cd.textContent) : {now_ms: Date.now(), accounts: []};
+  var _pv = ['bars','timeline','events','heatmap','gauges'];
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function msToRel(ms) {
+    var d = ms - poolData.now_ms;
+    if (d <= 0) return 'now';
+    var h = d / 3600000, m = Math.round((d % 3600000) / 60000);
+    if (h < 1) return m + 'm';
+    if (h < 24) return Math.floor(h) + 'h ' + (m > 0 ? m + 'm' : '');
+    return Math.floor(h / 24) + 'd ' + (Math.floor(h % 24) > 0 ? Math.floor(h % 24) + 'h' : '');
+  }
+
+  window.setPoolView = function(view) {
+    _pv.forEach(function(v) {
+      var el = document.getElementById('pool-view-' + v);
+      if (el) el.style.display = v === view ? '' : 'none';
+    });
+    document.querySelectorAll('#pool-view-tabs .pool-view-btn').forEach(function(b) {
+      b.className = b.className.replace(' active','') + (b.dataset.view === view ? ' active' : '');
+    });
+    localStorage.setItem('poolView', view);
+    if (view === 'timeline') renderTimeline();
+    else if (view === 'events')  renderEvents();
+    else if (view === 'heatmap') renderHeatmap();
+    else if (view === 'gauges')  renderGauges();
+  };
+
+  // ── Timeline (SVG stepped line) ──────────────────────────────────────────
+  function renderTimeline() {
+    var data = poolData, now = data.now_ms;
+    var sevenDays = 7*24*3600000, fiveH = 5*3600000;
+    var pairs = [];
+    data.accounts.forEach(function(a) {
+      if (!a.paused) a.windows.forEach(function(w) {
+        pairs.push({pct: w.pct, resets_at_ms: w.resets_at_ms, label: w.label, name: a.name});
+      });
+    });
+
+    // Build reset events, projecting 5h windows forward for 7 days
+    var events = [];
+    pairs.forEach(function(p, i) {
+      if (!p.resets_at_ms) return;
+      var t = p.resets_at_ms, n = 0;
+      while (t <= now + sevenDays && n++ < 50) {
+        if (t > now) events.push({ms: t, idx: i});
+        if (p.label === '5-hour' || p.label === 'Daily') t += fiveH;
+        else break;
+      }
+    });
+    events.sort(function(a,b){return a.ms - b.ms;});
+
+    var pctArr = pairs.map(function(p){return p.pct;});
+    function avgAvail() {
+      if (!pctArr.length) return 100;
+      return pctArr.reduce(function(s,p){return s+(100-p);},0)/pctArr.length;
+    }
+
+    // Build SVG path
+    var W = 560, H = 120, pL = 32, pR = 8, pT = 8, pB = 20;
+    var pW = W-pL-pR, pH = H-pT-pB;
+    function tx(ms) { return pL + (ms-now)/sevenDays*pW; }
+    function ty(pct) { return pT + pH - pct/100*pH; }
+
+    var pathD = 'M'+tx(now)+','+ty(avgAvail()).toFixed(1);
+    var fillD = pathD;
+    events.forEach(function(e) {
+      var x = tx(e.ms).toFixed(1), y1 = ty(avgAvail()).toFixed(1);
+      pathD += ' H'+x+' V'+y1;
+      fillD += ' H'+x+' V'+y1;
+      pctArr[e.idx] = 0;
+      var y2 = ty(avgAvail()).toFixed(1);
+      pathD += ' V'+y2;
+      fillD += ' V'+y2;
+    });
+    pathD += ' H'+tx(now+sevenDays).toFixed(1);
+    fillD += ' H'+tx(now+sevenDays).toFixed(1)+' V'+(pT+pH)+' H'+pL+' Z';
+
+    // Y-axis grid
+    var grid = '';
+    [0,25,50,75,100].forEach(function(p) {
+      var y = ty(p).toFixed(1);
+      grid += '<line x1="'+pL+'" y1="'+y+'" x2="'+(pL+pW)+'" y2="'+y+'" stroke="currentColor" stroke-width="0.4" opacity="0.15"/>';
+      grid += '<text x="'+(pL-3)+'" y="'+(parseFloat(y)+3)+'" text-anchor="end" font-size="8" fill="currentColor" opacity="0.5">'+p+'%</text>';
+    });
+    // X-axis day ticks
+    for (var d=1;d<=7;d++) {
+      var xd = tx(now + d*24*3600000).toFixed(1);
+      var ld = new Date(now + d*24*3600000).toLocaleDateString('en',{weekday:'short'});
+      grid += '<line x1="'+xd+'" y1="'+pT+'" x2="'+xd+'" y2="'+(pT+pH)+'" stroke="currentColor" stroke-width="0.4" opacity="0.12" stroke-dasharray="2,2"/>';
+      grid += '<text x="'+xd+'" y="'+(pT+pH+13)+'" text-anchor="middle" font-size="8" fill="currentColor" opacity="0.5">'+esc(ld)+'</text>';
+    }
+    // "Now" marker
+    var nowX = tx(now).toFixed(1);
+    grid += '<line x1="'+nowX+'" y1="'+pT+'" x2="'+nowX+'" y2="'+(pT+pH)+'" stroke="var(--bccf-orange)" stroke-width="1.5"/>';
+    grid += '<text x="'+(parseFloat(nowX)+3)+'" y="'+(pT+9)+'" font-size="8" fill="var(--bccf-orange)">now</text>';
+
+    var svg = '<svg width="100%" viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="display:block;">'
+      + grid
+      + '<path d="'+fillD+'" fill="var(--bccf-success)" opacity="0.12"/>'
+      + '<path d="'+pathD+'" fill="none" stroke="var(--bccf-success)" stroke-width="1.8"/>'
+      + '</svg>';
+    document.getElementById('pool-timeline-svg').innerHTML = svg;
+  }
+
+  // ── Events ───────────────────────────────────────────────────────────────
+  function renderEvents() {
+    var data = poolData, now = data.now_ms;
+    var sevenDays = 7*24*3600000, fiveH = 5*3600000;
+    var evts = [];
+    data.accounts.forEach(function(a) {
+      if (a.paused) return;
+      a.windows.forEach(function(w) {
+        if (!w.resets_at_ms) return;
+        var t = w.resets_at_ms, n = 0;
+        while (t <= now + sevenDays && n++ < 40) {
+          if (t > now) evts.push({ms:t, name:a.name, win:w.label, freed: n===1 ? 100-w.pct : 100});
+          if (w.label==='5-hour'||w.label==='Daily') t += fiveH;
+          else break;
+        }
+      });
+    });
+    evts.sort(function(a,b){return a.ms-b.ms;});
+    var el = document.getElementById('pool-events-list');
+    if (!evts.length) {
+      el.innerHTML = '<small style="color:var(--pico-muted-color)">No upcoming renewal events with known reset times</small>';
+      return;
+    }
+    var html = '';
+    evts.slice(0,30).forEach(function(e) {
+      var fc = e.freed >= 50 ? 'good' : e.freed >= 20 ? 'warn' : 'bad';
+      html += '<div class="pool-event-row">'
+        + '<span class="pool-event-time">+'+esc(msToRel(e.ms).trim())+'</span>'
+        + '<span class="pool-event-acct">'+esc(e.name)+'</span>'
+        + '<span class="pool-event-win">'+esc(e.win)+'</span>'
+        + '<span class="pool-event-free '+fc+'">+'+Math.round(e.freed)+'% free</span>'
+        + '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  // ── Heatmap ──────────────────────────────────────────────────────────────
+  function renderHeatmap() {
+    var data = poolData, now = data.now_ms;
+    var sixH = 6*3600000, dayMs = 24*3600000;
+    // Build 7 days × 4 six-hour blocks = 28 cells
+    var days = [];
+    for (var d=0;d<7;d++) {
+      var dayStart = now + d*dayMs;
+      var slots = [];
+      for (var s=0;s<4;s++) {
+        var slotStart = dayStart + s*sixH;
+        // Compute available % for this slot across all active accounts/windows
+        var avails = [];
+        data.accounts.forEach(function(a) {
+          if (a.paused) return;
+          a.windows.forEach(function(w) {
+            var pct = w.pct;
+            if (w.resets_at_ms && w.resets_at_ms <= slotStart) pct = 0; // reset before slot
+            avails.push(100 - pct);
+          });
+        });
+        var avg = avails.length ? avails.reduce(function(s,v){return s+v;},0)/avails.length : 100;
+        slots.push({start:slotStart, avail:avg});
+      }
+      days.push({start:dayStart, slots:slots});
+    }
+
+    var el = document.getElementById('pool-heatmap-grid');
+    var html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px;">';
+    // Day headers
+    days.forEach(function(day) {
+      var isToday = day.start <= now && now < day.start + dayMs;
+      var lbl = new Date(day.start).toLocaleDateString('en',{weekday:'short'});
+      html += '<div style="text-align:center;font-size:0.7rem;color:var(--pico-muted-color);font-weight:'+(isToday?'700':'400')+';padding-bottom:2px;">'+esc(lbl)+(isToday?' ·':'')+'</div>';
+    });
+    // Slot rows (4 per day)
+    for (var s=0;s<4;s++) {
+      days.forEach(function(day) {
+        var slot = day.slots[s];
+        var isPast = slot.start + sixH <= now;
+        var isCurrent = slot.start <= now && now < slot.start + sixH;
+        var a = slot.avail;
+        var bg = a>=70 ? 'var(--bccf-success)' : a>=40 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
+        var op = isPast ? '0.2' : isCurrent ? '0.8' : '0.55';
+        var h = new Date(slot.start).toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'});
+        html += '<div style="height:18px;border-radius:3px;background:'+bg+';opacity:'+op+(isCurrent?';outline:2px solid var(--bccf-orange);outline-offset:-1px':'')+'" title="'+esc(h)+' — '+Math.round(a)+'% available"></div>';
+      });
+    }
+    html += '</div>';
+    // Legend
+    html += '<div style="display:flex;gap:0.75rem;font-size:0.7rem;color:var(--pico-muted-color);">'
+      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-success);opacity:0.6;display:inline-block;"></span>≥70%</span>'
+      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-warning);opacity:0.6;display:inline-block;"></span>40–70%</span>'
+      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-danger);opacity:0.6;display:inline-block;"></span>&lt;40%</span>'
+      + '<span style="margin-left:0.5rem;"><span style="outline:2px solid var(--bccf-orange);display:inline-block;width:10px;height:10px;border-radius:2px;"></span> current slot</span>'
+      + '</div>';
+    el.innerHTML = html;
+  }
+
+  // ── Gauges (SVG arc dials) ───────────────────────────────────────────────
+  function renderGauges() {
+    var data = poolData;
+    // Aggregate avg per window label
+    var groups = {};
+    data.accounts.forEach(function(a) {
+      if (a.paused) return;
+      a.windows.forEach(function(w) {
+        if (!groups[w.label]) groups[w.label] = {sum:0, cnt:0};
+        groups[w.label].sum += w.pct;
+        groups[w.label].cnt++;
+      });
+    });
+    var labelOrder = ['5-hour','Weekly','Opus (Wk)','Sonnet (Wk)','Daily','Monthly'];
+    var labels = labelOrder.filter(function(l){return groups[l];});
+    Object.keys(groups).forEach(function(l){ if(labels.indexOf(l)<0) labels.push(l); });
+
+    var el = document.getElementById('pool-gauges-grid');
+    if (!labels.length) { el.innerHTML='<small style="color:var(--pico-muted-color)">No usage data</small>'; return; }
+    var html = '';
+    labels.forEach(function(label) {
+      var g = groups[label];
+      var avg = Math.round(g.sum / g.cnt);
+      var avail = 100 - avg;
+      var r = 34, cx = 44, cy = 44, stroke = 8;
+      var arc = 2*Math.PI*r*0.75; // 270° sweep
+      var fillLen = arc * avg / 100;
+      var emptyLen = arc - fillLen;
+      // Color by utilization
+      var clr = avg>=80 ? 'var(--bccf-danger)' : avg>=50 ? 'var(--bccf-warning)' : 'var(--bccf-success)';
+      // Arc starts at 135° (bottom-left), sweeps 270°
+      // SVG path for 270° arc:
+      var startAngle = 135 * Math.PI / 180;
+      var sweepAngle = 270 * Math.PI / 180;
+      var endAngle = startAngle + sweepAngle;
+      function arcPt(a) { return [cx + r*Math.cos(a), cy + r*Math.sin(a)]; }
+      var s = arcPt(startAngle), e = arcPt(endAngle);
+      var trackPath = 'M '+s[0].toFixed(1)+','+s[1].toFixed(1)+' A '+r+','+r+' 0 1,1 '+e[0].toFixed(1)+','+e[1].toFixed(1);
+      // Fill arc endpoint
+      var fillAngle = startAngle + sweepAngle * avg / 100;
+      var fe = arcPt(fillAngle);
+      var largeArc = (sweepAngle * avg / 100) > Math.PI ? 1 : 0;
+      var fillPath = 'M '+s[0].toFixed(1)+','+s[1].toFixed(1)+' A '+r+','+r+' 0 '+largeArc+',1 '+fe[0].toFixed(1)+','+fe[1].toFixed(1);
+
+      html += '<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">'
+        + '<svg width="88" height="72" viewBox="0 0 88 72" xmlns="http://www.w3.org/2000/svg">'
+        + '<path d="'+trackPath+'" fill="none" stroke="var(--bccf-border)" stroke-width="'+stroke+'" stroke-linecap="round"/>'
+        + '<path d="'+fillPath+'" fill="none" stroke="'+clr+'" stroke-width="'+stroke+'" stroke-linecap="round"/>'
+        + '<text x="'+cx+'" y="'+(cy-1)+'" text-anchor="middle" font-size="14" font-weight="700" fill="currentColor">'+avail+'%</text>'
+        + '<text x="'+cx+'" y="'+(cy+12)+'" text-anchor="middle" font-size="8" fill="currentColor" opacity="0.5">free</text>'
+        + '</svg>'
+        + '<div style="font-size:0.72rem;color:var(--pico-muted-color);text-align:center;">'+esc(label)+'</div>'
+        + '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────
+  var saved = localStorage.getItem('poolView') || 'bars';
+  if (_pv.indexOf(saved) < 0) saved = 'bars';
+  setPoolView(saved);
+})();
+</script>
 {% endif %}
 <div class="acct-list">
   {% for acct in accounts %}
@@ -57,6 +380,9 @@
           {% endif %}
           {% if let Some(tier) = acct.subscription_tier %}
             <span class="badge badge-tier" title="Anthropic subscription plan">{{ tier }}</span>
+          {% endif %}
+          {% if let Some(email) = acct.email %}
+            <span class="badge badge-muted" title="Authenticated email address" style="font-size:0.72rem;">{{ email }}</span>
           {% endif %}
         </div>
         {% if let Some(ep) = acct.custom_endpoint %}

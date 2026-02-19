@@ -751,6 +751,12 @@ impl TokenPersister for DbPersister<'_> {
         let _ = account_repo::set_subscription_tier(&conn, account_id, tier);
     }
 
+    fn persist_email(&self, account_id: &str, email: Option<&str>) {
+        let Some(pool) = self.pool else { return };
+        let Ok(conn) = pool.get() else { return };
+        let _ = account_repo::set_email(&conn, account_id, email);
+    }
+
     fn load_account(&self, account_id: &str) -> Option<Account> {
         let pool = self.pool?;
         let conn = pool.get().ok()?;
