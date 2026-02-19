@@ -225,6 +225,8 @@ export function createAnalyticsHandler(context: APIContext) {
 					(SELECT AVG(response_time_ms) FROM filtered_requests) as avg_response_time,
 					(SELECT SUM(COALESCE(total_tokens, 0)) FROM filtered_requests) as total_tokens,
 					(SELECT SUM(COALESCE(cost_usd, 0)) FROM filtered_requests) as total_cost_usd,
+					(SELECT SUM(CASE WHEN a.provider = 'anthropic' THEN COALESCE(r.cost_usd, 0) ELSE 0 END)
+					 FROM filtered_requests r LEFT JOIN accounts a ON a.id = r.account_used) as total_money_saved_usd,
 					(SELECT AVG(output_tokens_per_second) FROM filtered_requests) as avg_tokens_per_second,
 					(SELECT COUNT(DISTINCT COALESCE(account_used, ?)) FROM filtered_requests) as active_accounts,
 					-- Token breakdown
@@ -246,6 +248,7 @@ export function createAnalyticsHandler(context: APIContext) {
 				avg_response_time: number;
 				total_tokens: number;
 				total_cost_usd: number;
+				total_money_saved_usd: number;
 				avg_tokens_per_second: number;
 				active_accounts: number;
 				input_tokens: number;
@@ -264,17 +267,19 @@ export function createAnalyticsHandler(context: APIContext) {
 					${includeModelBreakdown ? "model," : ""}
 					COUNT(*) as requests,
 					SUM(COALESCE(total_tokens, 0)) as tokens,
-					SUM(COALESCE(cost_usd, 0)) as cost_usd,
-					SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as success_rate,
-					SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as error_rate,
-					SUM(COALESCE(cache_read_input_tokens, 0)) * 100.0 /
-						NULLIF(SUM(COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0) + COALESCE(cache_creation_input_tokens, 0)), 0) as cache_hit_rate,
-					AVG(response_time_ms) as avg_response_time,
-					AVG(output_tokens_per_second) as avg_tokens_per_second
+					SUM(COALESCE(r.cost_usd, 0)) as cost_usd,
+					SUM(CASE WHEN a.provider = 'anthropic' THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as money_saved_usd,
+					SUM(CASE WHEN r.success = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as success_rate,
+					SUM(CASE WHEN r.success = 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as error_rate,
+					SUM(COALESCE(r.cache_read_input_tokens, 0)) * 100.0 /
+						NULLIF(SUM(COALESCE(r.input_tokens, 0) + COALESCE(r.cache_read_input_tokens, 0) + COALESCE(r.cache_creation_input_tokens, 0)), 0) as cache_hit_rate,
+					AVG(r.response_time_ms) as avg_response_time,
+					AVG(r.output_tokens_per_second) as avg_tokens_per_second
 				FROM requests r
-				WHERE ${whereClause} ${includeModelBreakdown ? "AND model IS NOT NULL" : ""}
-				GROUP BY ts${includeModelBreakdown ? ", model" : ""}
-				ORDER BY ts${includeModelBreakdown ? ", model" : ""}
+				LEFT JOIN accounts a ON a.id = r.account_used
+				WHERE ${whereClause} ${includeModelBreakdown ? "AND r.model IS NOT NULL" : ""}
+				GROUP BY ts${includeModelBreakdown ? ", r.model" : ""}
+				ORDER BY ts${includeModelBreakdown ? ", r.model" : ""}
 			`);
 			const timeSeries = timeSeriesQuery.all(
 				bucket.bucketMs,
@@ -286,6 +291,7 @@ export function createAnalyticsHandler(context: APIContext) {
 				requests: number;
 				tokens: number;
 				cost_usd: number;
+				money_saved_usd: number;
 				success_rate: number;
 				error_rate: number;
 				cache_hit_rate: number;
@@ -425,6 +431,42 @@ export function createAnalyticsHandler(context: APIContext) {
 			// Finalize prepared statement
 			additionalDataQuery.finalize();
 
+			// Cost by account (with provider info for free vs paid classification)
+			const costByAccountQuery = db.prepare(`
+				SELECT
+					COALESCE(a.name, ?) as name,
+					COALESCE(a.provider, 'unknown') as provider,
+					COUNT(r.id) as requests,
+					SUM(COALESCE(r.cost_usd, 0)) as cost_usd,
+					SUM(CASE WHEN a.provider = 'anthropic' THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as money_saved_usd
+				FROM requests r
+				LEFT JOIN accounts a ON a.id = r.account_used
+				WHERE ${whereClause}
+				GROUP BY r.account_used, a.name, a.provider
+				HAVING requests > 0
+				ORDER BY cost_usd DESC
+				LIMIT 20
+			`);
+			const costByAccountData = costByAccountQuery.all(
+				NO_ACCOUNT_ID,
+				...queryParams,
+			) as Array<{
+				name: string;
+				provider: string;
+				requests: number;
+				cost_usd: number;
+				money_saved_usd: number;
+			}>;
+			costByAccountQuery.finalize();
+
+			const costByAccount = costByAccountData.map((row) => ({
+				name: row.name,
+				provider: row.provider,
+				requests: row.requests || 0,
+				costUsd: row.cost_usd || 0,
+				moneySavedUsd: row.money_saved_usd || 0,
+			}));
+
 			// Get model performance metrics
 			const modelPerfQuery = db.prepare(`
 				WITH filtered AS (
@@ -502,6 +544,7 @@ export function createAnalyticsHandler(context: APIContext) {
 				requests: point.requests || 0,
 				tokens: point.tokens || 0,
 				costUsd: point.cost_usd || 0,
+				moneySavedUsd: point.money_saved_usd || 0,
 				successRate: point.success_rate || 0,
 				errorRate: point.error_rate || 0,
 				cacheHitRate: point.cache_hit_rate || 0,
@@ -514,17 +557,20 @@ export function createAnalyticsHandler(context: APIContext) {
 				let runningRequests = 0;
 				let runningTokens = 0;
 				let runningCostUsd = 0;
+				let runningMoneySavedUsd = 0;
 
 				transformedTimeSeries = transformedTimeSeries.map((point) => {
 					runningRequests += point.requests;
 					runningTokens += point.tokens;
 					runningCostUsd += point.costUsd;
+					runningMoneySavedUsd += point.moneySavedUsd;
 
 					return {
 						...point,
 						requests: runningRequests,
 						tokens: runningTokens,
 						costUsd: runningCostUsd,
+						moneySavedUsd: runningMoneySavedUsd,
 						// Keep rates as-is (not cumulative)
 					};
 				});
@@ -532,7 +578,12 @@ export function createAnalyticsHandler(context: APIContext) {
 				// For per-model cumulative, track running totals per model
 				const runningTotals: Record<
 					string,
-					{ requests: number; tokens: number; costUsd: number }
+					{
+						requests: number;
+						tokens: number;
+						costUsd: number;
+						moneySavedUsd: number;
+					}
 				> = {};
 
 				transformedTimeSeries = transformedTimeSeries.map((point) => {
@@ -542,17 +593,20 @@ export function createAnalyticsHandler(context: APIContext) {
 								requests: 0,
 								tokens: 0,
 								costUsd: 0,
+								moneySavedUsd: 0,
 							};
 						}
 						runningTotals[point.model].requests += point.requests;
 						runningTotals[point.model].tokens += point.tokens;
 						runningTotals[point.model].costUsd += point.costUsd;
+						runningTotals[point.model].moneySavedUsd += point.moneySavedUsd;
 
 						return {
 							...point,
 							requests: runningTotals[point.model].requests,
 							tokens: runningTotals[point.model].tokens,
 							costUsd: runningTotals[point.model].costUsd,
+							moneySavedUsd: runningTotals[point.model].moneySavedUsd,
 						};
 					}
 					return point;
@@ -572,6 +626,7 @@ export function createAnalyticsHandler(context: APIContext) {
 					avgResponseTime: consolidatedResult?.avg_response_time || 0,
 					totalTokens: consolidatedResult?.total_tokens || 0,
 					totalCostUsd: consolidatedResult?.total_cost_usd || 0,
+					totalMoneySavedUsd: consolidatedResult?.total_money_saved_usd || 0,
 					avgTokensPerSecond: consolidatedResult?.avg_tokens_per_second || null,
 				},
 				timeSeries: transformedTimeSeries,
@@ -587,6 +642,7 @@ export function createAnalyticsHandler(context: APIContext) {
 				accountPerformance,
 				apiKeyPerformance,
 				costByModel,
+				costByAccount,
 				modelPerformance,
 			};
 

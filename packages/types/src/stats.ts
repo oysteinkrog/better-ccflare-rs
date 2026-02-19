@@ -37,6 +37,7 @@ export interface TimePoint {
 	requests: number;
 	tokens: number;
 	costUsd: number;
+	moneySavedUsd: number; // cost_usd for free (OAuth) accounts — API value delivered at $0
 	successRate: number; // 0-100
 	errorRate: number; // 0-100
 	cacheHitRate: number; // 0-100
@@ -74,6 +75,7 @@ export interface AnalyticsResponse {
 		avgResponseTime: number;
 		totalTokens: number;
 		totalCostUsd: number;
+		totalMoneySavedUsd: number; // API value delivered via free (OAuth) accounts
 		avgTokensPerSecond: number | null;
 	};
 	timeSeries: TimePoint[];
@@ -95,6 +97,13 @@ export interface AnalyticsResponse {
 		costUsd: number;
 		requests: number;
 		totalTokens?: number;
+	}>;
+	costByAccount: Array<{
+		name: string;
+		provider: string;
+		requests: number;
+		costUsd: number; // API-equivalent value
+		moneySavedUsd: number; // costUsd for free providers, 0 for paid
 	}>;
 	modelPerformance: ModelPerformance[];
 }

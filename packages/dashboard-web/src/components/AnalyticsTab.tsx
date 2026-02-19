@@ -4,6 +4,7 @@ import type { TimeRange } from "../constants";
 import { useAnalytics, useProjects } from "../hooks/queries";
 import {
 	AnalyticsControls,
+	CostAnalysisSection,
 	CumulativeGrowthChart,
 	CumulativeTokenComposition,
 	type FilterState,
@@ -137,7 +138,8 @@ export const AnalyticsTab = React.memo(() => {
 			time: formatter(new Date(point.ts)),
 			requests: point.requests,
 			tokens: point.tokens,
-			cost: parseFloat(point.costUsd.toFixed(2)),
+			cost: parseFloat(point.costUsd.toFixed(6)),
+			moneySaved: parseFloat(point.moneySavedUsd.toFixed(6)),
 			responseTime: Math.round(point.avgResponseTime),
 			errorRate: parseFloat(point.errorRate.toFixed(1)),
 			cacheHitRate: parseFloat(point.cacheHitRate.toFixed(1)),
@@ -293,6 +295,18 @@ export const AnalyticsTab = React.memo(() => {
 					<TokenSpeedAnalytics
 						timeSeriesData={data}
 						modelPerformance={analytics?.modelPerformance || []}
+						loading={loading}
+						timeRange={timeRange}
+					/>
+
+					{/* Cost Analysis */}
+					<CostAnalysisSection
+						totals={{
+							totalCostUsd: analytics?.totals.totalCostUsd ?? 0,
+							totalMoneySavedUsd: analytics?.totals.totalMoneySavedUsd ?? 0,
+						}}
+						timeSeries={data}
+						costByAccount={analytics?.costByAccount ?? []}
 						loading={loading}
 						timeRange={timeRange}
 					/>
