@@ -105,11 +105,10 @@ var currentSort = '';
 // This fires after HTMX settle (after scripts in the partial have run) and
 // acts as belt-and-suspenders for when the IIFE's init runs async/late.
 document.getElementById('accounts-table-container').addEventListener('htmx:afterSettle', function() {
-  var view = localStorage.getItem('poolView') || 'bars';
   var proj = localStorage.getItem('poolProj') || 'optimistic';
   var sel = document.getElementById('pool-proj-select');
   if (sel && sel.value !== proj) sel.value = proj;
-  if (window.setPoolView) window.setPoolView(view);
+  if (window.setPoolView) window.setPoolView();
 });
 
 document.getElementById('auto-refresh-toggle').addEventListener('change', function() {

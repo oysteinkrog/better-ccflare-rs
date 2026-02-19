@@ -13,12 +13,12 @@
       <span style="font-size:0.82rem;">{{ ps.status_text }} &mdash; {{ ps.available_accounts }}/{{ ps.total_accounts }} available</span>
     </div>
     <div class="pool-view-tabs" id="pool-view-tabs">
-      <button class="pool-view-btn" data-view="bars" onclick="setPoolView('bars')" title="Progress bars">Bars</button>
-      <button class="pool-view-btn" data-view="timeline" onclick="setPoolView('timeline')" title="Capacity over time">Timeline</button>
-      <button class="pool-view-btn" data-view="events" onclick="setPoolView('events')" title="Upcoming renewal events">Events</button>
-      <button class="pool-view-btn" data-view="heatmap" onclick="setPoolView('heatmap')" title="7-day availability heatmap">Heatmap</button>
-      <button class="pool-view-btn" data-view="gauges" onclick="setPoolView('gauges')" title="Arc gauge dials">Gauges</button>
-      <button class="pool-view-btn" data-view="capacity" onclick="setPoolView('capacity')" title="Absolute pool capacity in Nx units over the next 7 days">Capacity</button>
+      <button class="pool-view-btn" data-view="bars" onclick="togglePoolView('bars')" title="Progress bars">Bars</button>
+      <button class="pool-view-btn" data-view="timeline" onclick="togglePoolView('timeline')" title="Capacity over time">Timeline</button>
+      <button class="pool-view-btn" data-view="events" onclick="togglePoolView('events')" title="Upcoming renewal events">Events</button>
+      <button class="pool-view-btn" data-view="heatmap" onclick="togglePoolView('heatmap')" title="7-day availability heatmap">Heatmap</button>
+      <button class="pool-view-btn" data-view="gauges" onclick="togglePoolView('gauges')" title="Arc gauge dials">Gauges</button>
+      <button class="pool-view-btn" data-view="capacity" onclick="togglePoolView('capacity')" title="Absolute pool capacity in Nx units over the next 7 days">Capacity</button>
     </div>
   </div>
 
@@ -119,25 +119,49 @@
     return Math.floor(h / 24) + 'd ' + (Math.floor(h % 24) > 0 ? Math.floor(h % 24) + 'h' : '');
   }
 
-  window.setPoolView = function(view) {
+  var _activeViews = [];
+
+  function _renderActive() {
     _pv.forEach(function(v) {
       var el = document.getElementById('pool-view-' + v);
-      if (el) el.style.display = v === view ? '' : 'none';
+      if (el) el.style.display = _activeViews.indexOf(v) >= 0 ? '' : 'none';
     });
     document.querySelectorAll('#pool-view-tabs .pool-view-btn').forEach(function(b) {
-      b.className = b.className.replace(' active','') + (b.dataset.view === view ? ' active' : '');
+      var on = _activeViews.indexOf(b.dataset.view) >= 0;
+      b.className = b.className.replace(/\s*active/g, '') + (on ? ' active' : '');
     });
-    localStorage.setItem('poolView', view);
-    if (view === 'timeline') {
+    localStorage.setItem('poolViews', JSON.stringify(_activeViews));
+    if (_activeViews.indexOf('timeline') >= 0) {
       var proj = localStorage.getItem('poolProj') || 'optimistic';
       var sel = document.getElementById('pool-proj-select');
       if (sel) sel.value = proj;
       renderTimeline(proj);
     }
-    else if (view === 'events')    renderEvents();
-    else if (view === 'heatmap')   renderHeatmap();
-    else if (view === 'gauges')    renderGauges();
-    else if (view === 'capacity')  renderCapacity();
+    if (_activeViews.indexOf('events') >= 0)   renderEvents();
+    if (_activeViews.indexOf('heatmap') >= 0)  renderHeatmap();
+    if (_activeViews.indexOf('gauges') >= 0)   renderGauges();
+    if (_activeViews.indexOf('capacity') >= 0) renderCapacity();
+  }
+
+  window.togglePoolView = function(view) {
+    var idx = _activeViews.indexOf(view);
+    if (idx >= 0) {
+      if (_activeViews.length > 1) _activeViews.splice(idx, 1); // keep at least one
+    } else {
+      _activeViews.push(view);
+    }
+    _renderActive();
+  };
+
+  // Called by htmx:afterSettle to restore saved state
+  window.setPoolView = function() {
+    var saved = localStorage.getItem('poolViews');
+    if (saved) { try { _activeViews = JSON.parse(saved); } catch(e) { _activeViews = []; } }
+    if (!_activeViews.length) {
+      var old = localStorage.getItem('poolView');
+      _activeViews = [old && _pv.indexOf(old) >= 0 ? old : 'bars'];
+    }
+    _renderActive();
   };
 
   window.onProjChange = function(proj) {
@@ -596,13 +620,16 @@
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────
-  var saved = localStorage.getItem('poolView') || 'bars';
-  if (_pv.indexOf(saved) < 0) saved = 'bars';
-  // Restore projection selector before calling setPoolView (which may call renderTimeline)
+  var savedViews = localStorage.getItem('poolViews');
+  if (savedViews) { try { _activeViews = JSON.parse(savedViews); } catch(e) { _activeViews = []; } }
+  if (!_activeViews.length) {
+    var oldView = localStorage.getItem('poolView');
+    _activeViews = [oldView && _pv.indexOf(oldView) >= 0 ? oldView : 'bars'];
+  }
   var savedProj = localStorage.getItem('poolProj') || 'optimistic';
   var projSel = document.getElementById('pool-proj-select');
   if (projSel) projSel.value = savedProj;
-  setPoolView(saved);
+  _renderActive();
 })();
 </script>
 {% endif %}
