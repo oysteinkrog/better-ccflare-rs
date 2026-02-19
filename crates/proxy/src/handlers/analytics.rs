@@ -249,8 +249,10 @@ pub async fn get_analytics(
                 SUM(COALESCE(input_tokens, 0)) as input_tokens,
                 SUM(COALESCE(cache_read_input_tokens, 0)) as cache_read_input_tokens,
                 SUM(COALESCE(cache_creation_input_tokens, 0)) as cache_creation_input_tokens,
-                SUM(COALESCE(output_tokens, 0)) as output_tokens
+                SUM(COALESCE(output_tokens, 0)) as output_tokens,
+                SUM(CASE WHEN a.provider IN ('anthropic', 'claude-oauth') THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as total_money_saved_usd
              FROM requests r
+             LEFT JOIN accounts a ON a.id = r.account_used
              WHERE {where_clause}"
         );
 
@@ -266,6 +268,7 @@ pub async fn get_analytics(
                     "totalCostUsd": row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
                     "avgTokensPerSecond": row.get::<_, Option<f64>>(5)?,
                     "activeAccounts": row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                    "totalMoneySavedUsd": row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
                 }))
             },
         )?;
@@ -305,18 +308,20 @@ pub async fn get_analytics(
         let bucket_idx = fb.idx;
         let ts_sql = format!(
             "SELECT
-                (timestamp / ?{bucket_idx}) * ?{bucket_idx} as ts,
+                (r.timestamp / ?{bucket_idx}) * ?{bucket_idx} as ts,
                 {model_select}
                 COUNT(*) as requests,
-                SUM(COALESCE(total_tokens, 0)) as tokens,
-                SUM(COALESCE(cost_usd, 0)) as cost_usd,
-                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as success_rate,
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as error_rate,
-                SUM(COALESCE(cache_read_input_tokens, 0)) * 100.0 /
-                    NULLIF(SUM(COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0) + COALESCE(cache_creation_input_tokens, 0)), 0) as cache_hit_rate,
-                AVG(response_time_ms) as avg_response_time,
-                AVG(tokens_per_second) as avg_tokens_per_second
+                SUM(COALESCE(r.total_tokens, 0)) as tokens,
+                SUM(COALESCE(r.cost_usd, 0)) as cost_usd,
+                SUM(CASE WHEN r.success = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as success_rate,
+                SUM(CASE WHEN r.success = 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) as error_rate,
+                SUM(COALESCE(r.cache_read_input_tokens, 0)) * 100.0 /
+                    NULLIF(SUM(COALESCE(r.input_tokens, 0) + COALESCE(r.cache_read_input_tokens, 0) + COALESCE(r.cache_creation_input_tokens, 0)), 0) as cache_hit_rate,
+                AVG(r.response_time_ms) as avg_response_time,
+                AVG(r.tokens_per_second) as avg_tokens_per_second,
+                SUM(CASE WHEN a.provider IN ('anthropic', 'claude-oauth') THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as money_saved_usd
              FROM requests r
+             LEFT JOIN accounts a ON a.id = r.account_used
              WHERE {where_clause}{model_where}
              GROUP BY ts{model_group}
              ORDER BY ts{model_group}"
@@ -377,6 +382,10 @@ pub async fn get_analytics(
             map.insert(
                 "avgTokensPerSecond".to_string(),
                 json!(row.get::<_, Option<f64>>(col_offset + 7)?),
+            );
+            map.insert(
+                "moneySavedUsd".to_string(),
+                json!(row.get::<_, Option<f64>>(col_offset + 8)?.unwrap_or(0.0)),
             );
 
             Ok(point)
@@ -550,6 +559,38 @@ pub async fn get_analytics(
             .collect();
 
         // ---------------------------------------------------------------
+        // Cost by account
+        // ---------------------------------------------------------------
+        let cba_sql = format!(
+            "SELECT
+                COALESCE(a.name, r.account_used) as name,
+                COALESCE(a.provider, 'unknown') as provider,
+                COUNT(r.id) as requests,
+                SUM(COALESCE(r.cost_usd, 0)) as cost_usd,
+                SUM(CASE WHEN a.provider IN ('anthropic', 'claude-oauth') THEN COALESCE(r.cost_usd, 0) ELSE 0 END) as money_saved_usd
+             FROM requests r
+             LEFT JOIN accounts a ON a.id = r.account_used
+             WHERE {where_clause}
+             GROUP BY r.account_used, a.name, a.provider
+             HAVING requests > 0
+             ORDER BY cost_usd DESC
+             LIMIT 20"
+        );
+        let mut cba_stmt = conn.prepare(&cba_sql)?;
+        let cost_by_account: Vec<serde_json::Value> = cba_stmt
+            .query_map(rusqlite::params_from_iter(fb.params.iter()), |row| {
+                Ok(json!({
+                    "name": row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    "provider": row.get::<_, Option<String>>(1)?.unwrap_or_else(|| "unknown".to_string()),
+                    "requests": row.get::<_, i64>(2)?,
+                    "costUsd": row.get::<_, f64>(3)?,
+                    "moneySavedUsd": row.get::<_, f64>(4)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // ---------------------------------------------------------------
         // Assemble response
         // ---------------------------------------------------------------
         Ok(json!({
@@ -566,6 +607,7 @@ pub async fn get_analytics(
             "apiKeyPerformance": api_key_performance,
             "costByModel": cost_by_model,
             "modelPerformance": model_performance,
+            "costByAccount": cost_by_account,
         }))
     })();
 
@@ -588,20 +630,23 @@ fn apply_cumulative(time_series: &mut [serde_json::Value], model_breakdown: bool
         let mut running_requests: i64 = 0;
         let mut running_tokens: i64 = 0;
         let mut running_cost: f64 = 0.0;
+        let mut running_saved: f64 = 0.0;
 
         for point in time_series.iter_mut() {
             let map = point.as_object_mut().unwrap();
             running_requests += map.get("requests").and_then(|v| v.as_i64()).unwrap_or(0);
             running_tokens += map.get("tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             running_cost += map.get("costUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            running_saved += map.get("moneySavedUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
             map.insert("requests".to_string(), json!(running_requests));
             map.insert("tokens".to_string(), json!(running_tokens));
             map.insert("costUsd".to_string(), json!(running_cost));
+            map.insert("moneySavedUsd".to_string(), json!(running_saved));
         }
     } else {
         use std::collections::HashMap;
-        let mut totals: HashMap<String, (i64, i64, f64)> = HashMap::new();
+        let mut totals: HashMap<String, (i64, i64, f64, f64)> = HashMap::new();
 
         for point in time_series.iter_mut() {
             let map = point.as_object_mut().unwrap();
@@ -611,14 +656,16 @@ fn apply_cumulative(time_series: &mut [serde_json::Value], model_breakdown: bool
                 .unwrap_or("")
                 .to_string();
 
-            let entry = totals.entry(model).or_insert((0, 0, 0.0));
+            let entry = totals.entry(model).or_insert((0, 0, 0.0, 0.0));
             entry.0 += map.get("requests").and_then(|v| v.as_i64()).unwrap_or(0);
             entry.1 += map.get("tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             entry.2 += map.get("costUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            entry.3 += map.get("moneySavedUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
             map.insert("requests".to_string(), json!(entry.0));
             map.insert("tokens".to_string(), json!(entry.1));
             map.insert("costUsd".to_string(), json!(entry.2));
+            map.insert("moneySavedUsd".to_string(), json!(entry.3));
         }
     }
 }
