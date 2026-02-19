@@ -271,6 +271,28 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
         );
         add_column_if_missing(conn, "accounts", "subscription_tier", "TEXT", &cols);
         add_column_if_missing(conn, "accounts", "email", "TEXT", &cols);
+        add_column_if_missing(
+            conn,
+            "accounts",
+            "monthly_cost_usd",
+            "REAL NOT NULL DEFAULT 0",
+            &cols,
+        );
+        // Auto-detect monthly subscription cost from account name multiplier suffix.
+        // Patterns: "- 20x" → $200/mo (Claude Max 20x), "- 6.5x" → $130/mo,
+        //           "- 5x" → $100/mo (Claude Max 5x), OAuth default → $20/mo (Pro).
+        // Only updates rows that are still at the default (0) to preserve user edits.
+        let _ = conn.execute(
+            "UPDATE accounts SET monthly_cost_usd = CASE
+                WHEN name LIKE '% - 20x' OR name LIKE '% 20x' THEN 200.0
+                WHEN name LIKE '% - 6.5x' OR name LIKE '% 6.5x' THEN 130.0
+                WHEN name LIKE '% - 5x'  OR name LIKE '% 5x'  THEN 100.0
+                WHEN provider IN ('anthropic', 'claude-oauth', 'console') THEN 20.0
+                ELSE 0.0
+             END
+             WHERE monthly_cost_usd = 0",
+            [],
+        );
 
         // Make name UNIQUE if not already (TS schema didn't enforce this)
         // We can't ALTER an existing constraint, so we just ignore duplicates
