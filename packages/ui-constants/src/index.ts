@@ -1,14 +1,14 @@
-// Color palette used across UI components
+// Color palette used across UI components (OKLCH — perceptually uniform)
 export const COLORS = {
-	primary: "#f38020",
-	success: "#10b981",
-	warning: "#f59e0b",
-	error: "#ef4444",
-	blue: "#3b82f6",
-	purple: "#8b5cf6",
-	pink: "#ec4899",
-	indigo: "#6366f1",
-	cyan: "#06b6d4",
+	primary: "oklch(0.70 0.175 44)",   // ccflare orange
+	success: "oklch(0.70 0.150 168)",  // green
+	warning: "oklch(0.78 0.155 76)",   // amber
+	error: "oklch(0.60 0.215 22)",     // red
+	blue: "oklch(0.62 0.190 255)",
+	purple: "oklch(0.60 0.185 300)",
+	pink: "oklch(0.64 0.205 350)",
+	indigo: "oklch(0.57 0.200 275)",
+	cyan: "oklch(0.74 0.138 198)",
 } as const;
 
 // Chart color sequence for multi-series charts
@@ -49,11 +49,11 @@ export const CHART_TOOLTIP_STYLE = {
 		backgroundColor: COLORS.success,
 		border: `1px solid ${COLORS.success}`,
 		borderRadius: "var(--radius)",
-		color: "#fff",
+		color: "oklch(1.00 0 0)",
 	},
 	dark: {
-		backgroundColor: "rgba(0,0,0,0.8)",
-		border: "1px solid rgba(255,255,255,0.2)",
+		backgroundColor: "oklch(0 0 0 / 0.8)",
+		border: "1px solid oklch(1.00 0 0 / 0.2)",
 		borderRadius: "8px",
 		backdropFilter: "blur(8px)",
 	},

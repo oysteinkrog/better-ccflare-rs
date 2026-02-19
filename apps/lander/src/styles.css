@@ -1,13 +1,13 @@
 :root {
-	--cf-orange: #f38020;
-	--background: hsl(220 13% 8%);
-	--foreground: hsl(0 0% 95%);
-	--card: hsl(220 13% 12%);
-	--card-foreground: hsl(0 0% 95%);
-	--secondary: hsl(220 13% 18%);
-	--muted: hsl(220 13% 18%);
-	--muted-foreground: hsl(220 9% 55%);
-	--border: hsl(220 13% 20%);
+	--cf-orange: oklch(0.70 0.175 44);
+	--background: oklch(0.14 0.018 250);
+	--foreground: oklch(0.95 0 0);
+	--card: oklch(0.19 0.018 250);
+	--card-foreground: oklch(0.95 0 0);
+	--secondary: oklch(0.24 0.018 250);
+	--muted: oklch(0.24 0.018 250);
+	--muted-foreground: oklch(0.57 0.012 250);
+	--border: oklch(0.27 0.018 250);
 	--radius: 0.5rem;
 }
 
@@ -49,7 +49,7 @@ body {
 	left: 0;
 	right: 0;
 	z-index: 50;
-	background: rgba(17, 18, 23, 0.8);
+	background: oklch(0.14 0.018 250 / 0.8);
 	backdrop-filter: blur(10px);
 	border-bottom: 1px solid var(--border);
 }
@@ -132,7 +132,7 @@ body {
 	bottom: 0;
 	background: radial-gradient(
 		ellipse at top,
-		rgba(243, 128, 32, 0.1) 0%,
+		oklch(0.70 0.175 44 / 0.1) 0%,
 		transparent 50%
 	);
 	pointer-events: none;
@@ -164,15 +164,15 @@ body {
 	width: 100%;
 	border-radius: var(--radius);
 	overflow: hidden;
-	box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+	box-shadow: 0 25px 50px -12px oklch(0 0 0 / 0.5);
 	transition: transform 0.3s ease;
 	border: 2px solid var(--border);
 }
 
 .hero-screenshot-wrapper:hover {
 	transform: translateY(-4px) scale(1.02);
-	border-color: rgba(243, 128, 32, 0.3);
-	box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.6);
+	border-color: oklch(0.70 0.175 44 / 0.3);
+	box-shadow: 0 30px 60px -15px oklch(0 0 0 / 0.6);
 }
 
 .hero-screenshot-wrapper img {
@@ -186,7 +186,7 @@ body {
 	inset: -50%;
 	background: radial-gradient(
 		circle,
-		rgba(243, 128, 32, 0.4) 0%,
+		oklch(0.70 0.175 44 / 0.4) 0%,
 		transparent 70%
 	);
 	opacity: 0.3;
@@ -209,8 +209,8 @@ body {
 .hero-badge {
 	display: inline-block;
 	padding: 0.25rem 0.75rem;
-	background: rgba(243, 128, 32, 0.2);
-	border: 1px solid rgba(243, 128, 32, 0.3);
+	background: oklch(0.70 0.175 44 / 0.2);
+	border: 1px solid oklch(0.70 0.175 44 / 0.3);
 	border-radius: 9999px;
 	font-size: 0.75rem;
 	font-weight: 500;
@@ -227,7 +227,7 @@ body {
 }
 
 .gradient-text {
-	background: linear-gradient(135deg, var(--cf-orange) 0%, #f97316 100%);
+	background: linear-gradient(135deg in oklch, var(--cf-orange) 0%, oklch(0.72 0.188 40) 100%);
 	-webkit-background-clip: text;
 	-webkit-text-fill-color: transparent;
 	background-clip: text;
@@ -270,9 +270,9 @@ body {
 }
 
 .btn-primary:hover {
-	background: #e67119;
+	background: oklch(0.64 0.175 44);
 	transform: translateY(-2px);
-	box-shadow: 0 10px 20px rgba(243, 128, 32, 0.3);
+	box-shadow: 0 10px 20px oklch(0.70 0.175 44 / 0.3);
 }
 
 .btn-secondary {
@@ -368,14 +368,14 @@ body {
 
 .feature-card:hover {
 	transform: translateY(-4px);
-	border-color: rgba(243, 128, 32, 0.3);
-	box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+	border-color: oklch(0.70 0.175 44 / 0.3);
+	box-shadow: 0 20px 40px oklch(0 0 0 / 0.3);
 }
 
 .feature-icon {
 	width: 48px;
 	height: 48px;
-	background: rgba(243, 128, 32, 0.1);
+	background: oklch(0.70 0.175 44 / 0.1);
 	border-radius: var(--radius);
 	display: flex;
 	align-items: center;
@@ -400,10 +400,10 @@ body {
 	grid-column: span 2;
 	background: linear-gradient(
 		135deg,
-		rgba(243, 128, 32, 0.1) 0%,
-		rgba(243, 128, 32, 0.05) 100%
+		oklch(0.70 0.175 44 / 0.1) 0%,
+		oklch(0.70 0.175 44 / 0.05) 100%
 	);
-	border: 2px solid rgba(243, 128, 32, 0.2);
+	border: 2px solid oklch(0.70 0.175 44 / 0.2);
 	position: relative;
 	overflow: hidden;
 }
@@ -428,7 +428,7 @@ body {
 .feature-card.featured .feature-icon {
 	width: 64px;
 	height: 64px;
-	background: rgba(243, 128, 32, 0.2);
+	background: oklch(0.70 0.175 44 / 0.2);
 }
 
 .feature-stats {
@@ -459,7 +459,7 @@ body {
 /* Screenshots Section */
 .screenshots {
 	padding: 6rem 0;
-	background: rgba(243, 128, 32, 0.03);
+	background: oklch(0.70 0.175 44 / 0.03);
 }
 
 .container-wide {
@@ -519,14 +519,14 @@ body {
 	border: 2px solid var(--border);
 	border-radius: var(--radius);
 	overflow: hidden;
-	box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+	box-shadow: 0 25px 50px -12px oklch(0 0 0 / 0.5);
 	transition: all 0.3s ease;
 }
 
 .screenshot-hero-image:hover {
 	transform: translateY(-4px);
-	border-color: rgba(243, 128, 32, 0.3);
-	box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.6);
+	border-color: oklch(0.70 0.175 44 / 0.3);
+	box-shadow: 0 30px 60px -15px oklch(0 0 0 / 0.6);
 }
 
 .screenshot-hero-image img {
@@ -552,13 +552,13 @@ body {
 
 .screenshot-card-large:hover {
 	transform: translateY(-4px);
-	border-color: rgba(243, 128, 32, 0.3);
-	box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
+	border-color: oklch(0.70 0.175 44 / 0.3);
+	box-shadow: 0 25px 50px -12px oklch(0 0 0 / 0.4);
 }
 
 .screenshot-card-header {
 	padding: 2rem;
-	background: rgba(243, 128, 32, 0.05);
+	background: oklch(0.70 0.175 44 / 0.05);
 	border-bottom: 1px solid var(--border);
 }
 
@@ -651,7 +651,7 @@ body {
 }
 
 .performance-icon.success {
-	color: #10b981;
+	color: oklch(0.70 0.150 168);
 }
 
 .uptime-indicator {
@@ -663,7 +663,7 @@ body {
 .uptime-bar {
 	width: 8px;
 	height: 40px;
-	background: #10b981;
+	background: oklch(0.70 0.150 168);
 	border-radius: 2px;
 }
 
@@ -686,7 +686,7 @@ body {
 .step-number {
 	font-size: 4rem;
 	font-weight: 700;
-	color: rgba(243, 128, 32, 0.2);
+	color: oklch(0.70 0.175 44 / 0.2);
 	line-height: 1;
 	margin-bottom: 1rem;
 }
@@ -716,7 +716,7 @@ body {
 /* Pricing Section */
 .pricing {
 	padding: 6rem 0;
-	background: rgba(243, 128, 32, 0.03);
+	background: oklch(0.70 0.175 44 / 0.03);
 }
 
 .pricing-card {
@@ -790,7 +790,7 @@ body {
 }
 
 .pricing-features svg {
-	color: #10b981;
+	color: oklch(0.70 0.150 168);
 	flex-shrink: 0;
 }
 
@@ -799,7 +799,7 @@ body {
 	padding: 6rem 0;
 	background: linear-gradient(
 		135deg,
-		rgba(243, 128, 32, 0.1) 0%,
+		oklch(0.70 0.175 44 / 0.1) 0%,
 		transparent 100%
 	);
 }
@@ -888,9 +888,9 @@ body {
 }
 
 .code-block.large {
-	background: rgba(243, 128, 32, 0.05);
-	border: 2px solid rgba(243, 128, 32, 0.2);
-	box-shadow: 0 0 40px rgba(243, 128, 32, 0.1);
+	background: oklch(0.70 0.175 44 / 0.05);
+	border: 2px solid oklch(0.70 0.175 44 / 0.2);
+	box-shadow: 0 0 40px oklch(0.70 0.175 44 / 0.1);
 }
 
 .code-block.large pre {
@@ -901,7 +901,7 @@ body {
 .code-block .highlight {
 	color: var(--primary);
 	font-weight: 600;
-	text-shadow: 0 0 20px rgba(243, 128, 32, 0.5);
+	text-shadow: 0 0 20px oklch(0.70 0.175 44 / 0.5);
 }
 
 .command-benefits {
