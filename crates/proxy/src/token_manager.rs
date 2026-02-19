@@ -66,6 +66,10 @@ pub trait TokenPersister: Send + Sync {
     /// Default is a no-op; override in DB-backed implementors.
     fn persist_subscription_tier(&self, _account_id: &str, _tier: Option<&str>) {}
 
+    /// Persist email address when it changes (e.g. after a token refresh).
+    /// Default is a no-op; override in DB-backed implementors.
+    fn persist_email(&self, _account_id: &str, _email: Option<&str>) {}
+
     /// Try to load an account from DB (for backoff recovery).
     fn load_account(&self, account_id: &str) -> Option<Account>;
 }
@@ -261,6 +265,9 @@ impl TokenManager {
                         result.subscription_tier.as_deref(),
                     );
                 }
+                if result.email.is_some() {
+                    persister.persist_email(&account.id, result.email.as_deref());
+                }
 
                 // Update in-memory account
                 let new_token = result.access_token.clone();
@@ -271,6 +278,9 @@ impl TokenManager {
                 }
                 if let Some(tier) = result.subscription_tier {
                     account.subscription_tier = Some(tier);
+                }
+                if let Some(email) = result.email {
+                    account.email = Some(email);
                 }
 
                 // Clear failure record
@@ -371,6 +381,7 @@ mod tests {
             reserve_weekly: 0,
             reserve_hard: false,
             subscription_tier: None,
+            email: None,
         }
     }
 
@@ -403,6 +414,7 @@ mod tests {
             reserve_weekly: 0,
             reserve_hard: false,
             subscription_tier: None,
+            email: None,
         }
     }
 
@@ -432,6 +444,7 @@ mod tests {
                 expires_at: NOW + 5 * time::HOUR,
                 refresh_token: "rt_new".to_string(),
                 subscription_tier: None,
+                email: None,
             })
         }
     }

@@ -309,11 +309,17 @@ impl ClaudeOAuthProvider {
                     .map(Self::normalize_subscription_type)
             });
 
+        // Extract email from account.email_address (present in every token response).
+        let email = json["account"]["email_address"]
+            .as_str()
+            .map(String::from);
+
         Ok(TokenRefreshResult {
             access_token,
             expires_at,
             refresh_token,
             subscription_tier,
+            email,
         })
     }
 
@@ -469,6 +475,7 @@ impl Provider for ClaudeOAuthProvider {
                 expires_at: chrono::Utc::now().timestamp_millis() + 24 * 60 * 60 * 1000,
                 refresh_token: String::new(),
                 subscription_tier: None,
+                email: None,
             });
         }
 

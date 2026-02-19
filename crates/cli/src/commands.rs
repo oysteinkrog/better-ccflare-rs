@@ -132,6 +132,7 @@ pub fn add_account(
             reserve_weekly: 0,
             reserve_hard: false,
             subscription_tier: None,
+            email: None,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;
@@ -199,6 +200,7 @@ pub fn add_account(
             reserve_weekly: 0,
             reserve_hard: false,
             subscription_tier: None,
+            email: None,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;

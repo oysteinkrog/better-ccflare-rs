@@ -401,6 +401,7 @@ async fn accounts_table_partial(
                 reserve_weekly: a.reserve_weekly,
                 reserve_hard: a.reserve_hard,
                 subscription_tier: a.subscription_tier.clone(),
+                email: a.email.clone(),
             }
         })
         .collect();
@@ -408,10 +409,12 @@ async fn accounts_table_partial(
     sort_account_rows(&mut rows, query.sort.as_deref());
 
     let pool_summary = build_pool_summary(&rows);
+    let chart_data_json = build_chart_data_json(&rows, now);
 
     let tpl = AccountsTablePartial {
         accounts: rows,
         pool_summary,
+        chart_data_json,
     };
     match tpl.render() {
         Ok(html) => Html(html).into_response(),
@@ -592,8 +595,8 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
         return None;
     }
 
-    // Group windows by label, collecting pct values and reset texts
-    let mut groups: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
+    // Group windows by label, collecting pct values, reset texts, and reset timestamps
+    let mut groups: BTreeMap<String, Vec<(i64, String, Option<i64>)>> = BTreeMap::new();
 
     // Maintain insertion order using a separate vec
     let label_order = ["5-hour", "Weekly", "Opus (Wk)", "Sonnet (Wk)", "Daily", "Monthly"];
@@ -604,7 +607,7 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
                 groups
                     .entry(w.label.clone())
                     .or_default()
-                    .push((w.pct, w.reset_text.clone()));
+                    .push((w.pct, w.reset_text.clone(), w.resets_at_ms));
             }
         }
     }
@@ -653,21 +656,19 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
     })
 }
 
-/// Build a single pool window summary from collected (pct, reset_text) pairs.
-fn build_pool_window(label: String, entries: &[(i64, String)]) -> PoolWindowSummary {
+/// Build a single pool window summary from collected (pct, reset_text, resets_at_ms) triples.
+fn build_pool_window(label: String, entries: &[(i64, String, Option<i64>)]) -> PoolWindowSummary {
     let count = entries.len();
-    let sum: i64 = entries.iter().map(|(p, _)| *p).sum();
+    let sum: i64 = entries.iter().map(|(p, _, _)| *p).sum();
     let avg = sum / count as i64;
-    let max = entries.iter().map(|(p, _)| *p).max().unwrap_or(0);
+    let max = entries.iter().map(|(p, _, _)| *p).max().unwrap_or(0);
 
     // Pick earliest non-empty reset text
     let next_reset = entries
         .iter()
-        .filter(|(_, r)| !r.is_empty())
-        .map(|(_, r)| r.as_str())
+        .filter(|(_, r, _)| !r.is_empty())
+        .map(|(_, r, _)| r.as_str())
         .min_by(|a, b| {
-            // Simple heuristic: shorter reset texts are sooner
-            // "resetting" < "5m" < "2h 15m" < "3d 2h"
             parse_reset_minutes(a).cmp(&parse_reset_minutes(b))
         })
         .unwrap_or("")
@@ -681,6 +682,56 @@ fn build_pool_window(label: String, entries: &[(i64, String)]) -> PoolWindowSumm
         account_count: count,
         next_reset,
     }
+}
+
+/// Serialize per-account usage data to JSON for client-side chart visualizations.
+fn build_chart_data_json(rows: &[AccountRow], now: i64) -> String {
+    #[derive(serde::Serialize)]
+    struct CWindow {
+        label: String,
+        pct: i64,
+        resets_at_ms: Option<i64>,
+    }
+    #[derive(serde::Serialize)]
+    struct CAccount {
+        id: String,
+        name: String,
+        paused: bool,
+        windows: Vec<CWindow>,
+    }
+    #[derive(serde::Serialize)]
+    struct CData {
+        now_ms: i64,
+        accounts: Vec<CAccount>,
+    }
+
+    let data = CData {
+        now_ms: now,
+        accounts: rows
+            .iter()
+            .filter(|r| r.has_usage)
+            .map(|r| CAccount {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                paused: r.paused,
+                windows: r
+                    .usage_windows
+                    .iter()
+                    .filter(|w| w.pct >= 0)
+                    .map(|w| CWindow {
+                        label: w.label.clone(),
+                        pct: w.pct,
+                        resets_at_ms: w.resets_at_ms,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+
+    serde_json::to_string(&data)
+        .unwrap_or_default()
+        // Prevent </script> from breaking embedded JSON in a script tag
+        .replace("</", "<\\/")
 }
 
 /// Parse a reset text like "2h 15m", "45m", "resetting" into approximate minutes for sorting.
@@ -736,12 +787,18 @@ fn build_usage_windows(
                             .get("resets_at")
                             .and_then(|v| v.as_str())
                             .map(String::from);
+                        let resets_at_ms = resets_at.as_deref().and_then(|s| {
+                            chrono::DateTime::parse_from_rfc3339(s)
+                                .ok()
+                                .map(|dt| dt.timestamp_millis())
+                        });
                         let pct = util.round() as i64;
                         windows.push(UsageWindowDisplay {
                             label: label.to_string(),
                             pct: pct.clamp(0, 100),
                             css_class: utilization_class(pct),
                             reset_text: format_reset_time(&resets_at, now),
+                            resets_at_ms,
                         });
                     }
                 }
@@ -755,6 +812,7 @@ fn build_usage_windows(
                     pct: daily_pct.min(100),
                     css_class: utilization_class(daily_pct),
                     reset_text: format_reset_timestamp(data.daily.reset_at, now),
+                    resets_at_ms: Some(data.daily.reset_at),
                 });
                 let monthly_pct = (data.monthly.percent_used * 100.0).round() as i64;
                 windows.push(UsageWindowDisplay {
@@ -762,22 +820,22 @@ fn build_usage_windows(
                     pct: monthly_pct.min(100),
                     css_class: utilization_class(monthly_pct),
                     reset_text: format_reset_timestamp(data.monthly.reset_at, now),
+                    resets_at_ms: Some(data.monthly.reset_at),
                 });
             }
         }
         AnyUsageData::Zai(data) => {
             if let Some(ref tl) = data.tokens_limit {
                 let pct = tl.percentage.round() as i64;
+                let resets_at_ms = tl.reset_at;
                 windows.push(UsageWindowDisplay {
                     label: "5-hour".to_string(),
                     pct: pct.min(100),
                     css_class: utilization_class(pct),
-                    reset_text: data
-                        .tokens_limit
-                        .as_ref()
-                        .and_then(|t| t.reset_at)
+                    reset_text: resets_at_ms
                         .map(|ts| format_reset_timestamp(ts, now))
                         .unwrap_or_default(),
+                    resets_at_ms,
                 });
             }
         }

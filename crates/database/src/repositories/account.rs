@@ -24,7 +24,8 @@ const ACCOUNT_SELECT: &str = "
         COALESCE(reserve_5h, 0) as reserve_5h,
         COALESCE(reserve_weekly, 0) as reserve_weekly,
         COALESCE(reserve_hard, 0) as reserve_hard,
-        subscription_tier
+        subscription_tier,
+        email
     FROM accounts
 ";
 
@@ -62,6 +63,7 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         reserve_weekly: row.get::<_, Option<i64>>("reserve_weekly")?.unwrap_or(0),
         reserve_hard: row.get::<_, i64>("reserve_hard")? != 0,
         subscription_tier: row.get("subscription_tier")?,
+        email: row.get("email")?,
     })
 }
 
@@ -330,6 +332,19 @@ pub fn set_subscription_tier(
     Ok(())
 }
 
+/// Set email address for an account (OAuth accounts only).
+pub fn set_email(
+    conn: &Connection,
+    account_id: &str,
+    email: Option<&str>,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET email = ?1 WHERE id = ?2",
+        params![email, account_id],
+    )?;
+    Ok(())
+}
+
 /// Clear expired rate limits from all accounts.
 ///
 /// Returns the number of accounts that had their rate_limited_until cleared.
@@ -367,10 +382,10 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             rate_limit_reset, rate_limit_status, rate_limit_remaining,
             priority, auto_fallback_enabled, auto_refresh_enabled,
             custom_endpoint, model_mappings, reserve_5h, reserve_weekly, reserve_hard,
-            subscription_tier
+            subscription_tier, email
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
         )",
         params![
             account.id,
@@ -400,6 +415,7 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             account.reserve_weekly,
             account.reserve_hard as i64,
             account.subscription_tier,
+            account.email,
         ],
     )?;
     Ok(())
@@ -446,6 +462,7 @@ mod tests {
             reserve_weekly: 0,
             reserve_hard: false,
             subscription_tier: None,
+            email: None,
         }
     }
 
