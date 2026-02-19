@@ -8,9 +8,10 @@
 {% if let Some(ps) = pool_summary %}
 <div class="pool-summary" id="pool-summary-card">
   <div class="pool-summary-header">
-    <div style="display:flex;align-items:center;gap:0.5rem;flex:1;min-width:0;">
+    <div style="display:flex;align-items:center;gap:0.5rem;flex:1;min-width:0;flex-wrap:wrap;">
       <span class="pool-status-dot {{ ps.pool_status }}"></span>
       <span style="font-size:0.82rem;">{{ ps.status_text }} &mdash; {{ ps.available_accounts }}/{{ ps.total_accounts }} available</span>
+      <span id="pool-binding-constraint" style="font-size:0.72rem;color:var(--pico-muted-color);"></span>
     </div>
     <div class="pool-view-tabs" id="pool-view-tabs">
       <button class="pool-view-btn" data-view="bars" onclick="togglePoolView('bars')" title="Progress bars">Bars</button>
@@ -32,8 +33,11 @@
           <span class="pool-window-label">{{ w.label }}</span>
           <span class="pool-window-pct">{{ w.avg_pct }}% avg</span>
         </div>
-        <div class="usage-bar" style="height:8px;border-radius:4px;">
-          <div class="usage-fill {{ w.css_class }}" style="width:{{ w.avg_pct }}%;border-radius:4px;transition:width 700ms ease-out;"></div>
+        <div class="usage-bar-wrap" data-win="{{ w.label }}" style="position:relative;">
+          <div class="usage-bar" style="height:8px;border-radius:4px;">
+            <div class="usage-fill {{ w.css_class }}" style="width:{{ w.avg_pct }}%;border-radius:4px;transition:width 700ms ease-out;"></div>
+          </div>
+          <div class="pool-bar-dots" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;"></div>
         </div>
         <div class="pool-window-detail">
           <span>max {{ w.max_pct }}% ({{ w.account_count }} acct{% if w.account_count != 1 %}s{% endif %})</span>
@@ -131,6 +135,8 @@
       b.className = b.className.replace(/\s*active/g, '') + (on ? ' active' : '');
     });
     localStorage.setItem('poolViews', JSON.stringify(_activeViews));
+    renderBindingConstraint();
+    if (_activeViews.indexOf('bars') >= 0) renderBarDots();
     if (_activeViews.indexOf('timeline') >= 0) {
       var proj = localStorage.getItem('poolProj') || 'optimistic';
       var sel = document.getElementById('pool-proj-select');
@@ -295,6 +301,10 @@
       grid += '<line x1="'+pL+'" y1="'+y+'" x2="'+(pL+pW)+'" y2="'+y+'" stroke="currentColor" stroke-width="0.4" opacity="0.15"/>';
       grid += '<text x="'+(pL-3)+'" y="'+(parseFloat(y)+3)+'" text-anchor="end" font-size="8" fill="currentColor" opacity="0.5">'+p+'%</text>';
     });
+    // 20% danger threshold line
+    var dangerY = ty(20).toFixed(1);
+    grid += '<line x1="'+pL+'" y1="'+dangerY+'" x2="'+(pL+pW)+'" y2="'+dangerY+'" stroke="var(--bccf-danger)" stroke-width="0.9" opacity="0.45" stroke-dasharray="3,3"/>';
+    grid += '<text x="'+(pL+2)+'" y="'+(parseFloat(dangerY)-2)+'" font-size="7" fill="var(--bccf-danger)" opacity="0.6">20% alert</text>';
     // X-axis day ticks
     for (var d=1;d<=7;d++) {
       var xd = tx(now + d*24*3600000).toFixed(1);
@@ -306,9 +316,18 @@
     var nowX = tx(now).toFixed(1);
     grid += '<line x1="'+nowX+'" y1="'+pT+'" x2="'+nowX+'" y2="'+(pT+pH)+'" stroke="var(--bccf-orange)" stroke-width="1.5"/>';
     grid += '<text x="'+(parseFloat(nowX)+3)+'" y="'+(pT+9)+'" font-size="8" fill="var(--bccf-orange)">now</text>';
+    // Per-event tick marks with account/window tooltips
+    var ticks = '';
+    events.forEach(function(e) {
+      var p = pairs[e.idx];
+      var xt = tx(e.ms).toFixed(1);
+      var freed = Math.round(100 - (pctArr[e.idx] || 0)); // approximate % freed at this event
+      ticks += '<line x1="'+xt+'" y1="'+pT+'" x2="'+xt+'" y2="'+(pT+pH)+'" stroke="var(--pico-color)" stroke-width="5" opacity="0" stroke-dasharray="none"><title>+'
+        + esc(msToRel(e.ms)) + ' \u2014 ' + esc(p.name) + ' \u00b7 ' + esc(p.label) + ' resets (+' + freed + '% free)</title></line>';
+    });
 
     var svg = '<svg width="100%" viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="display:block;">'
-      + grid
+      + grid + ticks
       + '<path d="'+fillD+'" fill="var(--bccf-success)" opacity="0.12"/>'
       + '<path d="'+pathD+'" fill="none" stroke="var(--bccf-success)" stroke-width="1.8"/>'
       + '</svg>';
@@ -331,6 +350,9 @@
   function renderEvents() {
     var data = poolData, now = data.now_ms;
     var sevenDays = 7*24*3600000, fiveH = 5*3600000;
+    // Total active windows in pool — denominator for pool-impact calculation
+    var totalWins = 0;
+    data.accounts.forEach(function(a) { if (!a.paused) totalWins += a.windows.length; });
     var evts = [];
     data.accounts.forEach(function(a) {
       if (a.paused) return;
@@ -353,11 +375,16 @@
     var html = '';
     evts.slice(0,30).forEach(function(e) {
       var fc = e.freed >= 50 ? 'good' : e.freed >= 20 ? 'warn' : 'bad';
+      var poolImpact = totalWins > 0 ? Math.round(e.freed / totalWins) : 0;
+      var poolBadge = poolImpact > 0
+        ? '<span class="pool-event-free" style="background:var(--bccf-border-subtle);color:var(--pico-muted-color);" title="How much this reset raises total pool availability">+'+poolImpact+'% pool</span>'
+        : '';
       html += '<div class="pool-event-row">'
         + '<span class="pool-event-time">+'+esc(msToRel(e.ms).trim())+'</span>'
         + '<span class="pool-event-acct">'+esc(e.name)+'</span>'
         + '<span class="pool-event-win">'+esc(e.win)+'</span>'
-        + '<span class="pool-event-free '+fc+'">+'+Math.round(e.freed)+'% free</span>'
+        + '<span class="pool-event-free '+fc+'" title="How much capacity this account\'s window recovers">+'+Math.round(e.freed)+'% free</span>'
+        + poolBadge
         + '</div>';
     });
     el.innerHTML = html;
@@ -391,32 +418,42 @@
     }
 
     var el = document.getElementById('pool-heatmap-grid');
-    var html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px;">';
+    // Time-slot labels for each of the 4 rows
+    var slotLabels = ['00–06','06–12','12–18','18–24'];
+    var html = '<div style="display:flex;gap:4px;">';
+    // Left column: time labels
+    html += '<div style="display:flex;flex-direction:column;gap:4px;padding-top:22px;flex-shrink:0;">';
+    slotLabels.forEach(function(lbl) {
+      html += '<div style="height:18px;line-height:18px;font-size:0.6rem;color:var(--pico-muted-color);text-align:right;padding-right:4px;white-space:nowrap;">'+esc(lbl)+'</div>';
+    });
+    html += '</div>';
+    // Main grid
+    html += '<div style="flex:1;display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px;">';
     // Day headers
     days.forEach(function(day) {
       var isToday = day.start <= now && now < day.start + dayMs;
       var lbl = new Date(day.start).toLocaleDateString('en',{weekday:'short'});
       html += '<div style="text-align:center;font-size:0.7rem;color:var(--pico-muted-color);font-weight:'+(isToday?'700':'400')+';padding-bottom:2px;">'+esc(lbl)+(isToday?' ·':'')+'</div>';
     });
-    // Slot rows (4 per day)
+    // Slot rows (4 per day) — standardized thresholds: green ≥50%, yellow ≥20%, red <20%
     for (var s=0;s<4;s++) {
       days.forEach(function(day) {
         var slot = day.slots[s];
         var isPast = slot.start + sixH <= now;
         var isCurrent = slot.start <= now && now < slot.start + sixH;
         var a = slot.avail;
-        var bg = a>=70 ? 'var(--bccf-success)' : a>=40 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
-        var op = isPast ? '0.2' : isCurrent ? '0.8' : '0.55';
+        var bg = a>=50 ? 'var(--bccf-success)' : a>=20 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
+        var op = isPast ? '0.45' : isCurrent ? '0.9' : '0.6';
         var h = new Date(slot.start).toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'});
         html += '<div style="height:18px;border-radius:3px;background:'+bg+';opacity:'+op+(isCurrent?';outline:2px solid var(--bccf-orange);outline-offset:-1px':'')+'" title="'+esc(h)+' — '+Math.round(a)+'% available"></div>';
       });
     }
-    html += '</div>';
-    // Legend
+    html += '</div></div>';
+    // Legend — same thresholds as all other views
     html += '<div style="display:flex;gap:0.75rem;font-size:0.7rem;color:var(--pico-muted-color);">'
-      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-success);opacity:0.6;display:inline-block;"></span>≥70%</span>'
-      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-warning);opacity:0.6;display:inline-block;"></span>40–70%</span>'
-      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-danger);opacity:0.6;display:inline-block;"></span>&lt;40%</span>'
+      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-success);opacity:0.6;display:inline-block;"></span>≥50% free</span>'
+      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-warning);opacity:0.6;display:inline-block;"></span>20–50% free</span>'
+      + '<span style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--bccf-danger);opacity:0.6;display:inline-block;"></span>&lt;20% free</span>'
       + '<span style="margin-left:0.5rem;"><span style="outline:2px solid var(--bccf-orange);display:inline-block;width:10px;height:10px;border-radius:2px;"></span> current slot</span>'
       + '</div>';
     el.innerHTML = html;
@@ -448,22 +485,19 @@
       var avail = 100 - avg;
       var r = 34, cx = 44, cy = 44, stroke = 8;
       var arc = 2*Math.PI*r*0.75; // 270° sweep
-      var fillLen = arc * avg / 100;
-      var emptyLen = arc - fillLen;
-      // Color by utilization
+      // Arc fill = % FREE so more arc = more capacity available (consistent with center label)
       var clr = avg>=80 ? 'var(--bccf-danger)' : avg>=50 ? 'var(--bccf-warning)' : 'var(--bccf-success)';
       // Arc starts at 135° (bottom-left), sweeps 270°
-      // SVG path for 270° arc:
       var startAngle = 135 * Math.PI / 180;
       var sweepAngle = 270 * Math.PI / 180;
       var endAngle = startAngle + sweepAngle;
       function arcPt(a) { return [cx + r*Math.cos(a), cy + r*Math.sin(a)]; }
       var s = arcPt(startAngle), e = arcPt(endAngle);
       var trackPath = 'M '+s[0].toFixed(1)+','+s[1].toFixed(1)+' A '+r+','+r+' 0 1,1 '+e[0].toFixed(1)+','+e[1].toFixed(1);
-      // Fill arc endpoint
-      var fillAngle = startAngle + sweepAngle * avg / 100;
+      // Fill arc endpoint — use avail (% free) so arc length matches center label
+      var fillAngle = startAngle + sweepAngle * avail / 100;
       var fe = arcPt(fillAngle);
-      var largeArc = (sweepAngle * avg / 100) > Math.PI ? 1 : 0;
+      var largeArc = (sweepAngle * avail / 100) > Math.PI ? 1 : 0;
       var fillPath = 'M '+s[0].toFixed(1)+','+s[1].toFixed(1)+' A '+r+','+r+' 0 '+largeArc+',1 '+fe[0].toFixed(1)+','+fe[1].toFixed(1);
 
       html += '<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">'
@@ -559,7 +593,7 @@
 
     // ── Header runway card ───────────────────────────────────────────────
     var pctNow = curNx / maxNx;
-    var clrNow = pctNow >= 0.6 ? 'var(--bccf-success)' : pctNow >= 0.2 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
+    var clrNow = pctNow >= 0.5 ? 'var(--bccf-success)' : pctNow >= 0.2 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
     var h = '<div style="display:flex;gap:1.25rem;align-items:baseline;flex-wrap:wrap;margin-bottom:5px;">';
     h += '<div><span style="font-size:1.55rem;font-weight:700;font-family:\'JetBrains Mono\',monospace;letter-spacing:-0.5px;color:' + clrNow + ';">' + curNx.toFixed(1) + 'x</span>'
        + '<span style="font-size:0.72rem;color:var(--pico-muted-color);margin-left:3px;">now</span></div>';
@@ -585,9 +619,9 @@
       var bh = Math.max(1.5, pct * pH);
       var x = (pL + i * barW).toFixed(1);
       var y = (pT + pH - bh).toFixed(1);
-      var clr = pct >= 0.6 ? 'var(--bccf-success)' : pct >= 0.2 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
-      // Fade bars further in the future; highlight the "now" bar
-      var op = i === 0 ? '1' : i <= 6 ? '0.72' : '0.5';
+      var clr = pct >= 0.5 ? 'var(--bccf-success)' : pct >= 0.2 ? 'var(--bccf-warning)' : 'var(--bccf-danger)';
+      // "Now" bar full opacity, all future bars uniform to avoid implying uncertainty by distance
+      var op = i === 0 ? '1' : '0.72';
       var dateStr = i === 0 ? 'Now' : new Date(now + i * slotMs).toLocaleDateString('en', {weekday:'short', month:'short', day:'numeric', hour:'numeric', hour12:true});
       bars += '<rect x="' + x + '" y="' + y + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" fill="' + clr + '" opacity="' + op + '" rx="1.5">'
             + '<title>' + esc(dateStr) + ': ' + nx.toFixed(1) + 'x (' + Math.round(pct * 100) + '% of max)</title></rect>';
@@ -617,6 +651,57 @@
                + '</div>';
 
     document.getElementById('pool-capacity-content').innerHTML = h + svg + legend;
+  }
+
+  // ── Binding constraint indicator ─────────────────────────────────────────
+  function renderBindingConstraint() {
+    var el = document.getElementById('pool-binding-constraint');
+    if (!el) return;
+    var groups = {};
+    poolData.accounts.forEach(function(a) {
+      if (a.paused) return;
+      a.windows.forEach(function(w) {
+        if (!groups[w.label]) groups[w.label] = {sum: 0, cnt: 0, at_risk: 0};
+        groups[w.label].sum += w.pct;
+        groups[w.label].cnt++;
+        if (w.pct >= 80) groups[w.label].at_risk++;
+      });
+    });
+    var labels = Object.keys(groups);
+    if (!labels.length) { el.innerHTML = ''; return; }
+    var binding = labels.reduce(function(best, l) {
+      return (groups[l].sum / groups[l].cnt) > (groups[best].sum / groups[best].cnt) ? l : best;
+    });
+    var g = groups[binding];
+    var avg = Math.round(g.sum / g.cnt);
+    var avail = 100 - avg;
+    var clr = avg >= 80 ? 'var(--bccf-danger)' : avg >= 50 ? 'var(--bccf-warning)' : 'var(--bccf-success)';
+    var riskTxt = g.at_risk > 0 ? ' &middot; <strong style="color:var(--bccf-danger);">' + g.at_risk + '/' + g.cnt + ' at risk</strong>' : '';
+    el.innerHTML = '&mdash; binding: <span style="color:' + clr + ';font-weight:600;">' + esc(binding) + '</span> ' + avail + '% free' + riskTxt;
+  }
+
+  // ── Per-account dot distribution on Bars ─────────────────────────────────
+  function renderBarDots() {
+    document.querySelectorAll('.pool-bar-dots').forEach(function(dotEl) {
+      var wrap = dotEl.closest('[data-win]');
+      if (!wrap) return;
+      var winLabel = wrap.getAttribute('data-win');
+      var pcts = [];
+      poolData.accounts.forEach(function(a) {
+        if (a.paused) return;
+        a.windows.forEach(function(w) { if (w.label === winLabel) pcts.push(w.pct); });
+      });
+      if (!pcts.length) return;
+      var h = '';
+      pcts.forEach(function(pct) {
+        var clr = pct >= 80 ? 'var(--bccf-danger)' : pct >= 50 ? 'var(--bccf-warning)' : 'var(--bccf-success)';
+        h += '<div style="position:absolute;left:' + pct + '%;top:50%;transform:translate(-50%,-50%);'
+           + 'width:7px;height:7px;border-radius:50%;background:' + clr + ';'
+           + 'border:1.5px solid var(--pico-background-color);box-shadow:0 0 0 0.5px ' + clr + ';pointer-events:auto;" '
+           + 'title="' + esc(pct + '% used') + '"></div>';
+      });
+      dotEl.innerHTML = h;
+    });
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────
