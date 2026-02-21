@@ -144,6 +144,7 @@ fn seed_test_data(pool: &DbPool) {
         reserve_hard: false,
         subscription_tier: None,
         email: None,
+    refresh_token_updated_at: None,
     };
 
     let acc2 = Account {
@@ -175,6 +176,7 @@ fn seed_test_data(pool: &DbPool) {
         reserve_hard: false,
         subscription_tier: None,
         email: None,
+    refresh_token_updated_at: None,
     };
 
     account_repo::create(&conn, &acc1).unwrap();

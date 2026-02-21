@@ -25,6 +25,10 @@ use crate::types::{RateLimitInfo, TokenRefreshResult, UsageInfo};
 /// OAuth token endpoint (always console.anthropic.com).
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 
+/// Profile endpoint — returns organization type, rate_limit_tier, and billing info.
+/// Discovered by inspecting the Claude Code CLI source.
+const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+
 /// OAuth redirect URI (Anthropic's registered callback — may redirect to platform.claude.com).
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 
@@ -234,7 +238,12 @@ impl ClaudeOAuthProvider {
             )));
         }
 
-        Self::parse_token_response(&text)
+        let mut result = Self::parse_token_response(&text)?;
+
+        // Fetch subscription tier immediately after the initial code exchange.
+        result.subscription_tier = self.fetch_subscription_tier(&result.access_token).await;
+
+        Ok(result)
     }
 
     /// Refresh access token using a refresh token.
@@ -279,6 +288,41 @@ impl ClaudeOAuthProvider {
         Self::parse_token_response(&text)
     }
 
+    /// Fetch subscription tier from the profile endpoint using the access token.
+    ///
+    /// Returns a normalized plan name (e.g. "Team", "Pro", "Max 5x") or `None`
+    /// if the request fails or the response doesn't contain expected fields.
+    async fn fetch_subscription_tier(&self, access_token: &str) -> Option<String> {
+        let resp = self
+            .http_client
+            .get(PROFILE_URL)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            debug!(status = %resp.status(), "Profile endpoint returned non-success status");
+            return None;
+        }
+
+        let json: serde_json::Value = resp.json().await.ok()?;
+
+        // Prefer rate_limit_tier (more granular); fall back to organization_type.
+        let tier = json["organization"]["rate_limit_tier"]
+            .as_str()
+            .map(Self::normalize_rate_limit_tier)
+            .or_else(|| {
+                json["organization"]["organization_type"]
+                    .as_str()
+                    .map(Self::normalize_organization_type)
+            });
+
+        debug!(tier = ?tier, "Fetched subscription tier from profile endpoint");
+        tier
+    }
+
     /// Parse the token endpoint JSON response.
     fn parse_token_response(text: &str) -> Result<TokenRefreshResult, ProviderError> {
         let json: serde_json::Value = serde_json::from_str(text).map_err(ProviderError::Json)?;
@@ -297,17 +341,8 @@ impl ClaudeOAuthProvider {
             .unwrap_or_default()
             .to_string();
 
-        // Extract subscription tier from rateLimitTier (preferred) or subscriptionType.
-        // Known rateLimitTier values: "default_claude_max_20x", "default_claude_max_5x",
-        // "default_claude_pro", "default_claude_team_*", "default_claude_enterprise_*".
-        let subscription_tier = json["rateLimitTier"]
-            .as_str()
-            .map(Self::normalize_rate_limit_tier)
-            .or_else(|| {
-                json["subscriptionType"]
-                    .as_str()
-                    .map(Self::normalize_subscription_type)
-            });
+        // Subscription tier is NOT in the token response — it is fetched separately
+        // from the profile endpoint (PROFILE_URL) after tokens are obtained.
 
         // Extract email from account.email_address (present in every token response).
         let email = json["account"]["email_address"]
@@ -318,7 +353,7 @@ impl ClaudeOAuthProvider {
             access_token,
             expires_at,
             refresh_token,
-            subscription_tier,
+            subscription_tier: None,
             email,
         })
     }
@@ -348,16 +383,18 @@ impl ClaudeOAuthProvider {
         }
     }
 
-    /// Map a `subscriptionType` value to a human-readable plan name.
-    fn normalize_subscription_type(st: &str) -> String {
-        match st {
-            "max" => "Max".to_string(),
-            "pro" => "Pro".to_string(),
-            "team" => "Team".to_string(),
-            "enterprise" => "Enterprise".to_string(),
-            "free" => "Free".to_string(),
+    /// Map an `organization_type` value from the profile endpoint to a human-readable plan name.
+    /// Known values: "claude_max", "claude_pro", "claude_team", "claude_enterprise".
+    fn normalize_organization_type(org_type: &str) -> String {
+        match org_type {
+            "claude_max" => "Max".to_string(),
+            "claude_pro" => "Pro".to_string(),
+            "claude_team" => "Team".to_string(),
+            "claude_enterprise" => "Enterprise".to_string(),
             _ => {
-                let mut chars = st.chars();
+                // Strip "claude_" prefix if present and title-case
+                let s = org_type.strip_prefix("claude_").unwrap_or(org_type);
+                let mut chars = s.chars();
                 match chars.next() {
                     None => String::new(),
                     Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
@@ -493,6 +530,10 @@ impl Provider for ClaudeOAuthProvider {
         if result.refresh_token.is_empty() {
             result.refresh_token = account.refresh_token.clone();
         }
+
+        // Fetch subscription tier from the profile endpoint using the new access token.
+        // This is a best-effort call — if it fails, we preserve any previously stored tier.
+        result.subscription_tier = self.fetch_subscription_tier(&result.access_token).await;
 
         Ok(result)
     }
