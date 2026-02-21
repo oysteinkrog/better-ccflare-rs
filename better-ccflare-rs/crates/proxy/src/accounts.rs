@@ -1063,6 +1063,7 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+        refresh_token_updated_at: None,
         };
         account_repo::create(&conn, &account).unwrap();
     }
@@ -1365,6 +1366,7 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+        refresh_token_updated_at: None,
         };
 
         let resp = account_to_response(&account, now);
@@ -1404,6 +1406,7 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+        refresh_token_updated_at: None,
         };
 
         let resp = account_to_response(&account, now);

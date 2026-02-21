@@ -403,6 +403,7 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+            refresh_token_updated_at: None,
         }
     }
 

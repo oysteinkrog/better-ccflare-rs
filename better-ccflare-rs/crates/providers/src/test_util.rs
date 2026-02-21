@@ -33,6 +33,7 @@ pub fn test_account_with_key(api_key: &str) -> Account {
         reserve_hard: false,
         subscription_tier: None,
         email: None,
+        refresh_token_updated_at: None,
     }
 }
 
