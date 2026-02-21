@@ -18,6 +18,7 @@ use serde::Deserialize;
 
 use bccf_core::AppState;
 use bccf_database::DbPool;
+use bccf_providers::token_health::check_token_health;
 
 use crate::templates::*;
 
@@ -311,15 +312,12 @@ async fn accounts_table_partial(
     let mut rows: Vec<AccountRow> = accounts
         .iter()
         .map(|a| {
-            let token_status_str = match a.expires_at {
-                Some(exp) if exp > now => "valid".to_string(),
-                Some(_) => "expired".to_string(),
-                None => {
-                    if a.api_key.is_some() {
-                        "valid".to_string()
-                    } else {
-                        "expired".to_string()
-                    }
+            let token_status_str = {
+                let health = check_token_health(a, now);
+                if health.requires_reauth {
+                    "expired".to_string()
+                } else {
+                    "valid".to_string()
                 }
             };
 
