@@ -504,11 +504,9 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
             }
         };
 
-        // Prefer rate_limit_tier; fall back to organization_type
-        let tier = json["organization"]["rate_limit_tier"]
-            .as_str()
-            .map(normalize_rate_limit_tier)
-            .or_else(|| json["organization"]["organization_type"].as_str().map(normalize_org_type));
+        let org_type = json["organization"]["organization_type"].as_str();
+        let rate_limit_tier = json["organization"]["rate_limit_tier"].as_str();
+        let tier = build_tier_label(org_type, rate_limit_tier);
 
         let Some(tier) = tier else {
             continue;
@@ -526,45 +524,40 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
     }
 }
 
-fn normalize_rate_limit_tier(s: &str) -> String {
-    // "default_claude_max_5x" → "Max 5x", "default_claude_max_20x" → "Max 20x", etc.
-    let s = s.strip_prefix("default_claude_").unwrap_or(s);
-    let s = s.strip_prefix("claude_").unwrap_or(s);
-    // Convert "max_5x" → "Max 5x"
-    let mut parts = s.splitn(2, '_');
-    match (parts.next(), parts.next()) {
-        (Some(prefix), Some(suffix)) => {
-            let mut p = prefix.chars();
-            let prefix_cap = match p.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().collect::<String>() + p.as_str(),
-            };
-            format!("{prefix_cap} {suffix}")
+fn build_tier_label(org_type: Option<&str>, rate_limit_tier: Option<&str>) -> Option<String> {
+    let rate_label = rate_limit_tier.and_then(|t| {
+        let t = t.strip_prefix("default_claude_").unwrap_or(t);
+        let t = t.strip_prefix("claude_").unwrap_or(t);
+        if let Some(rest) = t.strip_prefix("max_") {
+            return Some(format!("Max {rest}"));
         }
-        _ => {
-            let mut c = s.chars();
-            match c.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-            }
+        match t {
+            "pro" => Some("Pro".to_string()),
+            "max" => Some("Max".to_string()),
+            _ if t.contains("max") => Some("Max".to_string()),
+            _ => None,
         }
-    }
-}
+    });
 
-fn normalize_org_type(s: &str) -> String {
-    match s {
-        "claude_max" => "Max".to_string(),
-        "claude_pro" => "Pro".to_string(),
-        "claude_team" => "Team".to_string(),
-        "claude_enterprise" => "Enterprise".to_string(),
-        _ => {
-            let s = s.strip_prefix("claude_").unwrap_or(s);
-            let mut c = s.chars();
-            match c.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-            }
-        }
+    match org_type {
+        Some("claude_team") => Some(
+            rate_label
+                .map(|r| format!("Team {r}"))
+                .unwrap_or_else(|| "Team".to_string()),
+        ),
+        Some("claude_enterprise") => Some("Enterprise".to_string()),
+        Some("claude_pro") => Some("Pro".to_string()),
+        Some("claude_max") | Some(_) => rate_label.or_else(|| {
+            org_type.map(|o| {
+                let s = o.strip_prefix("claude_").unwrap_or(o);
+                let mut c = s.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            })
+        }),
+        None => rate_label,
     }
 }
 

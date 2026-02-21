@@ -309,15 +309,9 @@ impl ClaudeOAuthProvider {
 
         let json: serde_json::Value = resp.json().await.ok()?;
 
-        // Prefer rate_limit_tier (more granular); fall back to organization_type.
-        let tier = json["organization"]["rate_limit_tier"]
-            .as_str()
-            .map(Self::normalize_rate_limit_tier)
-            .or_else(|| {
-                json["organization"]["organization_type"]
-                    .as_str()
-                    .map(Self::normalize_organization_type)
-            });
+        let org_type = json["organization"]["organization_type"].as_str();
+        let rate_limit_tier = json["organization"]["rate_limit_tier"].as_str();
+        let tier = Self::build_tier_label(org_type, rate_limit_tier);
 
         debug!(tier = ?tier, "Fetched subscription tier from profile endpoint");
         tier
@@ -358,48 +352,55 @@ impl ClaudeOAuthProvider {
         })
     }
 
-    /// Map a `rateLimitTier` value to a human-readable plan name.
-    fn normalize_rate_limit_tier(tier: &str) -> String {
-        match tier {
-            "default_claude_max_20x" => "Max 20x".to_string(),
-            "default_claude_max_5x" => "Max 5x".to_string(),
-            "default_claude_pro" => "Pro".to_string(),
-            _ if tier.contains("team_premium") => "Team Premium".to_string(),
-            _ if tier.contains("team") => "Team".to_string(),
-            _ if tier.contains("enterprise") => "Enterprise".to_string(),
-            _ if tier.contains("max_20") => "Max 20x".to_string(),
-            _ if tier.contains("max_5") || tier.contains("max_x5") => "Max 5x".to_string(),
-            _ if tier.contains("max") => "Max".to_string(),
-            _ if tier.contains("pro") => "Pro".to_string(),
-            _ => {
-                // Strip "default_claude_" prefix if present and title-case
-                let s = tier.strip_prefix("default_claude_").unwrap_or(tier);
-                let mut chars = s.chars();
-                match chars.next() {
-                    None => String::new(),
-                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-                }
+    /// Build a human-readable tier label combining organization type and rate limit tier.
+    ///
+    /// Examples:
+    /// - ("claude_team",       "default_claude_max_5x")  → "Team Max 5x"
+    /// - ("claude_team",       "default_claude_max_20x") → "Team Max 20x"
+    /// - ("claude_max",        "default_claude_max_20x") → "Max 20x"
+    /// - ("claude_pro",        "default_claude_pro")     → "Pro"
+    /// - ("claude_enterprise", ...)                      → "Enterprise"
+    fn build_tier_label(org_type: Option<&str>, rate_limit_tier: Option<&str>) -> Option<String> {
+        // Derive a rate label from the rate_limit_tier field (e.g. "Max 5x", "Max 20x", "Pro").
+        let rate_label = rate_limit_tier.and_then(|t| {
+            let t = t.strip_prefix("default_claude_").unwrap_or(t);
+            let t = t.strip_prefix("claude_").unwrap_or(t);
+            // "max_5x" / "max_20x" etc.
+            if let Some(rest) = t.strip_prefix("max_") {
+                return Some(format!("Max {rest}"));
             }
-        }
-    }
+            match t {
+                "pro" => Some("Pro".to_string()),
+                "max" => Some("Max".to_string()),
+                _ if t.contains("max") => Some("Max".to_string()),
+                _ => None,
+            }
+        });
 
-    /// Map an `organization_type` value from the profile endpoint to a human-readable plan name.
-    /// Known values: "claude_max", "claude_pro", "claude_team", "claude_enterprise".
-    fn normalize_organization_type(org_type: &str) -> String {
         match org_type {
-            "claude_max" => "Max".to_string(),
-            "claude_pro" => "Pro".to_string(),
-            "claude_team" => "Team".to_string(),
-            "claude_enterprise" => "Enterprise".to_string(),
-            _ => {
-                // Strip "claude_" prefix if present and title-case
-                let s = org_type.strip_prefix("claude_").unwrap_or(org_type);
-                let mut chars = s.chars();
-                match chars.next() {
-                    None => String::new(),
-                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-                }
+            Some("claude_team") => {
+                // Team accounts: prefix the rate label if we have one.
+                let label = rate_label
+                    .map(|r| format!("Team {r}"))
+                    .unwrap_or_else(|| "Team".to_string());
+                Some(label)
             }
+            Some("claude_enterprise") => Some("Enterprise".to_string()),
+            Some("claude_pro") => Some("Pro".to_string()),
+            Some("claude_max") | Some(_) => {
+                // Personal Max (or unknown type): just use rate_label or org-type fallback.
+                rate_label.or_else(|| {
+                    org_type.map(|o| {
+                        let s = o.strip_prefix("claude_").unwrap_or(o);
+                        let mut c = s.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+                        }
+                    })
+                })
+            }
+            None => rate_label,
         }
     }
 }
