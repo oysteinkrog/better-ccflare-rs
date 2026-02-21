@@ -975,6 +975,7 @@ pub async fn create_account(
         reserve_hard: false,
         subscription_tier: None,
         email: None,
+        refresh_token_updated_at: None,
     };
 
     if let Err(e) = account_repo::create(&conn, &account) {

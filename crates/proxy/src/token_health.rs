@@ -116,21 +116,27 @@ pub fn check_refresh_token_health(account: &Account, now: i64) -> TokenHealthSta
 
     let has_refresh_token = true;
 
-    // No creation date — can't estimate age
-    if account.created_at == 0 {
+    // Use refresh_token_updated_at if available (tracks actual re-auth time),
+    // otherwise fall back to created_at as a conservative estimate.
+    let token_issued_at = account
+        .refresh_token_updated_at
+        .filter(|&t| t > 0)
+        .unwrap_or(account.created_at);
+
+    // Unknown token age — can't estimate
+    if token_issued_at == 0 {
         return TokenHealthStatus {
             has_refresh_token,
             status: HealthStatus::Warning,
-            message: "Refresh token has unknown creation date - recommend re-authentication"
-                .to_string(),
+            message: "Refresh token has unknown age - recommend re-authentication".to_string(),
             requires_reauth: true,
             ..base
         };
     }
 
-    let age_ms = now - account.created_at;
+    let age_ms = now - token_issued_at;
     let age_days = age_ms / (24 * 60 * 60 * 1000);
-    let estimated_expiration = account.created_at + REFRESH_TOKEN_MAX_AGE_MS;
+    let estimated_expiration = token_issued_at + REFRESH_TOKEN_MAX_AGE_MS;
     let days_until_expiration =
         ((estimated_expiration - now) as f64 / (24.0 * 60.0 * 60.0 * 1000.0)).ceil() as i64;
 
