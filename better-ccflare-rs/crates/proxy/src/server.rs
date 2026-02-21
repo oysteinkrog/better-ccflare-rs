@@ -350,6 +350,9 @@ async fn run_startup_maintenance(state: &AppState) {
     // Proactively refresh expired OAuth tokens
     refresh_expired_tokens(state, pool, now).await;
 
+    // Backfill subscription tier for OAuth accounts that don't have one yet
+    backfill_subscription_tiers(pool).await;
+
     info!("Startup maintenance complete");
 }
 
@@ -435,6 +438,133 @@ async fn refresh_expired_tokens(state: &AppState, pool: &DbPool, now: i64) {
 
     if refreshed > 0 {
         info!("Refreshed {refreshed} OAuth tokens on startup");
+    }
+}
+
+/// Fetch subscription tier from Anthropic's profile endpoint for all OAuth
+/// accounts that have a valid access token but no subscription tier recorded.
+async fn backfill_subscription_tiers(pool: &DbPool) {
+    use bccf_database::repositories::account as account_repo;
+
+    const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+
+    let accounts = match pool.get() {
+        Ok(conn) => match account_repo::find_all(&conn) {
+            Ok(accs) => accs,
+            Err(e) => {
+                warn!("backfill_subscription_tiers: failed to load accounts: {e}");
+                return;
+            }
+        },
+        Err(e) => {
+            warn!("backfill_subscription_tiers: failed to get DB connection: {e}");
+            return;
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let mut updated = 0u32;
+
+    for account in accounts {
+        // Only claude-oauth accounts with a valid access_token and no tier yet
+        if account.provider != "claude-oauth" {
+            continue;
+        }
+        if account.subscription_tier.is_some() {
+            continue;
+        }
+        let Some(access_token) = &account.access_token else {
+            continue;
+        };
+
+        let resp = match client
+            .get(PROFILE_URL)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(account = %account.name, error = %e, "backfill: profile request failed");
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            warn!(account = %account.name, status = %resp.status(), "backfill: profile endpoint returned error");
+            continue;
+        }
+
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!(account = %account.name, error = %e, "backfill: failed to parse profile response");
+                continue;
+            }
+        };
+
+        // Prefer rate_limit_tier; fall back to organization_type
+        let tier = json["organization"]["rate_limit_tier"]
+            .as_str()
+            .map(normalize_rate_limit_tier)
+            .or_else(|| json["organization"]["organization_type"].as_str().map(normalize_org_type));
+
+        let Some(tier) = tier else {
+            continue;
+        };
+
+        let Ok(conn) = pool.get() else { continue };
+        if account_repo::set_subscription_tier(&conn, &account.id, Some(&tier)).is_ok() {
+            info!(account = %account.name, tier = %tier, "Backfilled subscription tier");
+            updated += 1;
+        }
+    }
+
+    if updated > 0 {
+        info!("Backfilled subscription tier for {updated} accounts");
+    }
+}
+
+fn normalize_rate_limit_tier(s: &str) -> String {
+    // "default_claude_max_5x" → "Max 5x", "default_claude_max_20x" → "Max 20x", etc.
+    let s = s.strip_prefix("default_claude_").unwrap_or(s);
+    let s = s.strip_prefix("claude_").unwrap_or(s);
+    // Convert "max_5x" → "Max 5x"
+    let mut parts = s.splitn(2, '_');
+    match (parts.next(), parts.next()) {
+        (Some(prefix), Some(suffix)) => {
+            let mut p = prefix.chars();
+            let prefix_cap = match p.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + p.as_str(),
+            };
+            format!("{prefix_cap} {suffix}")
+        }
+        _ => {
+            let mut c = s.chars();
+            match c.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        }
+    }
+}
+
+fn normalize_org_type(s: &str) -> String {
+    match s {
+        "claude_max" => "Max".to_string(),
+        "claude_pro" => "Pro".to_string(),
+        "claude_team" => "Team".to_string(),
+        "claude_enterprise" => "Enterprise".to_string(),
+        _ => {
+            let s = s.strip_prefix("claude_").unwrap_or(s);
+            let mut c = s.chars();
+            match c.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        }
     }
 }
 
