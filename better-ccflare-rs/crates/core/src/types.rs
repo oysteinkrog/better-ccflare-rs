@@ -37,6 +37,10 @@ pub struct Account {
     pub subscription_tier: Option<String>,
     /// Email address of the authenticated OAuth user.
     pub email: Option<String>,
+    /// Timestamp (ms) when the refresh token was last issued/rotated.
+    /// Updated on every re-authentication. Used to track refresh token age
+    /// independently of account creation date.
+    pub refresh_token_updated_at: Option<i64>,
 }
 
 /// API response for an account — what clients receive.

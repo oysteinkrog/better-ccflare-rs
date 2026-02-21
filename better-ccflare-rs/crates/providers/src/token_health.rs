@@ -144,8 +144,15 @@ pub fn check_token_health(account: &Account, now: i64) -> TokenHealthStatus {
         };
     }
 
-    // Unknown created_at → can't calculate age
-    if account.created_at == 0 {
+    // Use refresh_token_updated_at if available (tracks actual re-auth time),
+    // otherwise fall back to created_at as a conservative estimate.
+    let token_issued_at = account
+        .refresh_token_updated_at
+        .filter(|&t| t > 0)
+        .unwrap_or(account.created_at);
+
+    // Unknown token age → can't calculate
+    if token_issued_at == 0 {
         return TokenHealthStatus {
             account_id: account.id.clone(),
             account_name: account.name.clone(),
@@ -153,16 +160,16 @@ pub fn check_token_health(account: &Account, now: i64) -> TokenHealthStatus {
             has_refresh_token: true,
             refresh_token_age_days: None,
             status: HealthStatus::Warning,
-            message: "Unknown account creation date — re-authentication recommended".to_string(),
+            message: "Unknown refresh token age — re-authentication recommended".to_string(),
             days_until_expiration: None,
             requires_reauth: true,
         };
     }
 
-    // Calculate age and estimated expiration
-    let age_ms = now - account.created_at;
+    // Calculate age and estimated expiration from when the token was actually issued
+    let age_ms = now - token_issued_at;
     let age_days = age_ms / MS_PER_DAY;
-    let estimated_expiration = account.created_at + REFRESH_TOKEN_MAX_AGE_MS;
+    let estimated_expiration = token_issued_at + REFRESH_TOKEN_MAX_AGE_MS;
     let days_until = ceil_div(estimated_expiration - now, MS_PER_DAY);
 
     let (status, message, requires_reauth) = if days_until <= 0 {

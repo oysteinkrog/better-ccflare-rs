@@ -278,6 +278,20 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
             "REAL NOT NULL DEFAULT 0",
             &cols,
         );
+        add_column_if_missing(
+            conn,
+            "accounts",
+            "refresh_token_updated_at",
+            "INTEGER",
+            &cols,
+        );
+        // Backfill refresh_token_updated_at with created_at for existing accounts.
+        // This is a conservative baseline — will be updated to the actual re-auth
+        // time on next successful token refresh.
+        let _ = conn.execute(
+            "UPDATE accounts SET refresh_token_updated_at = created_at WHERE refresh_token_updated_at IS NULL AND created_at != 0",
+            [],
+        );
         // Auto-detect monthly subscription cost from account name multiplier suffix.
         // Patterns: "- 20x" → $200/mo (Claude Max 20x), "- 6.5x" → $130/mo,
         //           "- 5x" → $100/mo (Claude Max 5x), OAuth default → $20/mo (Pro).

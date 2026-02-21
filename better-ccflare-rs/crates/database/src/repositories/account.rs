@@ -25,7 +25,8 @@ const ACCOUNT_SELECT: &str = "
         COALESCE(reserve_weekly, 0) as reserve_weekly,
         COALESCE(reserve_hard, 0) as reserve_hard,
         subscription_tier,
-        email
+        email,
+        refresh_token_updated_at
     FROM accounts
 ";
 
@@ -64,6 +65,7 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         reserve_hard: row.get::<_, i64>("reserve_hard")? != 0,
         subscription_tier: row.get("subscription_tier")?,
         email: row.get("email")?,
+        refresh_token_updated_at: row.get("refresh_token_updated_at")?,
     })
 }
 
@@ -106,9 +108,14 @@ pub fn update_tokens(
     refresh_token: Option<&str>,
 ) -> Result<(), DbError> {
     if let Some(rt) = refresh_token {
+        // Stamp refresh_token_updated_at whenever a new refresh token is stored.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
         conn.execute(
-            "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3 WHERE id = ?4",
-            params![access_token, expires_at, rt, account_id],
+            "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3, refresh_token_updated_at = ?4 WHERE id = ?5",
+            params![access_token, expires_at, rt, now_ms, account_id],
         )?;
     } else {
         conn.execute(
@@ -382,10 +389,11 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             rate_limit_reset, rate_limit_status, rate_limit_remaining,
             priority, auto_fallback_enabled, auto_refresh_enabled,
             custom_endpoint, model_mappings, reserve_5h, reserve_weekly, reserve_hard,
-            subscription_tier, email
+            subscription_tier, email, refresh_token_updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+            ?29
         )",
         params![
             account.id,
@@ -416,6 +424,7 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             account.reserve_hard as i64,
             account.subscription_tier,
             account.email,
+            account.refresh_token_updated_at,
         ],
     )?;
     Ok(())
@@ -463,6 +472,7 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+            refresh_token_updated_at: None,
         }
     }
 

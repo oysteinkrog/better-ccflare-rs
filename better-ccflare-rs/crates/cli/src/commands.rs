@@ -133,6 +133,7 @@ pub fn add_account(
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+            refresh_token_updated_at: None,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;
@@ -201,6 +202,7 @@ pub fn add_account(
             reserve_hard: false,
             subscription_tier: None,
             email: None,
+            refresh_token_updated_at: None,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;
