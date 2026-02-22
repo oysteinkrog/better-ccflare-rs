@@ -340,9 +340,19 @@ pub struct PollableAccount {
     pub id: String,
     pub provider: String,
     pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub client_id: Option<String>,
     pub api_key: Option<String>,
     pub custom_endpoint: Option<String>,
     pub paused: bool,
+}
+
+/// Refreshed token data returned by a successful token refresh.
+#[derive(Debug)]
+pub struct RefreshedToken {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: Option<i64>,
 }
 
 /// Trait for fetching accounts eligible for usage polling.
@@ -350,17 +360,26 @@ pub struct PollableAccount {
 pub trait AccountSource: Send + Sync + 'static {
     /// Return accounts that support usage tracking.
     fn get_pollable_accounts(&self) -> Vec<PollableAccount>;
+    /// Persist a freshly-refreshed token pair back to the database.
+    fn persist_refreshed_token(&self, account_id: &str, token: &RefreshedToken);
 }
 
 // ---------------------------------------------------------------------------
 // Fetcher functions
 // ---------------------------------------------------------------------------
 
+/// Result of fetching Anthropic usage data — distinguishes auth failures from other errors.
+pub enum AnthropicUsageResult {
+    Ok(AnthropicUsageData),
+    Unauthorized,
+    Error,
+}
+
 /// Fetch Anthropic usage data from the OAuth usage endpoint.
 pub async fn fetch_anthropic_usage(
     client: &reqwest::Client,
     access_token: &str,
-) -> Option<AnthropicUsageData> {
+) -> AnthropicUsageResult {
     let resp = client
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {access_token}"))
@@ -371,8 +390,18 @@ pub async fn fetch_anthropic_usage(
 
     match resp {
         Ok(r) if r.status().is_success() => {
-            let data: serde_json::Map<String, JsonValue> = r.json().await.ok()?;
-            Some(data)
+            match r.json::<serde_json::Map<String, JsonValue>>().await {
+                Ok(data) => AnthropicUsageResult::Ok(data),
+                Err(_) => AnthropicUsageResult::Error,
+            }
+        }
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
+            let body = r.text().await.unwrap_or_default();
+            warn!(
+                body = body.chars().take(200).collect::<String>(),
+                "Anthropic usage fetch: token expired (401)"
+            );
+            AnthropicUsageResult::Unauthorized
         }
         Ok(r) => {
             let status = r.status();
@@ -382,10 +411,67 @@ pub async fn fetch_anthropic_usage(
                 body = body.chars().take(200).collect::<String>(),
                 "Failed to fetch Anthropic usage data"
             );
-            None
+            AnthropicUsageResult::Error
         }
         Err(e) => {
             warn!(error = %e, "Error fetching Anthropic usage data");
+            AnthropicUsageResult::Error
+        }
+    }
+}
+
+const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+
+/// Attempt to refresh an OAuth access token using the stored refresh token.
+///
+/// Returns `Some(RefreshedToken)` on success, `None` on any failure.
+async fn refresh_oauth_token(
+    client: &reqwest::Client,
+    refresh_token: &str,
+    client_id: &str,
+) -> Option<RefreshedToken> {
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+    });
+
+    let resp = client
+        .post(TOKEN_URL)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let json: JsonValue = r.json().await.ok()?;
+            let access_token = json["access_token"].as_str()?.to_string();
+            let new_refresh = json["refresh_token"]
+                .as_str()
+                .unwrap_or(refresh_token)
+                .to_string();
+            let expires_at = json["expires_in"].as_i64().map(|secs| {
+                chrono::Utc::now().timestamp() + secs
+            });
+            Some(RefreshedToken {
+                access_token,
+                refresh_token: new_refresh,
+                expires_at,
+            })
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            warn!(
+                %status,
+                body = body.chars().take(200).collect::<String>(),
+                "Failed to refresh OAuth token for usage polling"
+            );
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, "Error refreshing OAuth token for usage polling");
             None
         }
     }
@@ -555,13 +641,14 @@ async fn poll_all_accounts(
     debug!(count = accounts.len(), "Polling usage for accounts");
 
     for account in accounts {
-        poll_single_account(&account, cache, client).await;
+        poll_single_account(&account, source, cache, client).await;
     }
 }
 
 /// Poll usage data for a single account with retry logic.
 async fn poll_single_account(
     account: &PollableAccount,
+    source: &Arc<dyn AccountSource>,
     cache: &UsageCache,
     client: &reqwest::Client,
 ) {
@@ -586,9 +673,61 @@ async fn poll_single_account(
         return;
     }
 
-    // Try up to MAX_RETRIES times with a brief pause between attempts.
-    // Usage data is non-critical — fail fast and wait for the next 90s cycle
-    // rather than tying up the poll loop with a long backoff.
+    // For OAuth providers, try fetching usage; on 401 refresh the token and retry once.
+    if account.provider == "claude-oauth" || account.provider == "anthropic" {
+        let result = fetch_anthropic_usage(client, token).await;
+        match result {
+            AnthropicUsageResult::Ok(data) => {
+                debug!(
+                    account_id = %account.id,
+                    utilization = ?AnyUsageData::Anthropic(data.clone()).utilization(),
+                    "Fetched Anthropic usage data"
+                );
+                cache.set(&account.id, AnyUsageData::Anthropic(data));
+                return;
+            }
+            AnthropicUsageResult::Unauthorized => {
+                // Token expired — try to refresh and retry once
+                if let (Some(rt), Some(cid)) = (
+                    account.refresh_token.as_deref(),
+                    account.client_id.as_deref(),
+                ) {
+                    debug!(account_id = %account.id, "Usage poll got 401, refreshing token");
+                    if let Some(refreshed) = refresh_oauth_token(client, rt, cid).await {
+                        info!(account_id = %account.id, "Token refreshed for usage polling");
+                        source.persist_refreshed_token(&account.id, &refreshed);
+                        // Retry with the new token
+                        if let AnthropicUsageResult::Ok(data) =
+                            fetch_anthropic_usage(client, &refreshed.access_token).await
+                        {
+                            cache.set(&account.id, AnyUsageData::Anthropic(data));
+                            return;
+                        }
+                    }
+                } else {
+                    debug!(
+                        account_id = %account.id,
+                        "No refresh_token/client_id available, cannot refresh"
+                    );
+                }
+                warn!(
+                    account_id = %account.id,
+                    provider = %account.provider,
+                    "Usage fetch failed (token expired, refresh failed or unavailable)"
+                );
+            }
+            AnthropicUsageResult::Error => {
+                warn!(
+                    account_id = %account.id,
+                    provider = %account.provider,
+                    "Usage fetch failed, will retry next cycle"
+                );
+            }
+        }
+        return;
+    }
+
+    // Non-OAuth providers: simple retry loop
     for attempt in 1..=MAX_RETRIES {
         let result = fetch_usage_for_provider(
             &account.provider,
@@ -636,15 +775,12 @@ async fn fetch_usage_for_provider(
     custom_endpoint: Option<&str>,
 ) -> Option<AnyUsageData> {
     match provider {
-        "claude-oauth" | "anthropic" => fetch_anthropic_usage(client, token)
-            .await
-            .map(AnyUsageData::Anthropic),
         "nanogpt" => fetch_nanogpt_usage(client, token, custom_endpoint)
             .await
             .map(AnyUsageData::NanoGpt),
         "zai" => fetch_zai_usage(client, token).await.map(AnyUsageData::Zai),
         _ => {
-            debug!(provider, "Provider does not support usage polling");
+            debug!(provider, "Provider does not support usage polling via this path");
             None
         }
     }
@@ -852,6 +988,7 @@ mod tests {
         fn get_pollable_accounts(&self) -> Vec<PollableAccount> {
             self.accounts.clone()
         }
+        fn persist_refreshed_token(&self, _account_id: &str, _token: &RefreshedToken) {}
     }
 
     #[tokio::test]
@@ -868,35 +1005,41 @@ mod tests {
 
     #[tokio::test]
     async fn poll_single_account_no_token_skips() {
+        let source: Arc<dyn AccountSource> = Arc::new(MockAccountSource { accounts: vec![] });
         let cache = UsageCache::new();
         let client = reqwest::Client::new();
         let account = PollableAccount {
             id: "acc1".to_string(),
             provider: "zai".to_string(),
             access_token: None,
+            refresh_token: None,
+            client_id: None,
             api_key: None,
             custom_endpoint: None,
             paused: false,
         };
 
-        poll_single_account(&account, &cache, &client).await;
+        poll_single_account(&account, &source, &cache, &client).await;
         assert!(cache.get("acc1").is_none());
     }
 
     #[tokio::test]
     async fn poll_single_account_empty_token_skips() {
+        let source: Arc<dyn AccountSource> = Arc::new(MockAccountSource { accounts: vec![] });
         let cache = UsageCache::new();
         let client = reqwest::Client::new();
         let account = PollableAccount {
             id: "acc1".to_string(),
             provider: "zai".to_string(),
             access_token: Some("  ".to_string()),
+            refresh_token: None,
+            client_id: None,
             api_key: None,
             custom_endpoint: None,
             paused: false,
         };
 
-        poll_single_account(&account, &cache, &client).await;
+        poll_single_account(&account, &source, &cache, &client).await;
         assert!(cache.get("acc1").is_none());
     }
 

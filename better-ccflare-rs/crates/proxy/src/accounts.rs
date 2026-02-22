@@ -17,6 +17,7 @@ use bccf_core::types::{Account, AccountResponse, TokenStatus};
 use bccf_core::AppState;
 use bccf_database::repositories::account as account_repo;
 use bccf_database::DbPool;
+use bccf_providers::usage_polling::{AnyUsageData, UsageCache};
 
 /// Check if a provider uses API keys (not OAuth).
 fn is_api_key_provider(provider: &str) -> bool {
@@ -31,7 +32,7 @@ fn is_api_key_provider(provider: &str) -> bool {
 const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
 
 /// Convert an `Account` to the API response format.
-fn account_to_response(account: &Account, now: i64) -> AccountResponse {
+fn account_to_response(account: &Account, now: i64, usage: Option<&AnyUsageData>) -> AccountResponse {
     let token_status = if is_api_key_provider(&account.provider) {
         TokenStatus::ApiKey
     } else {
@@ -105,10 +106,9 @@ fn account_to_response(account: &Account, now: i64) -> AccountResponse {
         auto_refresh_enabled: account.auto_refresh_enabled,
         custom_endpoint: account.custom_endpoint.clone(),
         model_mappings,
-        // Usage data requires provider-specific fetching — not included in this phase
-        usage_utilization: None,
-        usage_window: None,
-        usage_data: None,
+        usage_utilization: usage.and_then(|u| u.utilization()),
+        usage_window: usage.and_then(|u| u.representative_window()),
+        usage_data: usage.and_then(|u| u.to_json()),
         has_refresh_token: !account.refresh_token.is_empty(),
         reserve_5h: account.reserve_5h,
         reserve_weekly: account.reserve_weekly,
@@ -175,9 +175,13 @@ pub async fn list_accounts(State(state): State<Arc<AppState>>) -> Response {
     };
 
     let now = chrono::Utc::now().timestamp_millis();
+    let usage_cache = state.usage_cache::<UsageCache>();
     let response: Vec<AccountResponse> = accounts
         .iter()
-        .map(|a| account_to_response(a, now))
+        .map(|a| {
+            let usage = usage_cache.and_then(|cache| cache.get(&a.id));
+            account_to_response(a, now, usage.as_ref())
+        })
         .collect();
 
     Json(response).into_response()
@@ -272,10 +276,12 @@ pub async fn reload_account(
     match account_repo::find_by_id(&conn, &account_id) {
         Ok(Some(account)) => {
             let now = chrono::Utc::now().timestamp_millis();
+            let usage_cache = state.usage_cache::<UsageCache>();
+            let usage = usage_cache.and_then(|cache| cache.get(&account.id));
             debug!("Reloaded account {account_id}");
             Json(json!({
                 "success": true,
-                "account": account_to_response(&account, now)
+                "account": account_to_response(&account, now, usage.as_ref())
             }))
             .into_response()
         }
@@ -1369,7 +1375,7 @@ mod tests {
         refresh_token_updated_at: None,
         };
 
-        let resp = account_to_response(&account, now);
+        let resp = account_to_response(&account, now, None);
         assert_eq!(resp.token_status, TokenStatus::Expired);
         assert!(resp.has_refresh_token);
     }
@@ -1409,7 +1415,7 @@ mod tests {
         refresh_token_updated_at: None,
         };
 
-        let resp = account_to_response(&account, now);
+        let resp = account_to_response(&account, now, None);
         assert_eq!(resp.session_info, "Active: 5 reqs");
         assert!(!resp.has_refresh_token); // empty refresh_token
     }
