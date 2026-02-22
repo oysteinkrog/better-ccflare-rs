@@ -15,7 +15,7 @@ use bccf_database::pool::{create_pool, PoolConfig};
 use bccf_database::schema;
 use bccf_proxy::auto_refresh::{AutoRefreshScheduler, RefreshAccountSource, RefreshableAccount};
 use bccf_proxy::token_health::{TokenHealthService, HEALTH_CHECK_INTERVAL_MS};
-use bccf_providers::usage_polling::{AccountSource, PollableAccount, UsageCache, UsagePollingService};
+use bccf_providers::usage_polling::{AccountSource, PollableAccount, RefreshedToken, UsageCache, UsagePollingService};
 use bccf_providers::ProviderRegistry;
 
 fn main() {
@@ -68,7 +68,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Build token manager for OAuth token refresh
     let client_id = config.get_runtime().client_id.clone();
-    let token_manager = bccf_proxy::token_manager::TokenManager::new(client_id);
+    let token_manager = bccf_proxy::token_manager::TokenManager::new(client_id.clone());
 
     // Spawn post-processor for request analytics recording
     let db_receiver = bccf_proxy::post_processor::DbSummaryReceiver::new(pool.clone());
@@ -84,7 +84,10 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Start usage polling service (fetches utilization from provider APIs)
     let usage_cache = UsageCache::new();
-    let account_source = Arc::new(DbAccountSource { pool: pool.clone() });
+    let account_source = Arc::new(DbAccountSource {
+        pool: pool.clone(),
+        client_id: client_id.clone(),
+    });
     let _usage_polling = UsagePollingService::start(
         account_source,
         usage_cache.clone(),
@@ -207,6 +210,7 @@ impl RefreshAccountSource for DbRefreshSource {
 /// Database-backed account source for usage polling.
 struct DbAccountSource {
     pool: bccf_database::DbPool,
+    client_id: String,
 }
 
 impl AccountSource for DbAccountSource {
@@ -219,15 +223,37 @@ impl AccountSource for DbAccountSource {
             .into_iter()
             .filter(|a| !a.paused)
             .filter(|a| supports_usage_tracking(&a.provider))
-            .map(|a| PollableAccount {
-                id: a.id,
-                provider: a.provider,
-                access_token: a.access_token,
-                api_key: a.api_key,
-                custom_endpoint: a.custom_endpoint,
-                paused: a.paused,
+            .map(|a| {
+                let is_oauth = a.provider == "claude-oauth" || a.provider == "anthropic";
+                PollableAccount {
+                    id: a.id,
+                    provider: a.provider,
+                    access_token: a.access_token,
+                    refresh_token: if a.refresh_token.is_empty() { None } else { Some(a.refresh_token) },
+                    client_id: if is_oauth { Some(self.client_id.clone()) } else { None },
+                    api_key: a.api_key,
+                    custom_endpoint: a.custom_endpoint,
+                    paused: a.paused,
+                }
             })
             .collect()
+    }
+
+    fn persist_refreshed_token(&self, account_id: &str, token: &RefreshedToken) {
+        let Ok(conn) = self.pool.get() else { return };
+        let expires_at = token.expires_at.unwrap_or(0);
+        let rt = if token.refresh_token.is_empty() {
+            None
+        } else {
+            Some(token.refresh_token.as_str())
+        };
+        let _ = bccf_database::repositories::account::update_tokens(
+            &conn,
+            account_id,
+            &token.access_token,
+            expires_at,
+            rt,
+        );
     }
 }
 
