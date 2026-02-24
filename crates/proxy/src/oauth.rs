@@ -305,6 +305,11 @@ async fn exchange_and_persist(
         let _ = account_repo::set_subscription_tier(&conn, &account_id, Some(tier));
     }
 
+    // Persist email if included in token response
+    if let Some(ref email) = tokens.email {
+        let _ = account_repo::set_email(&conn, &account_id, Some(email));
+    }
+
     // Clear any token manager backoff state
     if let Some(tm) = state.token_manager::<crate::token_manager::TokenManager>() {
         tm.clear_account_state(&account_id);

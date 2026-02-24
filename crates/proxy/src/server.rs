@@ -466,11 +466,12 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
     let mut updated = 0u32;
 
     for account in accounts {
-        // Only claude-oauth accounts with a valid access_token and no tier yet
+        // Only claude-oauth accounts with a valid access_token
         if account.provider != "claude-oauth" {
             continue;
         }
-        if account.subscription_tier.is_some() {
+        // Skip if both tier and email are already populated
+        if account.subscription_tier.is_some() && account.email.is_some() {
             continue;
         }
         let Some(access_token) = &account.access_token else {
@@ -504,23 +505,36 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
             }
         };
 
-        let org_type = json["organization"]["organization_type"].as_str();
-        let rate_limit_tier = json["organization"]["rate_limit_tier"].as_str();
-        let tier = build_tier_label(org_type, rate_limit_tier);
-
-        let Some(tier) = tier else {
-            continue;
-        };
-
         let Ok(conn) = pool.get() else { continue };
-        if account_repo::set_subscription_tier(&conn, &account.id, Some(&tier)).is_ok() {
-            info!(account = %account.name, tier = %tier, "Backfilled subscription tier");
-            updated += 1;
+
+        // Backfill subscription tier if missing
+        if account.subscription_tier.is_none() {
+            let org_type = json["organization"]["organization_type"].as_str();
+            let rate_limit_tier = json["organization"]["rate_limit_tier"].as_str();
+            if let Some(tier) = build_tier_label(org_type, rate_limit_tier) {
+                if account_repo::set_subscription_tier(&conn, &account.id, Some(&tier)).is_ok() {
+                    info!(account = %account.name, tier = %tier, "Backfilled subscription tier");
+                    updated += 1;
+                }
+            }
+        }
+
+        // Backfill email if missing — try known paths in profile response
+        if account.email.is_none() {
+            let email = json["account"]["email_address"]
+                .as_str()
+                .or_else(|| json["email_address"].as_str())
+                .or_else(|| json["email"].as_str());
+            if let Some(email) = email {
+                let _ = account_repo::set_email(&conn, &account.id, Some(email));
+                info!(account = %account.name, email = %email, "Backfilled email");
+                updated += 1;
+            }
         }
     }
 
     if updated > 0 {
-        info!("Backfilled subscription tier for {updated} accounts");
+        info!("Backfilled subscription tier/email for {updated} accounts");
     }
 }
 
