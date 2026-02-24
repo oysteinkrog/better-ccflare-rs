@@ -48,6 +48,7 @@ async fn run(cli: Cli) -> Result<()> {
         let conn = pool.get().context("Failed to get database connection")?;
         schema::create_tables(&conn)?;
         schema::create_indexes(&conn)?;
+        schema::run_column_migrations(&conn)?;
     }
 
     // Dispatch CLI commands
@@ -70,8 +71,12 @@ async fn run(cli: Cli) -> Result<()> {
     let client_id = config.get_runtime().client_id.clone();
     let token_manager = bccf_proxy::token_manager::TokenManager::new(client_id.clone());
 
-    // Spawn post-processor for request analytics recording
-    let db_receiver = bccf_proxy::post_processor::DbSummaryReceiver::new(pool.clone());
+    // Create X-factor capacity cache
+    let xfactor_cache = bccf_proxy::xfactor::XFactorCache::new();
+
+    // Spawn post-processor for request analytics recording (with X-factor callback)
+    let db_receiver = bccf_proxy::post_processor::DbSummaryReceiver::new(pool.clone())
+        .with_xfactor(xfactor_cache.clone());
     let post_processor = bccf_proxy::post_processor::spawn_post_processor(db_receiver);
 
     // Shared HTTP client — reuses TCP connections and TLS sessions across requests
@@ -97,6 +102,13 @@ async fn run(cli: Cli) -> Result<()> {
     // Clone pool before moving into AppState (needed for background services)
     let bg_pool = pool.clone();
 
+    // Start X-factor background service (restores state, runs 95s update loop)
+    bccf_proxy::xfactor::start(
+        xfactor_cache.clone(),
+        usage_cache.clone(),
+        pool.clone(),
+    );
+
     let state = Arc::new(
         AppStateBuilder::new(config)
             .db_pool(pool)
@@ -106,6 +118,7 @@ async fn run(cli: Cli) -> Result<()> {
             .async_writer(post_processor)
             .usage_cache(usage_cache)
             .http_client(http_client)
+            .xfactor_cache(xfactor_cache)
             .build(),
     );
 

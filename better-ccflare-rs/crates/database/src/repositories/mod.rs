@@ -7,3 +7,4 @@ pub mod oauth;
 pub mod request;
 pub mod stats;
 pub mod strategy;
+pub mod xfactor;

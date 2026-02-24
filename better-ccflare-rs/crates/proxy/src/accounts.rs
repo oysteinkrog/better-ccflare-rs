@@ -115,6 +115,7 @@ fn account_to_response(account: &Account, now: i64, usage: Option<&AnyUsageData>
         reserve_hard: account.reserve_hard,
         subscription_tier: account.subscription_tier.clone(),
         email: account.email.clone(),
+        is_shared: account.is_shared,
     }
 }
 
@@ -982,6 +983,7 @@ pub async fn create_account(
         subscription_tier: None,
         email: None,
         refresh_token_updated_at: None,
+        is_shared: false,
     };
 
     if let Err(e) = account_repo::create(&conn, &account) {
@@ -1006,6 +1008,56 @@ pub async fn create_account(
         Json(json!({"success": true, "id": id, "message": msg})),
     )
         .into_response()
+}
+
+/// POST /api/accounts/:id/shared — mark account as shared with external users.
+pub async fn set_is_shared(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let shared = match body.get("shared").and_then(|v| v.as_bool()) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "shared (boolean) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_is_shared(&conn, &account_id, shared) {
+        warn!("Failed to set is_shared for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update shared status"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "shared": shared})).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,7 +1121,8 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
-        refresh_token_updated_at: None,
+            refresh_token_updated_at: None,
+            is_shared: false,
         };
         account_repo::create(&conn, &account).unwrap();
     }
@@ -1372,7 +1425,8 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
-        refresh_token_updated_at: None,
+            refresh_token_updated_at: None,
+            is_shared: false,
         };
 
         let resp = account_to_response(&account, now, None);
@@ -1412,7 +1466,8 @@ mod tests {
             reserve_hard: false,
             subscription_tier: None,
             email: None,
-        refresh_token_updated_at: None,
+            refresh_token_updated_at: None,
+            is_shared: false,
         };
 
         let resp = account_to_response(&account, now, None);

@@ -1310,6 +1310,86 @@ class API extends HttpClient {
 			throw error;
 		}
 	}
+
+	async getPoolCapacity(): Promise<
+		import("./types/capacity").PoolCapacityResponse
+	> {
+		const startTime = Date.now();
+		const url = "/api/analytics/pool-capacity";
+		this.logger.debug(`→ GET ${url}`);
+		try {
+			const response =
+				await this.get<import("./types/capacity").PoolCapacityResponse>(url);
+			const duration = Date.now() - startTime;
+			this.logger.debug(`← GET ${url} - 200 (${duration}ms)`);
+			return response;
+		} catch (error) {
+			const duration = Date.now() - startTime;
+			this.logger.error(`✗ GET ${url} - ERROR (${duration}ms)`, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+	}
+
+	async getXFactor(): Promise<import("./types/capacity").XFactorResponse> {
+		const startTime = Date.now();
+		const url = "/api/analytics/xfactor";
+		this.logger.debug(`→ GET ${url}`);
+		try {
+			const response =
+				await this.get<import("./types/capacity").XFactorResponse>(url);
+			const duration = Date.now() - startTime;
+			this.logger.debug(`← GET ${url} - 200 (${duration}ms)`);
+			return response;
+		} catch (error) {
+			const duration = Date.now() - startTime;
+			this.logger.error(`✗ GET ${url} - ERROR (${duration}ms)`, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+	}
+
+	async getAccountXfactor(
+		accountId: string,
+	): Promise<import("./types/capacity").AccountXFactorDetail> {
+		const startTime = Date.now();
+		const url = `/api/accounts/${accountId}/xfactor`;
+		this.logger.debug(`→ GET ${url}`);
+		try {
+			const response =
+				await this.get<import("./types/capacity").AccountXFactorDetail>(url);
+			const duration = Date.now() - startTime;
+			this.logger.debug(`← GET ${url} - 200 (${duration}ms)`);
+			return response;
+		} catch (error) {
+			const duration = Date.now() - startTime;
+			this.logger.error(`✗ GET ${url} - ERROR (${duration}ms)`, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+	}
+
+	async getValue(): Promise<import("./types/capacity").ValueResponse> {
+		const startTime = Date.now();
+		const url = "/api/analytics/value";
+		this.logger.debug(`→ GET ${url}`);
+		try {
+			const response =
+				await this.get<import("./types/capacity").ValueResponse>(url);
+			const duration = Date.now() - startTime;
+			this.logger.debug(`← GET ${url} - 200 (${duration}ms)`);
+			return response;
+		} catch (error) {
+			const duration = Date.now() - startTime;
+			this.logger.error(`✗ GET ${url} - ERROR (${duration}ms)`, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+	}
 }
 
 export const api = new API();

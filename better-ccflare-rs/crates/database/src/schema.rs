@@ -18,6 +18,73 @@ pub fn create_indexes(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Run column migrations for existing databases (adds columns introduced after initial schema).
+///
+/// Each migration ignores "duplicate column" errors so it's safe to run on any DB version.
+pub fn run_column_migrations(conn: &Connection) -> Result<(), DbError> {
+    // is_shared — marks accounts shared with external users
+    let _ = conn.execute(
+        "ALTER TABLE accounts ADD COLUMN is_shared INTEGER DEFAULT 0",
+        [],
+    );
+
+    // X-factor persisted estimator state (one row per account)
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS account_xfactor_state (
+            account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+            mu REAL NOT NULL,
+            sigma_sq REAL NOT NULL,
+            n_eff REAL NOT NULL DEFAULT 0,
+            ema_proxy_rate REAL NOT NULL DEFAULT 0,
+            c_i_hard_lower REAL NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS xfactor_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id TEXT NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            proxy_tokens_weighted REAL NOT NULL,
+            utilization_pct REAL NOT NULL,
+            lb_estimate REAL NOT NULL,
+            censored INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_xfactor_obs_account
+            ON xfactor_observations(account_id, timestamp_ms);",
+    );
+
+    // Phase 3: Kalman Filter columns for external usage estimation
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN kf_e REAL NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN kf_e_dot REAL NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN kf_p00 REAL NOT NULL DEFAULT 1000000000",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN kf_p01 REAL NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN kf_p10 REAL NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN kf_p11 REAL NOT NULL DEFAULT 1000000000",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE account_xfactor_state ADD COLUMN lag_estimate_ms INTEGER NOT NULL DEFAULT 90000",
+        [],
+    );
+
+    Ok(())
+}
+
 /// Full schema DDL — matches the TypeScript migrations exactly.
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -50,7 +117,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     subscription_tier TEXT,
     email TEXT,
     monthly_cost_usd REAL NOT NULL DEFAULT 0,
-    refresh_token_updated_at INTEGER
+    refresh_token_updated_at INTEGER,
+    is_shared INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -261,6 +329,7 @@ mod tests {
             "reserve_hard",
             "subscription_tier",
             "email",
+            "is_shared",
         ];
 
         for col in &expected {

@@ -1,6 +1,7 @@
 import { AlertCircle, Plus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { type Account, api } from "../api";
+import { useXFactor } from "../hooks/capacity-queries";
 import { useAccounts, useRenameAccount } from "../hooks/queries";
 import { useApiError } from "../hooks/useApiError";
 import {
@@ -12,6 +13,7 @@ import {
 	DeleteConfirmationDialog,
 	RenameAccountDialog,
 } from "./accounts";
+import type { AccountXFactorInfo } from "./accounts/AccountListItem";
 import { Button } from "./ui/button";
 import {
 	Card,
@@ -30,6 +32,20 @@ export function AccountsTab() {
 		refetch: loadAccounts,
 	} = useAccounts();
 	const renameAccount = useRenameAccount();
+	const { data: xfactorData } = useXFactor();
+
+	// Build account-id → x-factor info map for inline badges
+	const xfactorMap = useMemo<Map<string, AccountXFactorInfo>>(() => {
+		const map = new Map<string, AccountXFactorInfo>();
+		for (const acc of xfactorData?.accounts ?? []) {
+			map.set(acc.id, {
+				xFactor: acc.xFactor,
+				confidence: acc.confidence,
+				nEff: acc.nEff,
+			});
+		}
+		return map;
+	}, [xfactorData]);
 
 	const [adding, setAdding] = useState(false);
 	const [confirmDelete, setConfirmDelete] = useState<{
@@ -409,6 +425,7 @@ export function AccountsTab() {
 
 					<AccountList
 						accounts={accounts}
+						xfactorMap={xfactorMap}
 						onPauseToggle={handlePauseToggle}
 						onRemove={handleRemoveAccount}
 						onRename={handleRename}

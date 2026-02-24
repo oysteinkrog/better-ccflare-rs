@@ -10,19 +10,28 @@ import {
 	Zap,
 } from "lucide-react";
 import type { Account } from "../../api";
+import type { ConfidenceLevel, XFactorRange } from "../../types/capacity";
 import {
 	providerShowsWeeklyUsage,
 	providerSupportsAutoFeatures,
 	providerSupportsModelMappings,
 } from "../../utils/provider-utils";
+import { XFactorBadge } from "../capacity/XFactorBadge";
 import { OAuthTokenStatusWithBoundary } from "../OAuthTokenStatus";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { RateLimitProgress } from "./RateLimitProgress";
 
+export interface AccountXFactorInfo {
+	xFactor: XFactorRange;
+	confidence: ConfidenceLevel;
+	nEff: number;
+}
+
 interface AccountListItemProps {
 	account: Account;
 	isActive?: boolean;
+	xfactor?: AccountXFactorInfo;
 	onPauseToggle: (account: Account) => void;
 	onRemove: (name: string) => void;
 	onRename: (account: Account) => void;
@@ -36,6 +45,7 @@ interface AccountListItemProps {
 export function AccountListItem({
 	account,
 	isActive = false,
+	xfactor,
 	onPauseToggle,
 	onRemove,
 	onRename,
@@ -73,6 +83,13 @@ export function AccountListItem({
 								accountName={account.name}
 								hasRefreshToken={account.hasRefreshToken}
 							/>
+							{xfactor && (
+								<XFactorBadge
+									xFactor={xfactor.xFactor}
+									confidence={xfactor.confidence}
+									nEff={xfactor.nEff}
+								/>
+							)}
 							{providerSupportsAutoFeatures(account.provider) && (
 								<>
 									<div className="flex items-center gap-2">

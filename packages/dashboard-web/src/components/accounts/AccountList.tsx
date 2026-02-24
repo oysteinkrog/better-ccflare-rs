@@ -1,8 +1,10 @@
 import type { Account } from "../../api";
+import type { AccountXFactorInfo } from "./AccountListItem";
 import { AccountListItem } from "./AccountListItem";
 
 interface AccountListProps {
 	accounts: Account[] | undefined;
+	xfactorMap?: Map<string, AccountXFactorInfo>;
 	onPauseToggle: (account: Account) => void;
 	onRemove: (name: string) => void;
 	onRename: (account: Account) => void;
@@ -15,6 +17,7 @@ interface AccountListProps {
 
 export function AccountList({
 	accounts,
+	xfactorMap,
 	onPauseToggle,
 	onRemove,
 	onRename,
@@ -52,6 +55,7 @@ export function AccountList({
 					key={account.name}
 					account={account}
 					isActive={account.id === mostRecentAccountId}
+					xfactor={xfactorMap?.get(account.id)}
 					onPauseToggle={onPauseToggle}
 					onRemove={onRemove}
 					onRename={onRename}

@@ -289,13 +289,20 @@ pub fn spawn_post_processor<R: SummaryReceiver>(receiver: R) -> PostProcessorHan
 // ---------------------------------------------------------------------------
 
 /// Writes `RequestSummary` records to the `requests` table via a connection pool.
+/// Also notifies the X-factor cache of completed requests.
 pub struct DbSummaryReceiver {
     pool: bccf_database::pool::DbPool,
+    xfactor: Option<crate::xfactor::XFactorCache>,
 }
 
 impl DbSummaryReceiver {
     pub fn new(pool: bccf_database::pool::DbPool) -> Self {
-        Self { pool }
+        Self { pool, xfactor: None }
+    }
+
+    pub fn with_xfactor(mut self, cache: crate::xfactor::XFactorCache) -> Self {
+        self.xfactor = Some(cache);
+        self
     }
 }
 
@@ -340,6 +347,16 @@ impl SummaryReceiver for DbSummaryReceiver {
             warn!(request_id = %summary.request_id, error = %e, "Failed to save request to DB");
         } else {
             debug!(request_id = %summary.request_id, model = ?summary.model, success = summary.success, "Recorded request to DB");
+        }
+
+        // Notify X-factor cache of completed request
+        if let Some(xf) = &self.xfactor {
+            if let (Some(account_id), Some(total_tokens)) =
+                (&summary.account_id, summary.total_tokens)
+            {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                xf.on_request(account_id, summary.model.as_deref(), total_tokens, now_ms);
+            }
         }
     }
 }

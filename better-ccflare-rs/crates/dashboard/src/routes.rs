@@ -93,6 +93,7 @@ async fn dashboard_tab(
         "logs" => LogsTab.render(),
         "agents" => AgentsTab.render(),
         "api-keys" => ApiKeysTab.render(),
+        "capacity" => CapacityTab.render(),
         _ => {
             return (StatusCode::NOT_FOUND, Html("Tab not found".to_string())).into_response();
         }

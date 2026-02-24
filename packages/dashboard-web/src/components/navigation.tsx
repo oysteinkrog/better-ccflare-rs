@@ -3,6 +3,7 @@ import {
 	BarChart3,
 	Bot,
 	FileText,
+	Gauge,
 	GitBranch,
 	Key,
 	LayoutDashboard,
@@ -38,6 +39,7 @@ interface NavItem {
 const navItems: NavItem[] = [
 	{ label: "Overview", icon: LayoutDashboard, path: "/" },
 	{ label: "Analytics", icon: BarChart3, path: "/analytics" },
+	{ label: "Capacity", icon: Gauge, path: "/capacity" },
 	{ label: "Requests", icon: Activity, path: "/requests" },
 	{ label: "Accounts", icon: Users, path: "/accounts" },
 	{ label: "Agents", icon: Bot, path: "/agents" },

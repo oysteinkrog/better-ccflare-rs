@@ -27,6 +27,11 @@ const LazyAnalyticsTab = lazy(() =>
 		default: module.LazyAnalytics,
 	})),
 );
+const LazyCapacityTab = lazy(() =>
+	import("./components/LazyCapacity").then((module) => ({
+		default: module.LazyCapacity,
+	})),
+);
 const LoadingSkeleton = () => (
 	<div className="space-y-6 p-6">
 		<div className="animate-pulse">
@@ -67,6 +72,17 @@ const routes = [
 		),
 		title: "Analytics",
 		subtitle: "Deep dive into your usage patterns and trends",
+	},
+	{
+		path: "/capacity",
+		element: (
+			<Suspense fallback={<LoadingSkeleton />}>
+				<LazyCapacityTab />
+			</Suspense>
+		),
+		title: "Capacity",
+		subtitle:
+			"Real-time pool capacity, X-factor estimation, and value analysis",
 	},
 	{
 		path: "/requests",

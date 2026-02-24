@@ -21,4 +21,9 @@ export const queryKeys = {
 	defaultAgentModel: () =>
 		[...queryKeys.all, "config", "defaultAgentModel"] as const,
 	projects: () => [...queryKeys.all, "projects"] as const,
+	poolCapacity: () => [...queryKeys.all, "poolCapacity"] as const,
+	xfactor: () => [...queryKeys.all, "xfactor"] as const,
+	accountXfactor: (accountId: string) =>
+		[...queryKeys.all, "xfactor", "account", accountId] as const,
+	value: () => [...queryKeys.all, "value"] as const,
 } as const;

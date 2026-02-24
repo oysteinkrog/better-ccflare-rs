@@ -26,7 +26,8 @@ const ACCOUNT_SELECT: &str = "
         COALESCE(reserve_hard, 0) as reserve_hard,
         subscription_tier,
         email,
-        refresh_token_updated_at
+        refresh_token_updated_at,
+        COALESCE(is_shared, 0) as is_shared
     FROM accounts
 ";
 
@@ -66,6 +67,7 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         subscription_tier: row.get("subscription_tier")?,
         email: row.get("email")?,
         refresh_token_updated_at: row.get("refresh_token_updated_at")?,
+        is_shared: row.get::<_, i64>("is_shared")? != 0,
     })
 }
 
@@ -389,11 +391,11 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             rate_limit_reset, rate_limit_status, rate_limit_remaining,
             priority, auto_fallback_enabled, auto_refresh_enabled,
             custom_endpoint, model_mappings, reserve_5h, reserve_weekly, reserve_hard,
-            subscription_tier, email, refresh_token_updated_at
+            subscription_tier, email, refresh_token_updated_at, is_shared
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-            ?29
+            ?29, ?30
         )",
         params![
             account.id,
@@ -425,7 +427,17 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             account.subscription_tier,
             account.email,
             account.refresh_token_updated_at,
+            account.is_shared as i64,
         ],
+    )?;
+    Ok(())
+}
+
+/// Set is_shared flag for an account.
+pub fn set_is_shared(conn: &Connection, account_id: &str, shared: bool) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET is_shared = ?1 WHERE id = ?2",
+        params![shared as i64, account_id],
     )?;
     Ok(())
 }
@@ -473,6 +485,7 @@ mod tests {
             subscription_tier: None,
             email: None,
             refresh_token_updated_at: None,
+            is_shared: false,
         }
     }
 
