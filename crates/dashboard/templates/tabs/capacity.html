@@ -1,0 +1,611 @@
+<h2>Capacity</h2>
+
+<style>
+  .cap-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:0.75rem; margin-bottom:1.25rem; }
+  .cap-metric {
+    border:1px solid var(--bccf-border);
+    border-radius:0.5rem;
+    padding:0.75rem 1rem;
+    background:var(--bccf-surface-raised);
+    box-shadow:var(--bccf-shadow-xs);
+  }
+  .cap-metric-label {
+    font-size:0.68rem;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--bccf-text-tertiary);
+    margin-bottom:0.2rem;
+  }
+  .cap-metric-value {
+    font-size:1.6rem;
+    font-weight:700;
+    font-variant-numeric:tabular-nums;
+    letter-spacing:-0.02em;
+  }
+  .cap-metric-sub { font-size:0.72rem; color:var(--bccf-text-tertiary); margin-top:0.15rem; }
+  .cap-section {
+    border:1px solid var(--bccf-border);
+    border-radius:0.5rem;
+    padding:1rem;
+    background:var(--bccf-surface-raised);
+    box-shadow:var(--bccf-shadow-xs);
+    margin-bottom:1rem;
+  }
+  .cap-section h3 {
+    margin:0 0 0.1rem 0;
+    font-size:0.82rem;
+    font-weight:600;
+    color:var(--bccf-text-secondary);
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+  }
+  .cap-section .section-sub {
+    font-size:0.72rem;
+    color:var(--bccf-text-tertiary);
+    margin-bottom:0.75rem;
+  }
+  .account-card {
+    border:1px solid var(--bccf-border);
+    border-radius:0.4rem;
+    padding:0.65rem 0.75rem;
+    margin-bottom:0.5rem;
+    background:var(--bccf-bg);
+    transition:border-color 0.15s;
+  }
+  .account-card.at-risk { border-color:var(--bccf-danger); background:var(--bccf-danger-bg); }
+  .account-card.warning { border-color:var(--bccf-warning); }
+  .account-card-header { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem; flex-wrap:wrap; }
+  .account-card-name { font-weight:600; font-size:0.88rem; }
+  .badge {
+    display:inline-flex;
+    align-items:center;
+    padding:0.1rem 0.45rem;
+    border-radius:9999px;
+    font-size:0.68rem;
+    font-weight:600;
+    line-height:1.4;
+  }
+  .badge-red { background:var(--bccf-danger-bg); color:var(--bccf-danger); }
+  .badge-yellow { background:var(--bccf-warning-bg); color:var(--bccf-warning); }
+  .badge-green { background:var(--bccf-success-bg); color:var(--bccf-success); }
+  .badge-blue { background:var(--bccf-info-bg); color:var(--bccf-info); }
+  .badge-gray { background:rgba(107,114,128,0.1); color:var(--bccf-text-secondary); }
+  .util-bar-wrap { height:6px; background:rgba(0,0,0,0.07); border-radius:3px; overflow:hidden; margin-bottom:0.3rem; }
+  [data-theme="dark"] .util-bar-wrap { background:rgba(255,255,255,0.07); }
+  .util-bar { height:100%; border-radius:3px; transition:width 0.4s; }
+  .account-meta { display:flex; gap:1rem; flex-wrap:wrap; font-size:0.75rem; color:var(--bccf-text-secondary); }
+  .account-meta span b { color:var(--bccf-text); font-weight:600; }
+
+  /* X-factor table */
+  .xf-table { width:100%; font-size:0.82rem; border-collapse:collapse; }
+  .xf-table th { text-align:left; padding:0.35rem 0.5rem; font-weight:600; color:var(--bccf-text-secondary); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.04em; border-bottom:1px solid var(--bccf-border); }
+  .xf-table th.num { text-align:right; }
+  .xf-table td { padding:0.42rem 0.5rem; border-bottom:1px solid var(--bccf-border-subtle); vertical-align:middle; }
+  .xf-table td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .xf-table tr:last-child td { border-bottom:none; }
+  .xf-bar-wrap { height:8px; background:rgba(0,0,0,0.07); border-radius:4px; position:relative; overflow:visible; min-width:80px; display:inline-block; width:100%; }
+  [data-theme="dark"] .xf-bar-wrap { background:rgba(255,255,255,0.07); }
+  .xf-bar-fill { height:100%; border-radius:4px; position:absolute; top:0; }
+  .xf-bar-mid { width:3px; height:14px; border-radius:1px; position:absolute; top:-3px; background:var(--bccf-text); }
+
+  /* Value/savings */
+  .savings-hero {
+    display:flex;
+    align-items:baseline;
+    gap:0.75rem;
+    margin-bottom:0.75rem;
+  }
+  .savings-amount {
+    font-size:2.2rem;
+    font-weight:800;
+    font-variant-numeric:tabular-nums;
+    letter-spacing:-0.03em;
+  }
+  .savings-positive { color:#22c55e; }
+  .savings-negative { color:var(--bccf-danger); }
+  .savings-bar-wrap { height:6px; background:rgba(0,0,0,0.07); border-radius:3px; overflow:hidden; margin:0.5rem 0 0.3rem; }
+  [data-theme="dark"] .savings-bar-wrap { background:rgba(255,255,255,0.07); }
+  .savings-bar { height:100%; border-radius:3px; background:#22c55e; transition:width 0.5s; }
+
+  /* CPM chart */
+  .cpm-row { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.35rem; }
+  .cpm-label { width:100px; flex-shrink:0; font-size:0.78rem; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cpm-bars { flex:1; min-width:0; position:relative; height:14px; }
+  .cpm-bar-payg { height:8px; border-radius:2px; background:rgba(107,114,128,0.2); position:absolute; top:3px; left:0; }
+  .cpm-bar-actual { height:14px; border-radius:2px; position:absolute; top:0; left:0; }
+  .cpm-value { width:48px; text-align:right; font-size:0.72rem; font-variant-numeric:tabular-nums; color:var(--bccf-text-secondary); }
+
+  /* Sub-tabs */
+  .cap-subtabs { display:flex; gap:0; margin-bottom:1rem; }
+  .cap-subtab {
+    padding:0.3rem 0.85rem;
+    border:1px solid var(--bccf-border);
+    background:var(--bccf-surface-raised);
+    color:var(--bccf-text-secondary);
+    cursor:pointer;
+    font-size:0.8rem;
+    font-weight:500;
+    margin:0;
+    transition:background 0.15s, color 0.15s;
+  }
+  .cap-subtab:first-child { border-radius:0.4rem 0 0 0.4rem; }
+  .cap-subtab:last-child { border-radius:0 0.4rem 0.4rem 0; }
+  .cap-subtab:not(:first-child) { border-left:0; }
+  .cap-subtab.active { background:var(--bccf-orange); color:white; border-color:var(--bccf-orange); }
+  .cap-subtab:hover:not(.active) { background:var(--pico-muted-border-color); }
+  .cap-pane { display:none; }
+  .cap-pane.active { display:block; }
+
+  #cap-status { font-size:0.73rem; color:var(--bccf-text-tertiary); margin-left:auto; }
+
+  @keyframes pulse-red { 0%,100%{opacity:1} 50%{opacity:0.45} }
+  .pulse-red { animation:pulse-red 1.4s ease-in-out infinite; }
+</style>
+
+<!-- Header row -->
+<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem;flex-wrap:wrap;">
+  <div class="cap-subtabs">
+    <button class="cap-subtab active" data-pane="pool">Pool</button>
+    <button class="cap-subtab" data-pane="xfactor">X-Factor</button>
+    <button class="cap-subtab" data-pane="value">Value &amp; ROI</button>
+  </div>
+  <span id="cap-status"></span>
+</div>
+
+<!-- ═══════════════════ Pool pane ═══════════════════ -->
+<div class="cap-pane active" id="pane-pool">
+  <!-- Pool summary metrics -->
+  <div class="cap-grid" id="pool-metrics">
+    <div class="cap-metric"><div class="cap-metric-label">Pool Remaining (p50)</div><div class="cap-metric-value" id="pm-remaining">—</div><div class="cap-metric-sub" id="pm-remaining-sub"></div></div>
+    <div class="cap-metric"><div class="cap-metric-label">Soonest TTE</div><div class="cap-metric-value" id="pm-tte">—</div><div class="cap-metric-sub" id="pm-tte-sub"></div></div>
+    <div class="cap-metric"><div class="cap-metric-label">Accounts at Risk</div><div class="cap-metric-value" id="pm-atrisk">—</div><div class="cap-metric-sub" id="pm-atrisk-sub"></div></div>
+    <div class="cap-metric"><div class="cap-metric-label">External Rate</div><div class="cap-metric-value" id="pm-rate">—</div><div class="cap-metric-sub">KF-estimated usage</div></div>
+  </div>
+  <!-- Per-account capacity cards -->
+  <div id="pool-accounts"></div>
+</div>
+
+<!-- ═══════════════════ X-Factor pane ═══════════════════ -->
+<div class="cap-pane" id="pane-xfactor">
+  <div class="cap-section">
+    <h3>X-Factor per Account</h3>
+    <p class="section-sub">Bars show lo–hi uncertainty range; opacity reflects confidence. Reference lines at 1×, 5×, 10×, 20×.</p>
+    <div id="xf-chart-wrap" style="overflow-x:auto;"></div>
+  </div>
+  <div class="cap-section">
+    <h3>Account Details</h3>
+    <div style="overflow-x:auto;">
+      <table class="xf-table">
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th class="num">X-Factor (lo / mid / hi)</th>
+            <th class="num">Capacity 5h</th>
+            <th class="num">nEff</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="xf-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ Value pane ═══════════════════ -->
+<div class="cap-pane" id="pane-value">
+  <div class="cap-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-bottom:1rem;">
+    <div class="cap-metric" id="savings-card">
+      <div class="cap-metric-label">Pool Savings (30d vs PAYG)</div>
+      <div class="savings-hero">
+        <span class="savings-amount" id="v-savings">—</span>
+      </div>
+      <div class="savings-bar-wrap"><div class="savings-bar" id="v-savings-bar" style="width:0"></div></div>
+      <div style="font-size:0.72rem;color:var(--bccf-text-tertiary);" id="v-savings-rate"></div>
+      <div style="font-size:0.72rem;color:var(--bccf-text-tertiary);margin-top:0.15rem;" id="v-tokens-delivered"></div>
+      <div style="font-size:0.72rem;color:var(--bccf-text-tertiary);margin-top:0.15rem;" id="v-realized"></div>
+    </div>
+  </div>
+
+  <!-- CPM chart -->
+  <div class="cap-section" id="cpm-section" style="display:none;">
+    <h3>Cost per Million Tokens (30d)</h3>
+    <p class="section-sub">Actual cost vs PAYG equivalent. Gray = PAYG baseline. Lower is better.</p>
+    <div id="cpm-chart"></div>
+  </div>
+
+  <!-- Value table -->
+  <div class="cap-section">
+    <h3>Account Value Breakdown</h3>
+    <div style="overflow-x:auto;">
+      <table class="xf-table">
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th class="num">Tokens (30d)</th>
+            <th class="num">Actual CPM</th>
+            <th class="num">PAYG CPM</th>
+            <th class="num">Realized</th>
+            <th class="num">Savings</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="value-tbody"></tbody>
+      </table>
+    </div>
+    <div id="value-no-cost-msg" style="font-size:0.72rem;color:var(--bccf-text-tertiary);margin-top:0.5rem;"></div>
+  </div>
+</div>
+
+<script src="/dashboard/assets/chart.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  // ── Sub-tab switching ──────────────────────────────────────
+  var activePaneId = 'pool';
+  document.querySelectorAll('.cap-subtab').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.cap-subtab').forEach(function(b) { b.classList.remove('active'); });
+      document.querySelectorAll('.cap-pane').forEach(function(p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      activePaneId = btn.getAttribute('data-pane');
+      document.getElementById('pane-' + activePaneId).classList.add('active');
+    });
+  });
+
+  // ── Format helpers ─────────────────────────────────────────
+  function fmtTokens(n) {
+    if (n == null || isNaN(n)) return '—';
+    if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return Math.round(n/1e3) + 'K';
+    return String(Math.round(n));
+  }
+  function fmtTte(minutes) {
+    if (minutes == null || minutes > 1440) return '—';
+    if (minutes < 1) return '<1m';
+    if (minutes < 60) return Math.round(minutes) + 'm';
+    return (minutes/60).toFixed(1) + 'h';
+  }
+  function fmtUsd(v) {
+    if (v == null) return '—';
+    if (Math.abs(v) >= 1000) return '$' + (v/1000).toFixed(1) + 'K';
+    if (Math.abs(v) >= 1) return '$' + v.toFixed(2);
+    return '$' + v.toFixed(4);
+  }
+  function fmtPct(v) { return v == null ? '—' : v.toFixed(1) + '%'; }
+
+  function tteColor(minutes) {
+    if (minutes == null || minutes > 60) return '#22c55e';
+    if (minutes < 10) return '#ef4444';
+    return '#eab308';
+  }
+  function utilColor(pct) {
+    if (pct >= 90) return '#ef4444';
+    if (pct >= 75) return '#eab308';
+    return '#22c55e';
+  }
+  function confidenceBadge(conf, nEff) {
+    var labels = { cold:'Cold', low:'Low', medium:'Medium', high:'High' };
+    var cls = { cold:'badge-gray', low:'badge-yellow', medium:'badge-blue', high:'badge-green' };
+    return '<span class="badge ' + (cls[conf]||'badge-gray') + '">' + (labels[conf]||conf) + '</span>';
+  }
+  function recBadge(rec) {
+    var map = {
+      GOOD_VALUE:['badge-green','Good Value'],
+      UNDERUTILIZED:['badge-yellow','Underutilized'],
+      NEAR_EXHAUSTION_5H:['badge-red','Near Exhaustion'],
+      NEAR_EXHAUSTION_7D:['badge-yellow','Near 7d Limit'],
+      SUSPECTED_SHARED:['badge-yellow','Suspected Shared'],
+      HIGH_MONTHLY_COST:['badge-gray','High Cost'],
+    };
+    var cfg = map[rec];
+    if (!cfg) return '<span class="badge badge-gray">' + rec.replace(/_/g,' ').toLowerCase() + '</span>';
+    return '<span class="badge ' + cfg[0] + '">' + cfg[1] + '</span>';
+  }
+
+  // ── Pool Capacity ──────────────────────────────────────────
+  function renderPool(data) {
+    var pt = data.poolTotal;
+    var accounts = data.accounts || [];
+
+    // Metrics
+    var remEl = document.getElementById('pm-remaining');
+    remEl.textContent = fmtTokens(pt.remainingExpected);
+    remEl.style.color = '#22c55e';
+    document.getElementById('pm-remaining-sub').textContent = fmtTokens(pt.remainingPessimistic) + ' pessimistic';
+
+    var tteEl = document.getElementById('pm-tte');
+    tteEl.textContent = fmtTte(pt.soonestTteMinutes);
+    tteEl.style.color = tteColor(pt.soonestTteMinutes);
+    var tteSub = '';
+    if (pt.soonestTteWithRecoveryMinutes != null) {
+      tteSub = '+' + fmtTte(pt.soonestTteWithRecoveryMinutes) + ' with recovery';
+    }
+    document.getElementById('pm-tte-sub').textContent = tteSub;
+
+    var atRisk = accounts.filter(function(a) { return a.shouldStopAssign; }).length;
+    var atRiskEl = document.getElementById('pm-atrisk');
+    atRiskEl.textContent = String(atRisk);
+    atRiskEl.style.color = atRisk > 0 ? '#ef4444' : 'inherit';
+    document.getElementById('pm-atrisk-sub').textContent = 'of ' + accounts.length + ' total';
+
+    var totalRate = accounts.reduce(function(s,a) { return s + (a.kfExternalRateTokensPerSec||0); }, 0);
+    document.getElementById('pm-rate').textContent = totalRate > 0.01 ? totalRate.toFixed(1) + ' tok/s' : '—';
+
+    // Account cards
+    var html = '';
+    accounts.forEach(function(a) {
+      var pct = a.utilization5hPct || 0;
+      var barColor = utilColor(pct);
+      var cardClass = a.shouldStopAssign ? ' at-risk' : (pct >= 75 ? ' warning' : '');
+      var tteMins = a.tteMinutes && a.tteMinutes.current;
+      var tteStr = fmtTte(tteMins);
+      var tteStyle = tteMins != null && tteMins < 5 ? ' style="color:#ef4444" class="pulse-red"' : ' style="color:' + tteColor(tteMins) + '"';
+
+      var badges = '';
+      if (a.shouldStopAssign) badges += '<span class="badge badge-red">Stop Assign</span>';
+      if (a.suspectedShared) badges += '<span class="badge badge-yellow">Shared?</span>';
+      if (a.confidence === 'cold') badges += '<span class="badge badge-gray">Cold</span>';
+      else if (a.confidence === 'low') badges += '<span class="badge badge-yellow">Low confidence</span>';
+
+      var remaining7d = '';
+      if (a.remaining7d) {
+        remaining7d = ' · <b>' + fmtTokens(a.remaining7d.expected) + '</b> 7d remaining';
+      }
+
+      html += '<div class="account-card' + cardClass + '">' +
+        '<div class="account-card-header">' +
+          '<span class="account-card-name">' + a.name + '</span>' +
+          badges +
+        '</div>' +
+        '<div class="util-bar-wrap"><div class="util-bar" style="width:' + Math.min(100,pct).toFixed(1) + '%;background:' + barColor + '"></div></div>' +
+        '<div class="account-meta">' +
+          '<span>Util: <b>' + pct.toFixed(1) + '%</b></span>' +
+          '<span>5h remaining: <b>' + fmtTokens(a.remaining5h.expected) + '</b></span>' +
+          (tteMins != null && tteMins <= 1440 ? '<span>TTE: <b' + tteStyle + '>' + tteStr + '</b></span>' : '') +
+          '<span>' + remaining7d + '</span>' +
+          (a.windowRecovery15minTokens > 0 ? '<span>Recovery 15m: <b>' + fmtTokens(a.windowRecovery15minTokens) + '</b></span>' : '') +
+        '</div>' +
+      '</div>';
+    });
+    document.getElementById('pool-accounts').innerHTML = html || '<p style="color:var(--bccf-text-tertiary);font-style:italic;padding:1rem 0;">No accounts found.</p>';
+  }
+
+  // ── X-Factor ───────────────────────────────────────────────
+  function renderXFactor(data) {
+    var accounts = (data.accounts || []).slice().sort(function(a,b) { return b.xFactor.mid - a.xFactor.mid; });
+    if (accounts.length === 0) {
+      document.getElementById('xf-chart-wrap').innerHTML = '<p style="color:var(--bccf-text-tertiary);font-style:italic;padding:1rem 0;">No X-factor data yet.</p>';
+      document.getElementById('xf-tbody').innerHTML = '';
+      return;
+    }
+
+    // Simple SVG-based horizontal bar chart
+    var maxXf = Math.max.apply(null, accounts.map(function(a) { return a.xFactor.hi; }));
+    maxXf = Math.max(maxXf, 20);
+    var refLines = [1,5,10,20].filter(function(x) { return x <= maxXf * 1.1; });
+    var rowH = 32, barH = 16, barY = (rowH - barH) / 2;
+    var labelW = 110, chartW = 380, totalH = accounts.length * rowH + 24;
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+    var textColor = isDark ? '#9ca3af' : '#6b7280';
+    var xScale = chartW / maxXf;
+
+    function confOpacity(nEff) {
+      if (nEff >= 10) return 1.0;
+      if (nEff >= 4) return 0.75;
+      if (nEff >= 1) return 0.5;
+      return 0.3;
+    }
+
+    var refSvg = refLines.map(function(x) {
+      var cx = x * xScale;
+      return '<line x1="' + cx + '" y1="0" x2="' + cx + '" y2="' + totalH + '" stroke="' + gridColor + '" stroke-dasharray="3 3"/>' +
+             '<text x="' + cx + '" y="12" text-anchor="middle" font-size="9" fill="' + textColor + '">' + x + '×</text>';
+    }).join('');
+
+    var rowsSvg = accounts.map(function(a, i) {
+      var y = i * rowH + 24;
+      var lo = a.xFactor.lo * xScale;
+      var mid = a.xFactor.mid * xScale;
+      var hi = a.xFactor.hi * xScale;
+      var w = Math.max(hi - lo, 2);
+      var op = confOpacity(a.nEff);
+      var isCold = a.confidence === 'cold';
+      var fill = isCold ? gridColor : 'var(--bccf-orange)';
+      return '<rect x="' + lo + '" y="' + (y + barY) + '" width="' + w + '" height="' + barH + '" fill="' + fill + '" fill-opacity="' + op + '" rx="2"/>' +
+             '<rect x="' + (mid - 1.5) + '" y="' + (y + barY - 3) + '" width="3" height="' + (barH + 6) + '" fill="' + (isDark ? '#e5e7eb' : '#374151') + '" rx="1"/>';
+    }).join('');
+
+    var labelsSvg = accounts.map(function(a, i) {
+      var y = i * rowH + 24;
+      var label = a.name.length > 13 ? a.name.substring(0,12) + '…' : a.name;
+      return '<text x="0" y="' + (y + rowH/2 + 4) + '" font-size="12" fill="' + textColor + '">' + label + '</text>';
+    }).join('');
+
+    var svgTotal = labelW + chartW + 16;
+    var svg = '<svg width="100%" viewBox="0 0 ' + svgTotal + ' ' + totalH + '" style="max-width:640px;font-family:Inter,sans-serif;">' +
+      '<g transform="translate(' + labelW + ',0)">' + refSvg + rowsSvg + '</g>' +
+      '<g>' + labelsSvg + '</g>' +
+    '</svg>';
+    document.getElementById('xf-chart-wrap').innerHTML = svg;
+
+    // Table
+    var tbody = '';
+    accounts.forEach(function(a) {
+      var isCold = a.confidence === 'cold';
+      var xfCell = isCold ? '<span style="color:var(--bccf-text-tertiary)">—</span>' :
+        a.xFactor.lo.toFixed(1) + '× / <b>' + a.xFactor.mid.toFixed(1) + '×</b> / ' + a.xFactor.hi.toFixed(1) + '×';
+      var capCell = isCold ? '<span style="color:var(--bccf-text-tertiary)">—</span>' :
+        Math.round(a.c5hTokens.mid/1000) + 'K';
+      var badges = confidenceBadge(a.confidence, a.nEff);
+      (a.recommendations||[]).forEach(function(r) { badges += ' ' + recBadge(r); });
+      tbody += '<tr>' +
+        '<td style="font-weight:500">' + a.name + (a.subscriptionTier ? '<br><small style="color:var(--bccf-text-tertiary)">' + a.subscriptionTier + '</small>' : '') + '</td>' +
+        '<td class="num">' + xfCell + '</td>' +
+        '<td class="num">' + capCell + '</td>' +
+        '<td class="num">' + a.nEff.toFixed(1) + '</td>' +
+        '<td>' + badges + '</td>' +
+      '</tr>';
+    });
+    document.getElementById('xf-tbody').innerHTML = tbody || '<tr><td colspan="5" style="color:var(--bccf-text-tertiary);font-style:italic;padding:1rem;">No data</td></tr>';
+  }
+
+  // ── Value / ROI ────────────────────────────────────────────
+  var PAYG_BLENDED_CPM = 6.6;
+
+  function renderValue(data) {
+    var ps = data.poolSummary;
+    var savings = ps.totalSavingsUsd30d;
+    var paygCost = ps.totalPaygCostUsd30d;
+    var savingsRate = paygCost > 0 ? (savings / paygCost) * 100 : 0;
+    var isPos = savings >= 0;
+
+    var savEl = document.getElementById('v-savings');
+    savEl.textContent = (isPos ? '+' : '') + fmtUsd(savings);
+    savEl.className = 'savings-amount ' + (isPos ? 'savings-positive' : 'savings-negative');
+
+    document.getElementById('v-savings-bar').style.width = Math.min(100, Math.max(0, savingsRate)).toFixed(1) + '%';
+    document.getElementById('v-savings-rate').textContent = savingsRate > 0 ? savingsRate.toFixed(1) + '% savings rate vs PAYG' : '';
+    if (ps.poolRealizedPct != null) {
+      document.getElementById('v-realized').textContent = ps.poolRealizedPct.toFixed(1) + '% of potential subscription value realized';
+    }
+    var tokensDelivered = (paygCost / PAYG_BLENDED_CPM) * 1e6;
+    document.getElementById('v-tokens-delivered').textContent = fmtTokens(tokensDelivered) + ' tokens delivered across all accounts';
+
+    // CPM chart
+    var cpmAccounts = (data.accounts||[]).filter(function(a) { return a.cpmActualUsd != null; })
+      .sort(function(a,b) { return a.cpmActualUsd - b.cpmActualUsd; });
+
+    if (cpmAccounts.length > 0) {
+      document.getElementById('cpm-section').style.display = 'block';
+      var maxCpm = Math.max.apply(null, cpmAccounts.map(function(a) { return Math.max(a.cpmActualUsd||0, a.cpmPaygEquivUsd||PAYG_BLENDED_CPM); }));
+      maxCpm = Math.max(maxCpm, PAYG_BLENDED_CPM) * 1.1;
+      var cpmHtml = cpmAccounts.map(function(a) {
+        var actualPct = (a.cpmActualUsd / maxCpm * 100).toFixed(1);
+        var paygPct = ((a.cpmPaygEquivUsd || PAYG_BLENDED_CPM) / maxCpm * 100).toFixed(1);
+        var isBad = a.cpmActualUsd > (a.cpmPaygEquivUsd || PAYG_BLENDED_CPM);
+        var isGood = a.cpmActualUsd < 0.8 * (a.cpmPaygEquivUsd || PAYG_BLENDED_CPM);
+        var barColor = isBad ? '#ef4444' : isGood ? '#22c55e' : '#eab308';
+        return '<div class="cpm-row">' +
+          '<div class="cpm-label" title="' + a.name + '">' + a.name + '</div>' +
+          '<div class="cpm-bars">' +
+            '<div class="cpm-bar-payg" style="width:' + paygPct + '%"></div>' +
+            '<div class="cpm-bar-actual" style="width:' + actualPct + '%;background:' + barColor + ';opacity:0.85"></div>' +
+          '</div>' +
+          '<div class="cpm-value">' + fmtUsd(a.cpmActualUsd) + '/M</div>' +
+        '</div>';
+      }).join('');
+      document.getElementById('cpm-chart').innerHTML = cpmHtml;
+    }
+
+    // Value table
+    var tbody = '';
+    (data.accounts||[]).forEach(function(a) {
+      var savCell = a.savingsUsd30d != null
+        ? '<span style="color:' + (a.savingsUsd30d >= 0 ? '#22c55e' : '#ef4444') + ';font-weight:600">' + (a.savingsUsd30d >= 0 ? '+' : '') + fmtUsd(a.savingsUsd30d) + '</span>'
+        : '—';
+      var badges = '';
+      if (a.costSource === 'unknown') badges += '<span class="badge badge-gray" title="Set subscription tier to enable cost analysis">No cost data</span>';
+      (a.recommendations||[]).forEach(function(r) { badges += ' ' + recBadge(r); });
+      tbody += '<tr>' +
+        '<td style="font-weight:500">' + a.name + (a.subscriptionTier ? '<br><small style="color:var(--bccf-text-tertiary)">' + a.subscriptionTier + '</small>' : '') + '</td>' +
+        '<td class="num">' + fmtTokens(a.rawTokens30d) + '</td>' +
+        '<td class="num">' + (a.cpmActualUsd != null ? fmtUsd(a.cpmActualUsd) : '—') + '</td>' +
+        '<td class="num">' + (a.cpmPaygEquivUsd != null ? fmtUsd(a.cpmPaygEquivUsd) : '—') + '</td>' +
+        '<td class="num">' + (a.realizedPct != null ? fmtPct(a.realizedPct) : '—') + '</td>' +
+        '<td class="num">' + savCell + '</td>' +
+        '<td>' + badges + '</td>' +
+      '</tr>';
+    });
+    document.getElementById('value-tbody').innerHTML = tbody || '<tr><td colspan="7" style="color:var(--bccf-text-tertiary);font-style:italic;padding:1rem;">No data</td></tr>';
+
+    var noCostAccounts = (data.accounts||[]).filter(function(a) { return a.costSource === 'unknown' || a.cpmActualUsd == null; });
+    if (noCostAccounts.length > 0) {
+      document.getElementById('value-no-cost-msg').textContent =
+        noCostAccounts.length + ' account' + (noCostAccounts.length > 1 ? 's' : '') +
+        ' without cost data: ' + noCostAccounts.map(function(a) { return a.name; }).join(', ') +
+        '. Set subscription tier to enable savings analysis.';
+    }
+  }
+
+  // ── Data fetching ──────────────────────────────────────────
+  var poolData = null, xfData = null, valueData = null;
+  var lastPoolFetch = 0, lastXfFetch = 0, lastValueFetch = 0;
+  var POOL_TTL = 30000, XF_TTL = 120000, VALUE_TTL = 300000;
+
+  function setStatus(msg) {
+    document.getElementById('cap-status').textContent = msg;
+  }
+
+  function fetchPool(force) {
+    var now = Date.now();
+    if (!force && poolData && (now - lastPoolFetch) < POOL_TTL) return;
+    setStatus('Loading…');
+    fetch('/api/analytics/pool-capacity')
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(d) {
+        poolData = d;
+        lastPoolFetch = Date.now();
+        if (activePaneId === 'pool') { renderPool(d); setStatus(''); }
+      })
+      .catch(function(e) { setStatus('Error: ' + e.message); });
+  }
+
+  function fetchXFactor(force) {
+    var now = Date.now();
+    if (!force && xfData && (now - lastXfFetch) < XF_TTL) return;
+    setStatus('Loading…');
+    fetch('/api/analytics/xfactor')
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(d) {
+        xfData = d;
+        lastXfFetch = Date.now();
+        if (activePaneId === 'xfactor') { renderXFactor(d); setStatus(''); }
+      })
+      .catch(function(e) { setStatus('Error: ' + e.message); });
+  }
+
+  function fetchValue(force) {
+    var now = Date.now();
+    if (!force && valueData && (now - lastValueFetch) < VALUE_TTL) return;
+    setStatus('Loading…');
+    fetch('/api/analytics/value')
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(d) {
+        valueData = d;
+        lastValueFetch = Date.now();
+        if (activePaneId === 'value') { renderValue(d); setStatus(''); }
+      })
+      .catch(function(e) { setStatus('Error: ' + e.message); });
+  }
+
+  // Pane activation also triggers data fetch + render
+  document.querySelectorAll('.cap-subtab').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var pane = btn.getAttribute('data-pane');
+      if (pane === 'pool') {
+        if (poolData) { renderPool(poolData); setStatus(''); } else fetchPool(true);
+      } else if (pane === 'xfactor') {
+        if (xfData) { renderXFactor(xfData); setStatus(''); } else fetchXFactor(true);
+      } else if (pane === 'value') {
+        if (valueData) { renderValue(valueData); setStatus(''); } else fetchValue(true);
+      }
+    });
+  });
+
+  // Periodic refresh
+  setInterval(function() {
+    if (activePaneId === 'pool') fetchPool(false);
+    else if (activePaneId === 'xfactor') fetchXFactor(false);
+    else if (activePaneId === 'value') fetchValue(false);
+  }, 30000);
+
+  // Initial load
+  fetchPool(true);
+  fetchXFactor(false);
+  fetchValue(false);
+})();
+</script>

@@ -134,6 +134,7 @@ pub fn add_account(
             subscription_tier: None,
             email: None,
             refresh_token_updated_at: None,
+            is_shared: false,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;
@@ -203,6 +204,7 @@ pub fn add_account(
             subscription_tier: None,
             email: None,
             refresh_token_updated_at: None,
+            is_shared: false,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;

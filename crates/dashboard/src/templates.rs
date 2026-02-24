@@ -11,7 +11,7 @@ pub struct TabInfo {
     pub label: &'static str,
 }
 
-/// The 8 dashboard tabs, in display order.
+/// The 9 dashboard tabs, in display order.
 pub const TABS: &[TabInfo] = &[
     TabInfo {
         slug: "overview",
@@ -28,6 +28,10 @@ pub const TABS: &[TabInfo] = &[
     TabInfo {
         slug: "analytics",
         label: "Analytics",
+    },
+    TabInfo {
+        slug: "capacity",
+        label: "Capacity",
     },
     TabInfo {
         slug: "stats",
@@ -170,6 +174,10 @@ pub struct AgentsTab;
 #[derive(Template)]
 #[template(path = "tabs/api_keys.html")]
 pub struct ApiKeysTab;
+
+#[derive(Template)]
+#[template(path = "tabs/capacity.html")]
+pub struct CapacityTab;
 
 // ---------------------------------------------------------------------------
 // Partial templates (HTMX partials for dynamic content)
@@ -413,7 +421,7 @@ mod tests {
 
     #[test]
     fn tabs_count() {
-        assert_eq!(TABS.len(), 8);
+        assert_eq!(TABS.len(), 9);
     }
 
     #[test]

@@ -95,6 +95,7 @@ fn make_account(id: &str, name: &str, api_key: &str, priority: i64) -> Account {
         subscription_tier: None,
         email: None,
         refresh_token_updated_at: None,
+    is_shared: false,
     }
 }
 

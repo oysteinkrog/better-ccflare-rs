@@ -115,6 +115,9 @@ pub struct AppState {
 
     /// Shared HTTP client for upstream requests (connection pooling).
     http_client: Option<Box<dyn std::any::Any + Send + Sync>>,
+
+    /// X-factor capacity estimation cache (per-account Bayesian state).
+    xfactor_cache: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl AppState {
@@ -131,6 +134,7 @@ impl AppState {
             oauth_store: None,
             usage_cache: None,
             http_client: None,
+            xfactor_cache: None,
         }
     }
 
@@ -202,6 +206,13 @@ impl AppState {
     /// Get the shared HTTP client, downcasting from the type-erased box.
     pub fn http_client<T: 'static + Send + Sync>(&self) -> Option<&T> {
         self.http_client
+            .as_ref()
+            .and_then(|b| b.downcast_ref::<T>())
+    }
+
+    /// Get the X-factor capacity cache, downcasting from the type-erased box.
+    pub fn xfactor_cache<T: 'static + Send + Sync>(&self) -> Option<&T> {
+        self.xfactor_cache
             .as_ref()
             .and_then(|b| b.downcast_ref::<T>())
     }
@@ -277,6 +288,12 @@ impl AppStateBuilder {
         self
     }
 
+    /// Set the X-factor capacity cache (type-erased).
+    pub fn xfactor_cache<T: 'static + Send + Sync>(mut self, cache: T) -> Self {
+        self.state.xfactor_cache = Some(Box::new(cache));
+        self
+    }
+
     /// Build the final `AppState`.
     pub fn build(self) -> AppState {
         self.state
@@ -300,6 +317,7 @@ impl std::fmt::Debug for AppState {
             .field("oauth_store", &self.oauth_store.is_some())
             .field("usage_cache", &self.usage_cache.is_some())
             .field("http_client", &self.http_client.is_some())
+            .field("xfactor_cache", &self.xfactor_cache.is_some())
             .finish()
     }
 }

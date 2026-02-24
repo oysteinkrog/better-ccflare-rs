@@ -41,6 +41,10 @@ pub struct Account {
     /// Updated on every re-authentication. Used to track refresh token age
     /// independently of account creation date.
     pub refresh_token_updated_at: Option<i64>,
+    /// Whether this account is shared with external users outside better-ccflare.
+    /// When true, the utilization API reports usage from all sources, not just proxy
+    /// traffic — this biases X-factor estimates downward.
+    pub is_shared: bool,
 }
 
 /// API response for an account — what clients receive.
@@ -77,6 +81,8 @@ pub struct AccountResponse {
     pub subscription_tier: Option<String>,
     /// Email address of the authenticated OAuth user.
     pub email: Option<String>,
+    /// Whether this account is shared with external users outside better-ccflare.
+    pub is_shared: bool,
 }
 
 /// Token validity status.

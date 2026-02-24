@@ -143,6 +143,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/accounts/{id}/reserve-hard",
             post(accounts::set_reserve_hard),
         )
+        .route(
+            "/api/accounts/{id}/shared",
+            post(accounts::set_is_shared),
+        )
         // Request history & payload
         .route("/api/requests", get(handlers::requests::list_requests))
         .route(
@@ -159,6 +163,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/stats", get(handlers::stats::get_stats))
         .route("/api/stats/reset", post(api::stats_reset))
         .route("/api/analytics", get(handlers::analytics::get_analytics))
+        // X-factor capacity & value analytics
+        .route("/api/analytics/pool-capacity", get(handlers::xfactor::get_pool_capacity))
+        .route("/api/analytics/xfactor", get(handlers::xfactor::get_xfactor))
+        .route("/api/analytics/value", get(handlers::xfactor::get_value))
+        .route("/api/accounts/{id}/xfactor", get(handlers::xfactor::get_account_xfactor))
         // Logs history
         .route("/api/logs", get(handlers::logs::logs_history))
         // Token health
