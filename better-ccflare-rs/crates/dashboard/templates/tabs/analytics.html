@@ -98,14 +98,14 @@
 
 <!-- Totals summary bar -->
 <div class="totals-bar" id="totals-bar">
-  <div class="stat"><div class="stat-value" id="t-requests">-</div><div class="stat-label">Requests</div></div>
-  <div class="stat"><div class="stat-value" id="t-success">-</div><div class="stat-label">Success Rate</div></div>
-  <div class="stat"><div class="stat-value" id="t-resp-time">-</div><div class="stat-label">Avg Response</div></div>
-  <div class="stat"><div class="stat-value" id="t-tokens">-</div><div class="stat-label">Total Tokens</div></div>
-  <div class="stat"><div class="stat-value" id="t-cost">-</div><div class="stat-label">API Value</div></div>
-  <div class="stat"><div class="stat-value" id="t-saved" style="color:#22c55e">-</div><div class="stat-label">Money Saved</div></div>
-  <div class="stat"><div class="stat-value" id="t-savings-rate">-</div><div class="stat-label">Savings Rate</div></div>
-  <div class="stat"><div class="stat-value" id="t-speed">-</div><div class="stat-label">Avg tok/s</div></div>
+  <div class="stat"><div class="stat-value" id="t-requests">-</div><div class="stat-label" data-tt="Total API requests proxied in this period.">Requests</div></div>
+  <div class="stat"><div class="stat-value" id="t-success">-</div><div class="stat-label" data-tt="Percentage of requests that completed without a 5xx error.">Success Rate</div></div>
+  <div class="stat"><div class="stat-value" id="t-resp-time">-</div><div class="stat-label" data-tt="Median time from first request byte to last response byte.">Avg Response</div></div>
+  <div class="stat"><div class="stat-value" id="t-tokens">-</div><div class="stat-label" data-tt="Total tokens across all requests: input + output + cache read + cache creation.">Total Tokens</div></div>
+  <div class="stat"><div class="stat-value" id="t-cost">-</div><div class="stat-label" data-tt="PAYG-equivalent value of tokens delivered — what you would have paid without a subscription.">API Value</div></div>
+  <div class="stat"><div class="stat-value" id="t-saved" style="color:#22c55e">-</div><div class="stat-label" data-tt="API value minus your actual subscription cost for this period. Positive = you spent less than PAYG.">Money Saved</div></div>
+  <div class="stat"><div class="stat-value" id="t-savings-rate">-</div><div class="stat-label" data-tt="Money saved ÷ API value × 100%. How much cheaper this is vs. paying per token.">Savings Rate</div></div>
+  <div class="stat"><div class="stat-value" id="t-speed">-</div><div class="stat-label" data-tt="Average output tokens generated per second across all successful requests.">Avg tok/s</div></div>
 </div>
 
 <!-- Chart grid -->
@@ -144,12 +144,12 @@
       <thead>
         <tr style="border-bottom:1px solid var(--bccf-border);">
           <th style="text-align:left;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Account</th>
-          <th style="text-align:left;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Provider</th>
-          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Requests</th>
-          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">API Value</th>
-          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Saved</th>
-          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" title="Prorated monthly subscription cost for this period">Sub Cost</th>
-          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;">Actual Cost</th>
+          <th style="text-align:left;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" data-tt="The authentication method and billing model for this account.">Provider</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" data-tt="Number of requests routed to this account in the selected period.">Requests</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" data-tt="PAYG-equivalent value of tokens delivered — what this would cost without a subscription.">API Value</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" data-tt="API value minus the prorated subscription cost. How much cheaper this was vs. paying per token.">Saved</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" data-tt="Monthly subscription fee prorated to cover exactly this time period (monthlyCost × days / 30).">Sub Cost</th>
+          <th style="text-align:right;padding:0.35rem 0.5rem;font-weight:600;color:var(--bccf-text-secondary);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;" data-tt="Your true out-of-pocket cost: subscription cost + any per-token charges (for API key accounts).">Actual Cost</th>
         </tr>
       </thead>
       <tbody id="cost-by-account-body">

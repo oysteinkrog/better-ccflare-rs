@@ -588,6 +588,32 @@
       }
       .sidebar.open ~ .overlay { display: block; }
     }
+
+    /* ================================================================
+       Tooltip System — use data-tt="..." on any element
+       ================================================================ */
+    [data-tt] { cursor: help; }
+    button[data-tt], a[data-tt], select[data-tt],
+    [data-tt][style*="cursor:pointer"], [data-tt][style*="cursor: pointer"] { cursor: pointer; }
+    #bccf-tip {
+      position: fixed;
+      z-index: 99999;
+      pointer-events: none;
+      max-width: 280px;
+      background: var(--bccf-surface-raised);
+      border: 1px solid var(--bccf-border);
+      border-radius: 0.45rem;
+      padding: 0.45rem 0.7rem;
+      font-size: 0.75rem;
+      line-height: 1.5;
+      color: var(--bccf-text-secondary);
+      box-shadow: var(--bccf-shadow-md);
+      opacity: 0;
+      transition: opacity 0.1s ease;
+      white-space: normal;
+      word-break: normal;
+    }
+    #bccf-tip.tt-on { opacity: 1; }
   </style>
 </head>
 <body>
@@ -660,6 +686,49 @@
     window.addEventListener('popstate', function() {
       htmx.ajax('GET', window.location.pathname, {target: '#tab-content', swap: 'innerHTML'});
     });
+    // ── Tooltip system ────────────────────────────────────────
+    (function() {
+      var tip = document.createElement('div');
+      tip.id = 'bccf-tip';
+      document.body.appendChild(tip);
+      var showTimer, activeEl = null;
+      document.addEventListener('mouseover', function(e) {
+        var el = e.target.closest('[data-tt]');
+        if (el === activeEl) return;
+        activeEl = el;
+        clearTimeout(showTimer);
+        tip.classList.remove('tt-on');
+        if (!el) return;
+        showTimer = setTimeout(function() {
+          tip.textContent = el.getAttribute('data-tt');
+          tip.classList.add('tt-on');
+          positionTip(e.clientX, e.clientY);
+        }, 280);
+      });
+      document.addEventListener('mousemove', function(e) {
+        if (tip.classList.contains('tt-on')) positionTip(e.clientX, e.clientY);
+      });
+      document.addEventListener('mouseout', function(e) {
+        if (!e.target.closest('[data-tt]')) return;
+        clearTimeout(showTimer);
+        tip.classList.remove('tt-on');
+        activeEl = null;
+      });
+      document.addEventListener('click', function() {
+        tip.classList.remove('tt-on'); activeEl = null;
+      });
+      function positionTip(cx, cy) {
+        var vw = window.innerWidth, vh = window.innerHeight;
+        var tw = Math.min(tip.scrollWidth, 280), th = tip.scrollHeight;
+        var x = cx + 14, y = cy + 14;
+        if (x + tw > vw - 8) x = cx - tw - 14;
+        if (y + th > vh - 8) y = cy - th - 14;
+        if (x < 8) x = 8;
+        if (y < 8) y = 8;
+        tip.style.left = x + 'px';
+        tip.style.top = y + 'px';
+      }
+    })();
   </script>
 </body>
 </html>
