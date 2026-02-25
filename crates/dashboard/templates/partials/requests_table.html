@@ -34,12 +34,13 @@
   <thead>
     <tr>
       <th>Time</th>
-      <th>Account</th>
-      <th>Model</th>
-      <th>Status</th>
-      <th>Tokens</th>
-      <th>Response</th>
-      <th>Cost</th>
+      <th data-tt="When this request was received by the proxy.">Time</th>
+      <th data-tt="Which account was selected by the load balancer to handle this request.">Account</th>
+      <th data-tt="The Claude model requested (or mapped to by the load balancer).">Model</th>
+      <th data-tt="HTTP status code returned. 200 = success, 4xx/5xx = error.">Status</th>
+      <th data-tt="Input tokens sent to the model / output tokens generated in the response.">Tokens</th>
+      <th data-tt="Time from first request byte received to last response byte sent.">Response</th>
+      <th data-tt="PAYG-equivalent cost for this request based on token counts and published pricing.">Cost</th>
       <th></th>
     </tr>
   </thead>

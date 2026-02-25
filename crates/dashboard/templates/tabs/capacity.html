@@ -146,9 +146,9 @@
 <!-- Header row -->
 <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem;flex-wrap:wrap;">
   <div class="cap-subtabs">
-    <button class="cap-subtab active" data-pane="pool">Pool</button>
-    <button class="cap-subtab" data-pane="xfactor">X-Factor</button>
-    <button class="cap-subtab" data-pane="value">Value &amp; ROI</button>
+    <button class="cap-subtab active" data-pane="pool" data-tt="Real-time pool capacity: remaining tokens, time-to-exhaustion, and per-account utilization.">Pool</button>
+    <button class="cap-subtab" data-pane="xfactor" data-tt="X-Factor estimation: how many times more value per dollar you get from subscriptions vs. PAYG.">X-Factor</button>
+    <button class="cap-subtab" data-pane="value" data-tt="Value & ROI: 30-day savings, cost-per-million-token comparison, and per-account breakdown.">Value &amp; ROI</button>
   </div>
   <span id="cap-status"></span>
 </div>
@@ -157,10 +157,10 @@
 <div class="cap-pane active" id="pane-pool">
   <!-- Pool summary metrics -->
   <div class="cap-grid" id="pool-metrics">
-    <div class="cap-metric"><div class="cap-metric-label">Pool Remaining (p50)</div><div class="cap-metric-value" id="pm-remaining">—</div><div class="cap-metric-sub" id="pm-remaining-sub"></div></div>
-    <div class="cap-metric"><div class="cap-metric-label">Soonest TTE</div><div class="cap-metric-value" id="pm-tte">—</div><div class="cap-metric-sub" id="pm-tte-sub"></div></div>
-    <div class="cap-metric"><div class="cap-metric-label">Accounts at Risk</div><div class="cap-metric-value" id="pm-atrisk">—</div><div class="cap-metric-sub" id="pm-atrisk-sub"></div></div>
-    <div class="cap-metric"><div class="cap-metric-label">External Rate</div><div class="cap-metric-value" id="pm-rate">—</div><div class="cap-metric-sub">KF-estimated usage</div></div>
+    <div class="cap-metric"><div class="cap-metric-label" data-tt="Expected remaining tokens summed across all active accounts at the 50th percentile (p50). Pessimistic estimate shown below.">Pool Remaining (p50)</div><div class="cap-metric-value" id="pm-remaining">—</div><div class="cap-metric-sub" id="pm-remaining-sub"></div></div>
+    <div class="cap-metric"><div class="cap-metric-label" data-tt="Time-to-Exhaustion — how long until the first account in the pool runs out of capacity at the current burn rate. '—' means >24h or no active burn.">Soonest TTE</div><div class="cap-metric-value" id="pm-tte">—</div><div class="cap-metric-sub" id="pm-tte-sub"></div></div>
+    <div class="cap-metric"><div class="cap-metric-label" data-tt="Accounts where the load balancer has stopped routing requests because capacity is critically low (shouldStopAssign = true).">Accounts at Risk</div><div class="cap-metric-value" id="pm-atrisk">—</div><div class="cap-metric-sub" id="pm-atrisk-sub"></div></div>
+    <div class="cap-metric"><div class="cap-metric-label" data-tt="Tokens per second estimated to be consumed by external usage (not routed through this proxy). Estimated via a Kalman filter on the token count differences between polls.">External Rate</div><div class="cap-metric-value" id="pm-rate">—</div><div class="cap-metric-sub">KF-estimated usage</div></div>
   </div>
   <!-- Per-account capacity cards -->
   <div id="pool-accounts"></div>
@@ -169,7 +169,7 @@
 <!-- ═══════════════════ X-Factor pane ═══════════════════ -->
 <div class="cap-pane" id="pane-xfactor">
   <div class="cap-section">
-    <h3>X-Factor per Account</h3>
+    <h3 data-tt="X-Factor = how many times more PAYG-equivalent value you extract per dollar spent vs. paying per token directly. X-factor of 10× means subscription is 10× cheaper per token than PAYG.">X-Factor per Account</h3>
     <p class="section-sub">Bars show lo–hi uncertainty range; opacity reflects confidence. Reference lines at 1×, 5×, 10×, 20×.</p>
     <div id="xf-chart-wrap" style="overflow-x:auto;"></div>
   </div>
@@ -180,10 +180,10 @@
         <thead>
           <tr>
             <th>Account</th>
-            <th class="num">X-Factor (lo / mid / hi)</th>
-            <th class="num">Capacity 5h</th>
-            <th class="num">nEff</th>
-            <th>Status</th>
+            <th class="num" data-tt="Estimated value multiplier vs PAYG. lo/mid/hi = lower bound / best estimate / upper bound. Cold = not enough data yet.">X-Factor (lo / mid / hi)</th>
+            <th class="num" data-tt="Expected tokens available in the current 5-hour window at the mid estimate.">Capacity 5h</th>
+            <th class="num" data-tt="Effective sample count — number of independent usage cycles used to estimate X-factor. Higher = more confident estimate.">nEff</th>
+            <th data-tt="Estimation confidence based on nEff. Cold: no data yet. Low: 1–4 samples. Medium: 4–10. High: 10+.">Status</th>
           </tr>
         </thead>
         <tbody id="xf-tbody"></tbody>
@@ -196,7 +196,7 @@
 <div class="cap-pane" id="pane-value">
   <div class="cap-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-bottom:1rem;">
     <div class="cap-metric" id="savings-card">
-      <div class="cap-metric-label">Pool Savings (30d vs PAYG)</div>
+      <div class="cap-metric-label" data-tt="Money saved over the last 30 days compared to paying per-token at PAYG rates. Calculated as: PAYG cost − actual subscription cost. Positive = you paid less than PAYG.">Pool Savings (30d vs PAYG)</div>
       <div class="savings-hero">
         <span class="savings-amount" id="v-savings">—</span>
       </div>
@@ -209,7 +209,7 @@
 
   <!-- CPM chart -->
   <div class="cap-section" id="cpm-section" style="display:none;">
-    <h3>Cost per Million Tokens (30d)</h3>
+    <h3 data-tt="CPM = cost per million tokens. Your actual CPM (colored bar) vs. PAYG equivalent (gray). Green = well below PAYG. Yellow = near PAYG. Red = above PAYG (spending more than you would on PAYG).">Cost per Million Tokens (30d)</h3>
     <p class="section-sub">Actual cost vs PAYG equivalent. Gray = PAYG baseline. Lower is better.</p>
     <div id="cpm-chart"></div>
   </div>
@@ -222,12 +222,12 @@
         <thead>
           <tr>
             <th>Account</th>
-            <th class="num">Tokens (30d)</th>
-            <th class="num">Actual CPM</th>
-            <th class="num">PAYG CPM</th>
-            <th class="num">Realized</th>
-            <th class="num">Savings</th>
-            <th>Status</th>
+            <th class="num" data-tt="Total tokens (input + output + cache) consumed through this account over the last 30 days.">Tokens (30d)</th>
+            <th class="num" data-tt="Your actual cost per million tokens = subscription cost ÷ tokens delivered × 1M. Lower is better.">Actual CPM</th>
+            <th class="num" data-tt="What you would pay per million tokens on PAYG pricing, given your actual model mix. This is your savings baseline.">PAYG CPM</th>
+            <th class="num" data-tt="Realized value % = actual tokens delivered ÷ theoretical maximum tokens if the full subscription were fully used. 100% = perfect utilization.">Realized</th>
+            <th class="num" data-tt="Money saved vs. PAYG over 30 days = (PAYG CPM − Actual CPM) × tokens ÷ 1M. Positive = cheaper than PAYG.">Savings</th>
+            <th data-tt="Status indicators: 'No cost data' means no subscription tier is set. Other badges indicate utilization and value assessment.">Status</th>
           </tr>
         </thead>
         <tbody id="value-tbody"></tbody>
@@ -345,10 +345,10 @@
       var tteStyle = tteMins != null && tteMins < 5 ? ' style="color:#ef4444" class="pulse-red"' : ' style="color:' + tteColor(tteMins) + '"';
 
       var badges = '';
-      if (a.shouldStopAssign) badges += '<span class="badge badge-red">Stop Assign</span>';
-      if (a.suspectedShared) badges += '<span class="badge badge-yellow">Shared?</span>';
-      if (a.confidence === 'cold') badges += '<span class="badge badge-gray">Cold</span>';
-      else if (a.confidence === 'low') badges += '<span class="badge badge-yellow">Low confidence</span>';
+      if (a.shouldStopAssign) badges += '<span class="badge badge-red" data-tt="The load balancer has stopped routing new requests to this account — capacity is critically low.">Stop Assign</span>';
+      if (a.suspectedShared) badges += '<span class="badge badge-yellow" data-tt="Usage pattern suggests this account may be shared with other users outside this proxy, making capacity estimates less reliable.">Shared?</span>';
+      if (a.confidence === 'cold') badges += '<span class="badge badge-gray" data-tt="Not enough usage data yet to estimate capacity. The proxy needs to observe at least one full usage cycle.">Cold</span>';
+      else if (a.confidence === 'low') badges += '<span class="badge badge-yellow" data-tt="Low confidence estimate — fewer than 4 effective samples. Capacity figures may be inaccurate.">Low confidence</span>';
 
       var remaining7d = '';
       if (a.remaining7d) {
@@ -362,11 +362,11 @@
         '</div>' +
         '<div class="util-bar-wrap"><div class="util-bar" style="width:' + Math.min(100,pct).toFixed(1) + '%;background:' + barColor + '"></div></div>' +
         '<div class="account-meta">' +
-          '<span>Util: <b>' + pct.toFixed(1) + '%</b></span>' +
-          '<span>5h remaining: <b>' + fmtTokens(a.remaining5h.expected) + '</b></span>' +
-          (tteMins != null && tteMins <= 1440 ? '<span>TTE: <b' + tteStyle + '>' + tteStr + '</b></span>' : '') +
+          '<span data-tt="Current utilization of the 5-hour token window (tokens used ÷ window limit).">Util: <b>' + pct.toFixed(1) + '%</b></span>' +
+          '<span data-tt="Estimated tokens still available in the current 5-hour window (p50 estimate).">5h remaining: <b>' + fmtTokens(a.remaining5h.expected) + '</b></span>' +
+          (tteMins != null && tteMins <= 1440 ? '<span data-tt="Time-to-Exhaustion at current burn rate. Red/pulsing = less than 5 minutes.">TTE: <b' + tteStyle + '>' + tteStr + '</b></span>' : '') +
           '<span>' + remaining7d + '</span>' +
-          (a.windowRecovery15minTokens > 0 ? '<span>Recovery 15m: <b>' + fmtTokens(a.windowRecovery15minTokens) + '</b></span>' : '') +
+          (a.windowRecovery15minTokens > 0 ? '<span data-tt="Tokens that will become available in the next 15 minutes as older usage falls out of the sliding window.">Recovery 15m: <b>' + fmtTokens(a.windowRecovery15minTokens) + '</b></span>' : '') +
         '</div>' +
       '</div>';
     });

@@ -9,17 +9,17 @@
 <div class="pool-summary" id="pool-summary-card">
   <div class="pool-summary-header">
     <div style="display:flex;align-items:center;gap:0.5rem;flex:1;min-width:0;flex-wrap:wrap;">
-      <span class="pool-status-dot {{ ps.pool_status }}"></span>
+      <span class="pool-status-dot {{ ps.pool_status }}" data-tt="Green: pool is healthy. Yellow: some accounts are rate limited or nearly exhausted. Red: pool is critically low or all accounts are unavailable."></span>
       <span style="font-size:0.82rem;">{{ ps.status_text }} &mdash; {{ ps.available_accounts }}/{{ ps.total_accounts }} available</span>
-      <span id="pool-binding-constraint" style="font-size:0.72rem;color:var(--pico-muted-color);"></span>
+      <span id="pool-binding-constraint" style="font-size:0.72rem;color:var(--pico-muted-color);" data-tt="The account or window currently limiting overall pool throughput — the bottleneck constraining how many requests can be handled."></span>
     </div>
     <div class="pool-view-tabs" id="pool-view-tabs">
-      <button class="pool-view-btn" data-view="bars" onclick="togglePoolView('bars')" title="Progress bars">Bars</button>
-      <button class="pool-view-btn" data-view="timeline" onclick="togglePoolView('timeline')" title="Capacity over time">Timeline</button>
-      <button class="pool-view-btn" data-view="events" onclick="togglePoolView('events')" title="Upcoming renewal events">Events</button>
-      <button class="pool-view-btn" data-view="heatmap" onclick="togglePoolView('heatmap')" title="7-day availability heatmap">Heatmap</button>
-      <button class="pool-view-btn" data-view="gauges" onclick="togglePoolView('gauges')" title="Arc gauge dials">Gauges</button>
-      <button class="pool-view-btn" data-view="capacity" onclick="togglePoolView('capacity')" title="Absolute pool capacity in Nx units over the next 7 days">Capacity</button>
+      <button class="pool-view-btn" data-view="bars" onclick="togglePoolView('bars')" data-tt="Progress bars showing average and max token window utilization per window type.">Bars</button>
+      <button class="pool-view-btn" data-view="timeline" onclick="togglePoolView('timeline')" data-tt="Projected pool capacity over the next 7 days. Choose a burn-rate projection to see different scenarios.">Timeline</button>
+      <button class="pool-view-btn" data-view="events" onclick="togglePoolView('events')" data-tt="Upcoming window renewal events — when each account's token window resets and how much capacity is expected to free up.">Events</button>
+      <button class="pool-view-btn" data-view="heatmap" onclick="togglePoolView('heatmap')" data-tt="7-day availability heatmap by hour. Darker = more pool capacity available. Identifies patterns in when capacity is plentiful vs. scarce.">Heatmap</button>
+      <button class="pool-view-btn" data-view="gauges" onclick="togglePoolView('gauges')" data-tt="Arc gauge dials showing current utilization percentage for each token window.">Gauges</button>
+      <button class="pool-view-btn" data-view="capacity" onclick="togglePoolView('capacity')" data-tt="Absolute pool capacity in Nx multiples of a subscription tier's base limit, projected over the next 7 days.">Capacity</button>
     </div>
   </div>
 
@@ -53,11 +53,12 @@
   <div id="pool-view-timeline" style="display:none">
     <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:4px;flex-wrap:wrap;">
       <span style="font-size:0.72rem;color:var(--pico-muted-color);">Projection:</span>
-      <select id="pool-proj-select" style="font-size:0.72rem;padding:0.1rem 0.35rem;margin:0;height:auto;border-radius:4px;" onchange="onProjChange(this.value)">
+      <select id="pool-proj-select" style="font-size:0.72rem;padding:0.1rem 0.35rem;margin:0;height:auto;border-radius:4px;" onchange="onProjChange(this.value)" data-tt="How to estimate future token consumption. Optimistic = no burn; Current = today's rate; 24h/7d = historical averages.">
         <option value="optimistic">Optimistic (no decay)</option>
         <option value="current">Current pace</option>
         <option value="24h">Last 24h avg</option>
         <option value="7d">Last 7d avg</option>
+
       </select>
     </div>
     <div id="pool-timeline-svg" style="width:100%;overflow:hidden;"></div>

@@ -7,19 +7,19 @@
 {# Summary row #}
 <div class="grid">
   <article>
-    <header><span class="metric-label">Total Requests</span></header>
+    <header><span class="metric-label" data-tt="Total number of API requests proxied since the last stats reset.">Total Requests</span></header>
     <p class="metric-value">{{ fmt_int(total_requests) }}</p>
   </article>
   <article>
-    <header><span class="metric-label">Success Rate</span></header>
+    <header><span class="metric-label" data-tt="Percentage of requests that completed without an error. Green ≥95%, yellow ≥80%, red below 80%.">Success Rate</span></header>
     <p class="metric-value">{{ fmt_pct(success_rate) }}%</p>
   </article>
   <article>
-    <header><span class="metric-label">Avg Response</span></header>
+    <header><span class="metric-label" data-tt="Median time from request received to final response byte sent.">Avg Response</span></header>
     <p class="metric-value">{{ fmt_ms(avg_response_time) }}</p>
   </article>
   <article>
-    <header><span class="metric-label">Total Cost</span></header>
+    <header><span class="metric-label" data-tt="PAYG-equivalent API value delivered, calculated from token counts × published Anthropic pricing.">Total Cost</span></header>
     <p class="metric-value">${{ fmt_usd(total_cost_usd) }}</p>
   </article>
 </div>
@@ -32,9 +32,9 @@
   <table role="grid">
     <thead>
       <tr>
-        <th>Account</th>
-        <th>Requests</th>
-        <th>Success Rate</th>
+        <th data-tt="Account name as configured in the load balancer.">Account</th>
+        <th data-tt="Number of requests routed to this account in the selected period.">Requests</th>
+        <th data-tt="Percentage of successful (non-5xx) responses for this account. Green ≥95%, yellow ≥80%, red below 80%.">Success Rate</th>
       </tr>
     </thead>
     <tbody>
