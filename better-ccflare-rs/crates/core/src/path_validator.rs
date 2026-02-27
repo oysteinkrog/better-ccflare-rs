@@ -49,8 +49,14 @@ pub fn validate_path(raw_path: &str, options: &PathValidationOptions) -> PathVal
     let path = Path::new(raw_path);
     let resolved = match std::fs::canonicalize(path) {
         Ok(p) => p,
-        Err(_) => {
-            // If the file doesn't exist yet, do manual resolution
+        Err(e) => {
+            // If the path exists but canonicalize failed, reject it to avoid symlink TOCTOU:
+            // a symlink at an allowed path could point to a disallowed target.
+            if path.exists() {
+                return invalid(format!("Path canonicalization failed: {e}"));
+            }
+            // Path does not exist yet — do manual resolution without symlink traversal.
+            // This is safe because non-existent paths cannot be symlinks.
             let mut resolved = if path.is_absolute() {
                 PathBuf::new()
             } else {

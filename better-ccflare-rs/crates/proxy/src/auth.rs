@@ -38,18 +38,21 @@ pub struct AuthInfo {
 // API key cache
 // ---------------------------------------------------------------------------
 
-/// TTL for cached API key verifications.
+/// TTL for cached API key verifications (successful).
 const API_KEY_CACHE_TTL_SECS: u64 = 300; // 5 minutes
+
+/// TTL for cached negative (failed) API key verifications.
+const API_KEY_NEGATIVE_CACHE_TTL_SECS: u64 = 30; // 30 seconds
 
 /// TTL for cached "auth enabled" check.
 const AUTH_ENABLED_CACHE_TTL_SECS: u64 = 10;
 
-/// Maximum number of entries in the API key cache (LRU-style eviction).
+/// Maximum number of entries in the API key cache (cleared on overflow).
 const API_KEY_CACHE_MAX_SIZE: usize = 1000;
 
 struct CachedKeyResult {
-    id: String,
-    name: String,
+    /// Some((id, name)) for successful verifications; None for failed ones.
+    result: Option<(String, String)>,
     verified_at: Instant,
 }
 
@@ -61,6 +64,23 @@ struct AuthEnabledCache {
 fn api_key_cache() -> &'static RwLock<HashMap<String, CachedKeyResult>> {
     static CACHE: OnceLock<RwLock<HashMap<String, CachedKeyResult>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Sentinel error type to distinguish DB errors from "0 keys" in auth checks.
+#[derive(Debug)]
+enum AuthCountError {
+    DbError,
+}
+
+/// Count active API keys; returns Err on connection/query failure.
+fn count_active_api_keys_sync(pool: &DbPool) -> Result<i64, AuthCountError> {
+    let conn = pool.get().map_err(|_| AuthCountError::DbError)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM api_keys WHERE is_active = 1",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|_| AuthCountError::DbError)
 }
 
 fn auth_enabled_cache() -> &'static RwLock<Option<AuthEnabledCache>> {
@@ -107,6 +127,15 @@ fn extract_api_key(req: &Request<Body>) -> Option<String> {
 // Path exemptions
 // ---------------------------------------------------------------------------
 
+/// Normalize a URL path to prevent bypass via double-slash or similar tricks.
+///
+/// Collapses repeated leading slashes, e.g. `//api/config` → `/api/config`.
+fn normalize_path(path: &str) -> String {
+    // Strip all leading slashes, then add exactly one back.
+    let stripped = path.trim_start_matches('/');
+    format!("/{stripped}")
+}
+
 /// Check if a path is exempt from authentication.
 ///
 /// Exempt paths:
@@ -115,6 +144,10 @@ fn extract_api_key(req: &Request<Body>) -> Option<String> {
 /// - Non-API paths — exempt (dashboard static assets)
 /// - `/api/accounts/:id/reload` — exempt (server-to-server)
 fn is_path_exempt(path: &str, _method: &str) -> bool {
+    // M1: normalize path before checks to prevent `//api/config` bypass.
+    let path = normalize_path(path);
+    let path = path.as_str();
+
     // Health check
     if path == "/health" {
         return true;
@@ -176,43 +209,41 @@ fn verify_api_key_sync(pool: &DbPool, api_key: &str) -> Option<(String, String)>
     None
 }
 
-/// Count active API keys in the database (sync).
-fn count_active_api_keys_sync(pool: &DbPool) -> i64 {
-    let Ok(conn) = pool.get() else {
-        return 0;
-    };
-
-    conn.query_row(
-        "SELECT COUNT(*) FROM api_keys WHERE is_active = 1",
-        [],
-        |row| row.get(0),
-    )
-    .unwrap_or(0)
-}
-
 // ---------------------------------------------------------------------------
 // Async wrappers with caching
 // ---------------------------------------------------------------------------
 
 /// Check if auth is enabled (cached for 10 seconds).
-async fn is_auth_enabled(pool: &DbPool) -> bool {
+///
+/// Returns `Ok(true)` if any active API keys exist, `Ok(false)` if none,
+/// and `Err(())` if the database could not be queried (fail-closed: treat as enabled).
+async fn is_auth_enabled(pool: &DbPool) -> Result<bool, ()> {
     // Check cache (read lock — concurrent readers allowed)
     {
         let cache = auth_enabled_cache().read();
         if let Some(ref entry) = *cache {
             if entry.checked_at.elapsed().as_secs() < AUTH_ENABLED_CACHE_TTL_SECS {
-                return entry.enabled;
+                return Ok(entry.enabled);
             }
         }
     }
 
     // Cache miss — query via spawn_blocking
     let pool = pool.clone();
-    let enabled = tokio::task::spawn_blocking(move || count_active_api_keys_sync(&pool) > 0)
+    let count_result = tokio::task::spawn_blocking(move || count_active_api_keys_sync(&pool))
         .await
-        .unwrap_or(false);
+        .unwrap_or(Err(AuthCountError::DbError));
 
-    // Update cache (write lock)
+    let enabled = match count_result {
+        Ok(count) => count > 0,
+        Err(AuthCountError::DbError) => {
+            // Fail-closed: treat DB error as "auth is enabled" to avoid bypass.
+            // Do NOT cache this result so we retry on the next request.
+            return Err(());
+        }
+    };
+
+    // Update cache (write lock) — only cache definitive results
     {
         let mut cache = auth_enabled_cache().write();
         *cache = Some(AuthEnabledCache {
@@ -221,7 +252,7 @@ async fn is_auth_enabled(pool: &DbPool) -> bool {
         });
     }
 
-    enabled
+    Ok(enabled)
 }
 
 /// Hash an API key for use as a cache key (avoids storing plaintext keys in memory).
@@ -246,6 +277,10 @@ fn hash_for_cache(api_key: &str) -> String {
 /// On cache hit (within TTL), returns immediately without any crypto or DB work.
 /// On cache miss, offloads the scrypt verification to a blocking thread.
 /// Cache keys are SHA-256 hashed to avoid storing plaintext API keys in memory.
+///
+/// Both successful and failed verifications are cached to prevent O(N) scrypt DoS
+/// from repeated invalid keys. Successful results are cached for 5 minutes;
+/// failed results are cached for 30 seconds.
 async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
     let cache_key = hash_for_cache(api_key);
 
@@ -253,8 +288,13 @@ async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, 
     {
         let cache = api_key_cache().read();
         if let Some(entry) = cache.get(&cache_key) {
-            if entry.verified_at.elapsed().as_secs() < API_KEY_CACHE_TTL_SECS {
-                return Some((entry.id.clone(), entry.name.clone()));
+            let ttl = if entry.result.is_some() {
+                API_KEY_CACHE_TTL_SECS
+            } else {
+                API_KEY_NEGATIVE_CACHE_TTL_SECS
+            };
+            if entry.verified_at.elapsed().as_secs() < ttl {
+                return entry.result.clone();
             }
         }
     }
@@ -267,24 +307,18 @@ async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, 
         .ok()
         .flatten();
 
-    // Cache successful result (write lock)
-    if let Some((ref id, ref name)) = result {
+    // Cache both successful and failed results (write lock).
+    // M2 fix: when cache is full, clear it entirely rather than doing an O(N)
+    // linear scan under the write lock. At 1000 entries this is acceptable.
+    {
         let mut cache = api_key_cache().write();
-        // Evict oldest entries if cache is too large
         if cache.len() >= API_KEY_CACHE_MAX_SIZE {
-            if let Some(oldest_key) = cache
-                .iter()
-                .min_by_key(|(_, v)| v.verified_at)
-                .map(|(k, _)| k.clone())
-            {
-                cache.remove(&oldest_key);
-            }
+            cache.clear();
         }
         cache.insert(
             cache_key,
             CachedKeyResult {
-                id: id.clone(),
-                name: name.clone(),
+                result: result.clone(),
                 verified_at: Instant::now(),
             },
         );
@@ -321,7 +355,19 @@ pub async fn auth_middleware(
     // Check if authentication is enabled (any active API keys exist)
     let pool = state.db_pool::<DbPool>();
     let auth_enabled = match pool {
-        Some(p) => is_auth_enabled(p).await,
+        Some(p) => match is_auth_enabled(p).await {
+            Ok(enabled) => enabled,
+            Err(()) => {
+                // DB error — fail closed: return 500 rather than bypassing auth.
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({
+                        "error": "Authentication check failed due to a database error"
+                    })),
+                )
+                    .into_response();
+            }
+        },
         None => false,
     };
 
@@ -418,6 +464,22 @@ mod tests {
         assert!(!is_path_exempt("/api/stats", "GET"));
         assert!(!is_path_exempt("/api/accounts", "GET"));
         assert!(!is_path_exempt("/api/config", "GET"));
+    }
+
+    #[test]
+    fn double_slash_path_not_exempt() {
+        // M1: double-slash bypass must not allow /api/* paths to be exempt
+        assert!(!is_path_exempt("//api/config", "GET"));
+        assert!(!is_path_exempt("//api/stats", "GET"));
+        assert!(!is_path_exempt("//v1/messages", "POST"));
+    }
+
+    #[test]
+    fn double_slash_exempt_paths_still_work() {
+        // Normalized exempt paths should still be exempt
+        assert!(is_path_exempt("//health", "GET"));
+        assert!(is_path_exempt("//api/oauth/init", "POST"));
+        assert!(is_path_exempt("//dashboard", "GET"));
     }
 
     #[test]

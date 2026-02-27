@@ -90,8 +90,8 @@ impl Provider for ZaiProvider {
         headers: &mut HeaderMap,
         access_token: Option<&str>,
         api_key: Option<&str>,
-    ) {
-        self.inner.prepare_headers(headers, access_token, api_key);
+    ) -> Result<(), ProviderError> {
+        self.inner.prepare_headers(headers, access_token, api_key)
     }
 
     fn parse_rate_limit(&self, headers: &HeaderMap, status_code: u16) -> RateLimitInfo {

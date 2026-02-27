@@ -32,12 +32,14 @@ pub trait Provider: Send + Sync {
     fn build_url(&self, path: &str, query: &str, account: Option<&Account>) -> String;
 
     /// Prepare request headers (add auth, remove dangerous headers).
+    ///
+    /// Returns an error if auth headers cannot be constructed (e.g. malformed token).
     fn prepare_headers(
         &self,
         headers: &mut HeaderMap,
         access_token: Option<&str>,
         api_key: Option<&str>,
-    );
+    ) -> Result<(), ProviderError>;
 
     /// Extract rate-limit info from a provider response's headers.
     fn parse_rate_limit(&self, headers: &HeaderMap, status_code: u16) -> RateLimitInfo;

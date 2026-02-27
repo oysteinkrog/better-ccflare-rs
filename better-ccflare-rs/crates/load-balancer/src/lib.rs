@@ -202,6 +202,12 @@ impl SessionStrategy {
         if fixed_duration_expired || rate_limit_window_reset {
             account.session_start = Some(now);
             account.session_request_count = 0;
+            // Clear rate_limit_reset so it doesn't fire again on the next request.
+            // Without this, any past timestamp causes `rate_limit_window_reset` to be
+            // permanently true, triggering a session reset on every request.
+            if rate_limit_window_reset {
+                account.rate_limit_reset = None;
+            }
             return Some(SessionReset {
                 account_id: account.id.clone(),
                 new_session_start: now,

@@ -452,7 +452,7 @@ async fn refresh_oauth_token(
                 .unwrap_or(refresh_token)
                 .to_string();
             let expires_at = json["expires_in"].as_i64().map(|secs| {
-                chrono::Utc::now().timestamp() + secs
+                chrono::Utc::now().timestamp_millis() + secs * 1000
             });
             Some(RefreshedToken {
                 access_token,
