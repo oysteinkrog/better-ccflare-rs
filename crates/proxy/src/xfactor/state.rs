@@ -197,6 +197,12 @@ impl AccountCapacityState {
 
     /// Overlay a DB snapshot (posterior + EMA + KF) on top of the tier prior.
     /// Call after `new()` during startup restore.
+    ///
+    /// Note: KF state (kf_e, kf_e_dot, kf_p) is intentionally NOT restored from DB.
+    /// Persisted kf_e values can be tainted by early high-prior observations (before
+    /// the posterior converged), producing false positives in suspected_shared().
+    /// Starting the KF fresh on each startup is safe — it re-learns external usage
+    /// within a few hours, and the n_eff >= 10 gate prevents premature detections.
     pub fn restore_from_db(&mut self, db: &XFactorDbState) {
         self.mu = db.mu;
         self.sigma_sq = db.sigma_sq;
@@ -204,9 +210,10 @@ impl AccountCapacityState {
         self.ema_proxy_rate = db.ema_proxy_rate;
         self.c_i_hard_lower = db.c_i_hard_lower;
         self.updated_at_ms = db.updated_at_ms;
-        self.kf_e = db.kf_e;
-        self.kf_e_dot = db.kf_e_dot;
-        self.kf_p = [[db.kf_p00, db.kf_p01], [db.kf_p10, db.kf_p11]];
+        // KF state reset intentionally (see doc comment).
+        self.kf_e = 0.0;
+        self.kf_e_dot = 0.0;
+        self.kf_p = [[KF_INIT_VARIANCE, 0.0], [0.0, KF_INIT_VARIANCE]];
         self.lag_estimate_ms = db.lag_estimate_ms;
     }
 
@@ -302,24 +309,31 @@ impl AccountCapacityState {
         // Advance KF to now first.
         self.kf_predict_to(now_ms);
 
-        // Lag-corrected proxy token sum: use P at (now - lag) from the deque.
-        // This corrects for the ~90s API reporting lag.
-        let lagged_ms = now_ms - self.lag_estimate_ms;
-        let p_at_lag = self.p_at_lagged_time(lagged_ms);
+        // Gate: only feed KF once the posterior has stabilised enough (n_eff >= 5,
+        // i.e. ~25 minutes of polls at 90s intervals).  Early on, C_estimate is
+        // dominated by the prior (which may be 200k for unknown-tier accounts)
+        // and systematically inflates E_obs = C_est × U/100 − P_at_lag, poisoning
+        // the KF with false external-usage signal.
+        if self.n_eff >= 5.0 {
+            // Lag-corrected proxy token sum: use P at (now - lag) from the deque.
+            // This corrects for the ~90s API reporting lag.
+            let lagged_ms = now_ms - self.lag_estimate_ms;
+            let p_at_lag = self.p_at_lagged_time(lagged_ms);
 
-        // Observed external usage: E_obs = max(0, C_estimate × U/100 - P_at_lag)
-        let c_est = self.c_estimate();
-        let e_obs = (c_est * u / 100.0 - p_at_lag).max(0.0);
+            // Observed external usage: E_obs = max(0, C_estimate × U/100 - P_at_lag)
+            let c_est = self.c_estimate();
+            let e_obs = (c_est * u / 100.0 - p_at_lag).max(0.0);
 
-        // Measurement noise: variance of 1% quantization bucket
-        // R = (C_estimate * 0.01)² / 12
-        let r = (c_est * 0.01).powi(2) / 12.0;
+            // Measurement noise: variance of 1% quantization bucket
+            // R = (C_estimate * 0.01)² / 12
+            let r = (c_est * 0.01).powi(2) / 12.0;
 
-        self.kf_update(e_obs, r);
+            self.kf_update(e_obs, r);
 
-        // Hard clip: external tokens can't be negative
-        self.kf_e = self.kf_e.max(0.0);
-        self.kf_e_dot = self.kf_e_dot.max(0.0);
+            // Hard clip: external tokens can't be negative
+            self.kf_e = self.kf_e.max(0.0);
+            self.kf_e_dot = self.kf_e_dot.max(0.0);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -543,11 +557,18 @@ impl AccountCapacityState {
 
     /// Whether the account is suspected to have external usage (based on KF E estimate).
     ///
-    /// Requires n_eff >= 5 (enough data for the KF to stabilise) and a shared
-    /// score > 0.50 (external tokens clearly dominate proxy usage) to avoid
-    /// false positives from capacity estimation noise.
+    /// Three independent gates:
+    /// - n_eff >= 10: KF has been fed stable C_estimate for at least ~50 minutes
+    /// - kf_e >= 30_000: absolute minimum to rule out pure noise / small overestimates
+    /// - shared_score > 0.50: external tokens clearly dominate proxy usage
+    ///
+    /// The absolute-kf_e gate is critical because shared_score is a ratio — a tiny
+    /// proxy_tokens_5h_weighted makes even small kf_e noise look dominant.
     pub fn suspected_shared(&self) -> bool {
-        !self.is_shared && self.n_eff >= 5.0 && self.shared_score() > SHARED_SCORE_THRESHOLD
+        !self.is_shared
+            && self.n_eff >= 10.0
+            && self.kf_e >= 30_000.0
+            && self.shared_score() > SHARED_SCORE_THRESHOLD
     }
 
     /// Seconds since the last usage poll, or None if never polled.
