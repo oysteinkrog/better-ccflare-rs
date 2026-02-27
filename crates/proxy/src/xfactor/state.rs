@@ -54,8 +54,12 @@ pub const KF_PROCESS_NOISE_RATE: f64 = 100.0;
 /// Initial KF state covariance (very uncertain at start).
 pub const KF_INIT_VARIANCE: f64 = 1e12;
 
-/// Shared score threshold: flag if external > 15% of proxy tokens.
-pub const SHARED_SCORE_THRESHOLD: f64 = 0.15;
+/// Shared score threshold: flag if external > 50% of proxy tokens.
+///
+/// Set conservatively high because the KF naturally absorbs any capacity
+/// over-estimation as apparent "external" usage.  We only want to flag
+/// accounts where external consumption clearly dominates.
+pub const SHARED_SCORE_THRESHOLD: f64 = 0.50;
 
 // ---------------------------------------------------------------------------
 // Model weights
@@ -529,7 +533,7 @@ impl AccountCapacityState {
 
     /// Shared score: ratio of estimated external tokens to proxy tokens (0.0–∞).
     ///
-    /// Values > SHARED_SCORE_THRESHOLD (0.15) suggest the account is being used externally.
+    /// Values > SHARED_SCORE_THRESHOLD (0.50) suggest the account is being used externally.
     pub fn shared_score(&self) -> f64 {
         if self.proxy_tokens_5h_weighted <= 100.0 {
             return 0.0; // not enough data
@@ -538,8 +542,12 @@ impl AccountCapacityState {
     }
 
     /// Whether the account is suspected to have external usage (based on KF E estimate).
+    ///
+    /// Requires n_eff >= 5 (enough data for the KF to stabilise) and a shared
+    /// score > 0.50 (external tokens clearly dominate proxy usage) to avoid
+    /// false positives from capacity estimation noise.
     pub fn suspected_shared(&self) -> bool {
-        !self.is_shared && self.n_eff >= 2.0 && self.shared_score() > SHARED_SCORE_THRESHOLD
+        !self.is_shared && self.n_eff >= 5.0 && self.shared_score() > SHARED_SCORE_THRESHOLD
     }
 
     /// Seconds since the last usage poll, or None if never polled.

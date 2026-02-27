@@ -45,6 +45,18 @@
     color:var(--bccf-text-tertiary);
     margin-bottom:0.75rem;
   }
+  .cap-explainer {
+    font-size:0.78rem;
+    color:var(--bccf-text-secondary);
+    background:rgba(0,0,0,0.03);
+    border:1px solid var(--bccf-border-subtle);
+    border-radius:0.4rem;
+    padding:0.6rem 0.8rem;
+    margin-bottom:1rem;
+    line-height:1.5;
+  }
+  [data-theme="dark"] .cap-explainer { background:rgba(255,255,255,0.04); }
+  .cap-explainer b { color:var(--bccf-text); }
   .account-card {
     border:1px solid var(--bccf-border);
     border-radius:0.4rem;
@@ -89,6 +101,11 @@
   .xf-bar-fill { height:100%; border-radius:4px; position:absolute; top:0; }
   .xf-bar-mid { width:3px; height:14px; border-radius:1px; position:absolute; top:-3px; background:var(--bccf-text); }
 
+  /* X-factor chart legend */
+  .xf-legend { display:flex; gap:1rem; flex-wrap:wrap; font-size:0.72rem; color:var(--bccf-text-secondary); margin-bottom:0.75rem; align-items:center; }
+  .xf-legend-item { display:flex; align-items:center; gap:0.35rem; }
+  .xf-legend-swatch { display:inline-block; width:18px; height:10px; border-radius:2px; }
+
   /* Value/savings */
   .savings-hero {
     display:flex;
@@ -115,6 +132,9 @@
   .cpm-bar-payg { height:8px; border-radius:2px; background:rgba(107,114,128,0.2); position:absolute; top:3px; left:0; }
   .cpm-bar-actual { height:14px; border-radius:2px; position:absolute; top:0; left:0; }
   .cpm-value { width:48px; text-align:right; font-size:0.72rem; font-variant-numeric:tabular-nums; color:var(--bccf-text-secondary); }
+  .cpm-legend { display:flex; gap:1rem; font-size:0.72rem; color:var(--bccf-text-secondary); margin-bottom:0.5rem; }
+  .cpm-legend-item { display:flex; align-items:center; gap:0.3rem; }
+  .cpm-legend-swatch { width:16px; height:8px; border-radius:2px; }
 
   /* Sub-tabs */
   .cap-subtabs { display:flex; gap:0; margin-bottom:1rem; }
@@ -147,7 +167,7 @@
 <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem;flex-wrap:wrap;">
   <div class="cap-subtabs">
     <button class="cap-subtab active" data-pane="pool" data-tt="Real-time pool capacity: remaining tokens, time-to-exhaustion, and per-account utilization.">Pool</button>
-    <button class="cap-subtab" data-pane="xfactor" data-tt="X-Factor estimation: how many times more value per dollar you get from subscriptions vs. PAYG.">X-Factor</button>
+    <button class="cap-subtab" data-pane="xfactor" data-tt="X-Factor: estimated value multiplier — how many times more output per dollar you get from subscriptions vs. pay-per-token.">X-Factor</button>
     <button class="cap-subtab" data-pane="value" data-tt="Value & ROI: 30-day savings, cost-per-million-token comparison, and per-account breakdown.">Value &amp; ROI</button>
   </div>
   <span id="cap-status"></span>
@@ -155,12 +175,34 @@
 
 <!-- ═══════════════════ Pool pane ═══════════════════ -->
 <div class="cap-pane active" id="pane-pool">
+  <div class="cap-explainer">
+    Each Anthropic subscription account has a <b>5-hour rolling token window</b> — a soft limit on how many tokens can be consumed in any 5-hour period.
+    This page shows how much of that window is used and how long until accounts need to "rest."
+    Numbers are <b>estimates</b>: the API only reports utilisation %, not exact token counts.
+  </div>
+
   <!-- Pool summary metrics -->
   <div class="cap-grid" id="pool-metrics">
-    <div class="cap-metric"><div class="cap-metric-label" data-tt="Expected remaining tokens summed across all active accounts at the 50th percentile (p50). Pessimistic estimate shown below.">Pool Remaining (p50)</div><div class="cap-metric-value" id="pm-remaining">—</div><div class="cap-metric-sub" id="pm-remaining-sub"></div></div>
-    <div class="cap-metric"><div class="cap-metric-label" data-tt="Time-to-Exhaustion — how long until the first account in the pool runs out of capacity at the current burn rate. '—' means >24h or no active burn.">Soonest TTE</div><div class="cap-metric-value" id="pm-tte">—</div><div class="cap-metric-sub" id="pm-tte-sub"></div></div>
-    <div class="cap-metric"><div class="cap-metric-label" data-tt="Accounts where the load balancer has stopped routing requests because capacity is critically low (shouldStopAssign = true).">Accounts at Risk</div><div class="cap-metric-value" id="pm-atrisk">—</div><div class="cap-metric-sub" id="pm-atrisk-sub"></div></div>
-    <div class="cap-metric"><div class="cap-metric-label" data-tt="Tokens per second estimated to be consumed by external usage (not routed through this proxy). Estimated via a Kalman filter on the token count differences between polls.">External Rate</div><div class="cap-metric-value" id="pm-rate">—</div><div class="cap-metric-sub">KF-estimated usage</div></div>
+    <div class="cap-metric">
+      <div class="cap-metric-label" data-tt="Total tokens estimated to remain across all active accounts, summed at the 50th percentile (median estimate). The pessimistic figure below uses the 5th-percentile estimate per account.">Pool Remaining</div>
+      <div class="cap-metric-value" id="pm-remaining">—</div>
+      <div class="cap-metric-sub" id="pm-remaining-sub"></div>
+    </div>
+    <div class="cap-metric">
+      <div class="cap-metric-label" data-tt="Time-to-Exhaustion — how long until the first account hits its limit at the current burn rate. Accounts recover as old usage falls out of the 5-hour window. '—' means all accounts have &gt;24 h of headroom.">Soonest Runs Out</div>
+      <div class="cap-metric-value" id="pm-tte">—</div>
+      <div class="cap-metric-sub" id="pm-tte-sub"></div>
+    </div>
+    <div class="cap-metric">
+      <div class="cap-metric-label" data-tt="Accounts paused by the load balancer because capacity is critically low. Requests are redistributed to other accounts until capacity recovers.">Paused Accounts</div>
+      <div class="cap-metric-value" id="pm-atrisk">—</div>
+      <div class="cap-metric-sub" id="pm-atrisk-sub"></div>
+    </div>
+    <div class="cap-metric">
+      <div class="cap-metric-label" data-tt="Tokens per second estimated to be consumed by external tools or browsers — usage that goes to Anthropic but NOT through this proxy. Estimated by comparing the API's reported utilisation with what the proxy actually sent.">External Usage Rate</div>
+      <div class="cap-metric-value" id="pm-rate">—</div>
+      <div class="cap-metric-sub">usage outside this proxy</div>
+    </div>
   </div>
   <!-- Per-account capacity cards -->
   <div id="pool-accounts"></div>
@@ -168,9 +210,30 @@
 
 <!-- ═══════════════════ X-Factor pane ═══════════════════ -->
 <div class="cap-pane" id="pane-xfactor">
+  <div class="cap-explainer">
+    <b>X-Factor</b> answers: "How much cheaper is this subscription vs. paying per token?"
+    A value of <b>10×</b> means you're getting $10 of PAYG-equivalent output for every $1 of subscription cost.
+    The bar shows the uncertainty range (lo–hi); the vertical line is the best estimate (mid).
+    <b>Opacity</b> reflects confidence: more data → more opaque bar.
+  </div>
+
   <div class="cap-section">
-    <h3 data-tt="X-Factor = how many times more PAYG-equivalent value you extract per dollar spent vs. paying per token directly. X-factor of 10× means subscription is 10× cheaper per token than PAYG.">X-Factor per Account</h3>
-    <p class="section-sub">Bars show lo–hi uncertainty range; opacity reflects confidence. Reference lines at 1×, 5×, 10×, 20×.</p>
+    <h3 data-tt="Each horizontal bar shows one account's X-Factor estimate. The bar spans the uncertainty range (lo to hi). The vertical tick marks the best estimate (mid). Faded bars mean less data.">X-Factor per Account</h3>
+    <div class="xf-legend">
+      <div class="xf-legend-item">
+        <span class="xf-legend-swatch" style="background:var(--bccf-orange);opacity:1"></span>
+        <span>High confidence</span>
+      </div>
+      <div class="xf-legend-item">
+        <span class="xf-legend-swatch" style="background:var(--bccf-orange);opacity:0.45"></span>
+        <span>Low confidence (little data)</span>
+      </div>
+      <div class="xf-legend-item">
+        <span class="xf-legend-swatch" style="background:rgba(107,114,128,0.4)"></span>
+        <span>Cold (no data yet)</span>
+      </div>
+      <span style="margin-left:auto;font-size:0.7rem;color:var(--bccf-text-tertiary)">Reference lines: 1× 5× 10× 20×</span>
+    </div>
     <div id="xf-chart-wrap" style="overflow-x:auto;"></div>
   </div>
   <div class="cap-section">
@@ -180,23 +243,32 @@
         <thead>
           <tr>
             <th>Account</th>
-            <th class="num" data-tt="Estimated value multiplier vs PAYG. lo/mid/hi = lower bound / best estimate / upper bound. Cold = not enough data yet.">X-Factor (lo / mid / hi)</th>
-            <th class="num" data-tt="Expected tokens available in the current 5-hour window at the mid estimate.">Capacity 5h</th>
-            <th class="num" data-tt="Effective sample count — number of independent usage cycles used to estimate X-factor. Higher = more confident estimate.">nEff</th>
-            <th data-tt="Estimation confidence based on nEff. Cold: no data yet. Low: 1–4 samples. Medium: 4–10. High: 10+.">Status</th>
+            <th class="num" data-tt="Value multiplier vs pay-per-token. lo = conservative estimate, mid = best estimate, hi = optimistic estimate. A value of 10× means the subscription is 10× cheaper per token than PAYG pricing.">X-Factor (lo / mid / hi)</th>
+            <th class="num" data-tt="Estimated tokens still available in the current 5-hour window, using the mid X-factor estimate.">5h tokens left</th>
+            <th class="num" data-tt="How many independent 5-hour usage cycles were used to build this estimate. More cycles = higher confidence. Typically grows by ~0.3 per poll cycle (every 95 seconds).">Samples (nEff)</th>
+            <th class="num" data-tt="Fraction of account tokens estimated to come from outside this proxy (e.g. Claude.ai browser, other tools). High values may indicate shared account usage.">Ext. Usage</th>
+            <th data-tt="Cold = no data yet. Low = &lt;4 samples. Medium = 4–10. High = 10+.">Confidence</th>
           </tr>
         </thead>
         <tbody id="xf-tbody"></tbody>
       </table>
     </div>
+    <p style="font-size:0.72rem;color:var(--bccf-text-tertiary);margin-top:0.5rem;">
+      Estimates update every ~95 seconds. An account needs a few hours of active use before estimates become reliable.
+    </p>
   </div>
 </div>
 
 <!-- ═══════════════════ Value pane ═══════════════════ -->
 <div class="cap-pane" id="pane-value">
+  <div class="cap-explainer">
+    Compares what you <b>actually paid</b> (subscription cost) vs. what the same tokens would have cost on <b>pay-per-token pricing</b>.
+    A positive savings figure means subscriptions are paying off. Requires subscription tier to be set per account.
+  </div>
+
   <div class="cap-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-bottom:1rem;">
     <div class="cap-metric" id="savings-card">
-      <div class="cap-metric-label" data-tt="Money saved over the last 30 days compared to paying per-token at PAYG rates. Calculated as: PAYG cost − actual subscription cost. Positive = you paid less than PAYG.">Pool Savings (30d vs PAYG)</div>
+      <div class="cap-metric-label" data-tt="Total saved over 30 days compared to paying per token at PAYG list prices. Calculated as: PAYG equivalent cost − actual subscription cost.">Saved vs. Pay-Per-Token (30d)</div>
       <div class="savings-hero">
         <span class="savings-amount" id="v-savings">—</span>
       </div>
@@ -209,25 +281,31 @@
 
   <!-- CPM chart -->
   <div class="cap-section" id="cpm-section" style="display:none;">
-    <h3 data-tt="CPM = cost per million tokens. Your actual CPM (colored bar) vs. PAYG equivalent (gray). Green = well below PAYG. Yellow = near PAYG. Red = above PAYG (spending more than you would on PAYG).">Cost per Million Tokens (30d)</h3>
-    <p class="section-sub">Actual cost vs PAYG equivalent. Gray = PAYG baseline. Lower is better.</p>
+    <h3 data-tt="CPM = cost per million tokens. Lower is better. Your actual CPM (colored bar) vs. what PAYG would cost (gray bar). Green = well below PAYG rate. Red = more expensive than PAYG.">Cost per Million Tokens (30d)</h3>
+    <p class="section-sub">Colored = actual cost. Gray = PAYG equivalent. Shorter colored bar = better deal.</p>
+    <div class="cpm-legend">
+      <div class="cpm-legend-item"><span class="cpm-legend-swatch" style="background:rgba(107,114,128,0.2)"></span> PAYG equivalent</div>
+      <div class="cpm-legend-item"><span class="cpm-legend-swatch" style="background:#22c55e"></span> Actual (good)</div>
+      <div class="cpm-legend-item"><span class="cpm-legend-swatch" style="background:#eab308"></span> Actual (near PAYG)</div>
+      <div class="cpm-legend-item"><span class="cpm-legend-swatch" style="background:#ef4444"></span> Actual (worse than PAYG)</div>
+    </div>
     <div id="cpm-chart"></div>
   </div>
 
   <!-- Value table -->
   <div class="cap-section">
-    <h3>Account Value Breakdown</h3>
+    <h3>Per-Account Breakdown</h3>
     <div style="overflow-x:auto;">
       <table class="xf-table">
         <thead>
           <tr>
             <th>Account</th>
-            <th class="num" data-tt="Total tokens (input + output + cache) consumed through this account over the last 30 days.">Tokens (30d)</th>
-            <th class="num" data-tt="Your actual cost per million tokens = subscription cost ÷ tokens delivered × 1M. Lower is better.">Actual CPM</th>
-            <th class="num" data-tt="What you would pay per million tokens on PAYG pricing, given your actual model mix. This is your savings baseline.">PAYG CPM</th>
-            <th class="num" data-tt="Realized value % = actual tokens delivered ÷ theoretical maximum tokens if the full subscription were fully used. 100% = perfect utilization.">Realized</th>
-            <th class="num" data-tt="Money saved vs. PAYG over 30 days = (PAYG CPM − Actual CPM) × tokens ÷ 1M. Positive = cheaper than PAYG.">Savings</th>
-            <th data-tt="Status indicators: 'No cost data' means no subscription tier is set. Other badges indicate utilization and value assessment.">Status</th>
+            <th class="num" data-tt="Total tokens (input + output + cache) consumed through this proxy over the last 30 days.">Tokens (30d)</th>
+            <th class="num" data-tt="Your cost per million tokens = subscription monthly cost ÷ tokens you used × 1M. Lower = better deal.">Your CPM</th>
+            <th class="num" data-tt="What those same tokens would cost per million on pay-per-token pricing, weighted by your actual model mix. This is your comparison baseline.">PAYG CPM</th>
+            <th class="num" data-tt="Subscription utilisation: tokens delivered ÷ maximum tokens if the subscription were fully used every day. 100% = every token was used. Low % means the subscription was underused this month.">Utilisation</th>
+            <th class="num" data-tt="Money saved vs. pay-per-token over 30 days = (PAYG CPM − your CPM) × tokens ÷ 1M. Positive = cheaper than PAYG.">Saved</th>
+            <th data-tt="Status badges. 'No cost data' means no subscription tier is configured for this account.">Status</th>
           </tr>
         </thead>
         <tbody id="value-tbody"></tbody>
@@ -275,6 +353,10 @@
     return '$' + v.toFixed(4);
   }
   function fmtPct(v) { return v == null ? '—' : v.toFixed(1) + '%'; }
+  function fmtSharedScore(v) {
+    if (v == null || v <= 0) return '—';
+    return (v * 100).toFixed(0) + '%';
+  }
 
   function tteColor(minutes) {
     if (minutes == null || minutes > 60) return '#22c55e';
@@ -286,23 +368,28 @@
     if (pct >= 75) return '#eab308';
     return '#22c55e';
   }
-  function confidenceBadge(conf, nEff) {
-    var labels = { cold:'Cold', low:'Low', medium:'Medium', high:'High' };
-    var cls = { cold:'badge-gray', low:'badge-yellow', medium:'badge-blue', high:'badge-green' };
-    return '<span class="badge ' + (cls[conf]||'badge-gray') + '">' + (labels[conf]||conf) + '</span>';
+  function confidenceBadge(conf) {
+    var map = {
+      cold:   ['badge-gray',   'No data yet'],
+      low:    ['badge-yellow', 'Low conf.'],
+      medium: ['badge-blue',   'Medium conf.'],
+      high:   ['badge-green',  'High conf.'],
+    };
+    var cfg = map[conf] || ['badge-gray', conf];
+    return '<span class="badge ' + cfg[0] + '" data-tt="Confidence level based on number of 5-hour usage cycles observed.">' + cfg[1] + '</span>';
   }
   function recBadge(rec) {
     var map = {
-      GOOD_VALUE:['badge-green','Good Value'],
-      UNDERUTILIZED:['badge-yellow','Underutilized'],
-      NEAR_EXHAUSTION_5H:['badge-red','Near Exhaustion'],
-      NEAR_EXHAUSTION_7D:['badge-yellow','Near 7d Limit'],
-      SUSPECTED_SHARED:['badge-yellow','Suspected Shared'],
-      HIGH_MONTHLY_COST:['badge-gray','High Cost'],
+      GOOD_VALUE:          ['badge-green',  'Good value',       'Subscription is cheaper than PAYG for your usage.'],
+      UNDERUTILIZED:       ['badge-yellow', 'Underutilised',    'Less than 30% of subscription capacity used this month.'],
+      NEAR_EXHAUSTION_5H:  ['badge-red',    'Near limit',       'Approaching the 5-hour rolling token window limit.'],
+      NEAR_EXHAUSTION_7D:  ['badge-yellow', 'Near 7d limit',    'Approaching the 7-day rolling token window limit.'],
+      SUSPECTED_SHARED:    ['badge-yellow', 'Ext. usage detected', 'Significant token usage detected outside this proxy (e.g. Claude.ai browser). This reduces available capacity for the proxy.'],
+      HIGH_MONTHLY_COST:   ['badge-gray',   'High cost',        'Monthly subscription cost is high relative to usage.'],
     };
     var cfg = map[rec];
     if (!cfg) return '<span class="badge badge-gray">' + rec.replace(/_/g,' ').toLowerCase() + '</span>';
-    return '<span class="badge ' + cfg[0] + '">' + cfg[1] + '</span>';
+    return '<span class="badge ' + cfg[0] + '" data-tt="' + cfg[2] + '">' + cfg[1] + '</span>';
   }
 
   // ── Pool Capacity ──────────────────────────────────────────
@@ -314,14 +401,14 @@
     var remEl = document.getElementById('pm-remaining');
     remEl.textContent = fmtTokens(pt.remainingExpected);
     remEl.style.color = '#22c55e';
-    document.getElementById('pm-remaining-sub').textContent = fmtTokens(pt.remainingPessimistic) + ' pessimistic';
+    document.getElementById('pm-remaining-sub').textContent = fmtTokens(pt.remainingPessimistic) + ' conservative estimate';
 
     var tteEl = document.getElementById('pm-tte');
     tteEl.textContent = fmtTte(pt.soonestTteMinutes);
     tteEl.style.color = tteColor(pt.soonestTteMinutes);
     var tteSub = '';
     if (pt.soonestTteWithRecoveryMinutes != null) {
-      tteSub = '+' + fmtTte(pt.soonestTteWithRecoveryMinutes) + ' with recovery';
+      tteSub = '+' + fmtTte(pt.soonestTteWithRecoveryMinutes) + ' with window recovery';
     }
     document.getElementById('pm-tte-sub').textContent = tteSub;
 
@@ -329,7 +416,7 @@
     var atRiskEl = document.getElementById('pm-atrisk');
     atRiskEl.textContent = String(atRisk);
     atRiskEl.style.color = atRisk > 0 ? '#ef4444' : 'inherit';
-    document.getElementById('pm-atrisk-sub').textContent = 'of ' + accounts.length + ' total';
+    document.getElementById('pm-atrisk-sub').textContent = 'of ' + accounts.length + ' accounts';
 
     var totalRate = accounts.reduce(function(s,a) { return s + (a.kfExternalRateTokensPerSec||0); }, 0);
     document.getElementById('pm-rate').textContent = totalRate > 0.01 ? totalRate.toFixed(1) + ' tok/s' : '—';
@@ -345,10 +432,10 @@
       var tteStyle = tteMins != null && tteMins < 5 ? ' style="color:#ef4444" class="pulse-red"' : ' style="color:' + tteColor(tteMins) + '"';
 
       var badges = '';
-      if (a.shouldStopAssign) badges += '<span class="badge badge-red" data-tt="The load balancer has stopped routing new requests to this account — capacity is critically low.">Stop Assign</span>';
-      if (a.suspectedShared) badges += '<span class="badge badge-yellow" data-tt="Usage pattern suggests this account may be shared with other users outside this proxy, making capacity estimates less reliable.">Shared?</span>';
-      if (a.confidence === 'cold') badges += '<span class="badge badge-gray" data-tt="Not enough usage data yet to estimate capacity. The proxy needs to observe at least one full usage cycle.">Cold</span>';
-      else if (a.confidence === 'low') badges += '<span class="badge badge-yellow" data-tt="Low confidence estimate — fewer than 4 effective samples. Capacity figures may be inaccurate.">Low confidence</span>';
+      if (a.shouldStopAssign) badges += '<span class="badge badge-red" data-tt="Requests paused for this account — capacity is critically low. Will resume automatically when the 5-hour window recovers.">Paused</span>';
+      if (a.suspectedShared) badges += '<span class="badge badge-yellow" data-tt="Significant token usage detected outside this proxy (external score: ' + fmtSharedScore(a.sharedScore) + '). This means Claude.ai or another tool is consuming tokens from this account, reducing what\'s available here.">Ext. usage detected</span>';
+      if (a.confidence === 'cold') badges += '<span class="badge badge-gray" data-tt="No data yet — this account hasn\'t had enough usage for the estimator to learn its capacity. Numbers will appear after a few hours of use.">No data yet</span>';
+      else if (a.confidence === 'low') badges += '<span class="badge badge-yellow" data-tt="Low confidence — fewer than 4 usage cycles observed. Capacity estimates may be off by 2×.">Low confidence</span>';
 
       var remaining7d = '';
       if (a.remaining7d) {
@@ -362,11 +449,11 @@
         '</div>' +
         '<div class="util-bar-wrap"><div class="util-bar" style="width:' + Math.min(100,pct).toFixed(1) + '%;background:' + barColor + '"></div></div>' +
         '<div class="account-meta">' +
-          '<span data-tt="Current utilization of the 5-hour token window (tokens used ÷ window limit).">Util: <b>' + pct.toFixed(1) + '%</b></span>' +
-          '<span data-tt="Estimated tokens still available in the current 5-hour window (p50 estimate).">5h remaining: <b>' + fmtTokens(a.remaining5h.expected) + '</b></span>' +
-          (tteMins != null && tteMins <= 1440 ? '<span data-tt="Time-to-Exhaustion at current burn rate. Red/pulsing = less than 5 minutes.">TTE: <b' + tteStyle + '>' + tteStr + '</b></span>' : '') +
+          '<span data-tt="How much of the 5-hour rolling token window has been used. 100% = limit reached.">Window used: <b>' + pct.toFixed(1) + '%</b></span>' +
+          '<span data-tt="Estimated tokens still available in the 5-hour window (median estimate).">Tokens left: <b>' + fmtTokens(a.remaining5h.expected) + '</b></span>' +
+          (tteMins != null && tteMins <= 1440 ? '<span data-tt="Time until this account hits its limit at the current rate. The window recovers as old usage ages out.">Runs out in: <b' + tteStyle + '>' + tteStr + '</b></span>' : '') +
           '<span>' + remaining7d + '</span>' +
-          (a.windowRecovery15minTokens > 0 ? '<span data-tt="Tokens that will become available in the next 15 minutes as older usage falls out of the sliding window.">Recovery 15m: <b>' + fmtTokens(a.windowRecovery15minTokens) + '</b></span>' : '') +
+          (a.windowRecovery15minTokens > 0 ? '<span data-tt="Tokens that will become available in the next 15 minutes as old requests fall outside the 5-hour window.">Frees up in 15m: <b>' + fmtTokens(a.windowRecovery15minTokens) + '</b></span>' : '') +
         '</div>' +
       '</div>';
     });
@@ -382,7 +469,7 @@
       return;
     }
 
-    // Simple SVG-based horizontal bar chart
+    // SVG horizontal bar chart
     var maxXf = Math.max.apply(null, accounts.map(function(a) { return a.xFactor.hi; }));
     maxXf = Math.max(maxXf, 20);
     var refLines = [1,5,10,20].filter(function(x) { return x <= maxXf * 1.1; });
@@ -439,18 +526,23 @@
       var xfCell = isCold ? '<span style="color:var(--bccf-text-tertiary)">—</span>' :
         a.xFactor.lo.toFixed(1) + '× / <b>' + a.xFactor.mid.toFixed(1) + '×</b> / ' + a.xFactor.hi.toFixed(1) + '×';
       var capCell = isCold ? '<span style="color:var(--bccf-text-tertiary)">—</span>' :
-        Math.round(a.c5hTokens.mid/1000) + 'K';
-      var badges = confidenceBadge(a.confidence, a.nEff);
-      (a.recommendations||[]).forEach(function(r) { badges += ' ' + recBadge(r); });
+        fmtTokens(a.c5hTokens.mid);
+      var sharedCell = a.sharedScore > 0
+        ? '<span style="color:' + (a.sharedScore > 0.5 ? '#ef4444' : a.sharedScore > 0.2 ? '#eab308' : 'var(--bccf-text-secondary)') + '">' + fmtSharedScore(a.sharedScore) + '</span>'
+        : '<span style="color:var(--bccf-text-tertiary)">—</span>';
+      var badges = confidenceBadge(a.confidence);
+      (a.recommendations||[]).filter(function(r) { return r !== 'SUSPECTED_SHARED'; }).forEach(function(r) { badges += ' ' + recBadge(r); });
+      if (a.suspectedShared) badges += ' ' + recBadge('SUSPECTED_SHARED');
       tbody += '<tr>' +
         '<td style="font-weight:500">' + a.name + (a.subscriptionTier ? '<br><small style="color:var(--bccf-text-tertiary)">' + a.subscriptionTier + '</small>' : '') + '</td>' +
         '<td class="num">' + xfCell + '</td>' +
         '<td class="num">' + capCell + '</td>' +
         '<td class="num">' + a.nEff.toFixed(1) + '</td>' +
+        '<td class="num">' + sharedCell + '</td>' +
         '<td>' + badges + '</td>' +
       '</tr>';
     });
-    document.getElementById('xf-tbody').innerHTML = tbody || '<tr><td colspan="5" style="color:var(--bccf-text-tertiary);font-style:italic;padding:1rem;">No data</td></tr>';
+    document.getElementById('xf-tbody').innerHTML = tbody || '<tr><td colspan="6" style="color:var(--bccf-text-tertiary);font-style:italic;padding:1rem;">No data</td></tr>';
   }
 
   // ── Value / ROI ────────────────────────────────────────────
@@ -468,12 +560,12 @@
     savEl.className = 'savings-amount ' + (isPos ? 'savings-positive' : 'savings-negative');
 
     document.getElementById('v-savings-bar').style.width = Math.min(100, Math.max(0, savingsRate)).toFixed(1) + '%';
-    document.getElementById('v-savings-rate').textContent = savingsRate > 0 ? savingsRate.toFixed(1) + '% savings rate vs PAYG' : '';
+    document.getElementById('v-savings-rate').textContent = savingsRate > 0 ? savingsRate.toFixed(1) + '% cheaper than pay-per-token' : '';
     if (ps.poolRealizedPct != null) {
-      document.getElementById('v-realized').textContent = ps.poolRealizedPct.toFixed(1) + '% of potential subscription value realized';
+      document.getElementById('v-realized').textContent = ps.poolRealizedPct.toFixed(1) + '% of subscription capacity actually used';
     }
     var tokensDelivered = (paygCost / PAYG_BLENDED_CPM) * 1e6;
-    document.getElementById('v-tokens-delivered').textContent = fmtTokens(tokensDelivered) + ' tokens delivered across all accounts';
+    document.getElementById('v-tokens-delivered').textContent = fmtTokens(tokensDelivered) + ' tokens total across all accounts';
 
     // CPM chart
     var cpmAccounts = (data.accounts||[]).filter(function(a) { return a.cpmActualUsd != null; })
@@ -508,7 +600,7 @@
         ? '<span style="color:' + (a.savingsUsd30d >= 0 ? '#22c55e' : '#ef4444') + ';font-weight:600">' + (a.savingsUsd30d >= 0 ? '+' : '') + fmtUsd(a.savingsUsd30d) + '</span>'
         : '—';
       var badges = '';
-      if (a.costSource === 'unknown') badges += '<span class="badge badge-gray" title="Set subscription tier to enable cost analysis">No cost data</span>';
+      if (a.costSource === 'unknown') badges += '<span class="badge badge-gray" data-tt="Set this account\'s subscription tier to enable savings analysis.">No tier set</span>';
       (a.recommendations||[]).forEach(function(r) { badges += ' ' + recBadge(r); });
       tbody += '<tr>' +
         '<td style="font-weight:500">' + a.name + (a.subscriptionTier ? '<br><small style="color:var(--bccf-text-tertiary)">' + a.subscriptionTier + '</small>' : '') + '</td>' +
@@ -526,8 +618,7 @@
     if (noCostAccounts.length > 0) {
       document.getElementById('value-no-cost-msg').textContent =
         noCostAccounts.length + ' account' + (noCostAccounts.length > 1 ? 's' : '') +
-        ' without cost data: ' + noCostAccounts.map(function(a) { return a.name; }).join(', ') +
-        '. Set subscription tier to enable savings analysis.';
+        ' without a subscription tier set: ' + noCostAccounts.map(function(a) { return a.name; }).join(', ') + '.';
     }
   }
 
