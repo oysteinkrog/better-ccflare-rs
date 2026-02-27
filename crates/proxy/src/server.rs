@@ -6,6 +6,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::middleware;
 use axum::routing::{any, delete, get, post};
@@ -315,10 +316,12 @@ pub async fn start(
 
     info!("Server listening on http://{addr}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(crate::shutdown::shutdown_signal())
-        .await
-        .map_err(|e| ServerError::Serve(e.to_string()))?;
+    let serve_fut = axum::serve(listener, app)
+        .with_graceful_shutdown(crate::shutdown::shutdown_signal());
+
+    if let Err(e) = serve_fut.await {
+        return Err(ServerError::Serve(e.to_string()));
+    }
 
     // Run ordered shutdown steps (flush DB, stop services, etc.)
     info!("Running shutdown coordinator...");

@@ -111,7 +111,10 @@ pub fn filter_thinking_blocks(body: &[u8]) -> Option<Bytes> {
     let mut indices_to_remove = Vec::new();
 
     for (i, msg) in messages.iter_mut().enumerate() {
-        let role = msg.get("role")?.as_str()?;
+        let role = match msg.get("role").and_then(|v| v.as_str()) {
+            Some(r) => r,
+            None => continue, // no role field — keep message, skip filtering for this one
+        };
         if role != "assistant" {
             continue;
         }

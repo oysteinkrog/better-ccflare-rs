@@ -245,16 +245,17 @@ impl Provider for VertexAiProvider {
         headers: &mut HeaderMap,
         access_token: Option<&str>,
         _api_key: Option<&str>,
-    ) {
+    ) -> Result<(), crate::error::ProviderError> {
         // Remove existing auth headers
         headers.remove("authorization");
         headers.remove("x-api-key");
 
         // Set Bearer auth
         if let Some(token) = access_token {
-            if let Ok(hv) = format!("Bearer {token}").parse() {
-                headers.insert("authorization", hv);
-            }
+            let hv = format!("Bearer {token}")
+                .parse()
+                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid token format: {e}")))?;
+            headers.insert("authorization", hv);
         }
 
         // Remove headers Vertex AI doesn't support
@@ -265,6 +266,8 @@ impl Provider for VertexAiProvider {
         headers.remove("host");
         headers.remove("accept-encoding");
         headers.remove("content-encoding");
+
+        Ok(())
     }
 
     fn parse_rate_limit(&self, headers: &HeaderMap, status_code: u16) -> RateLimitInfo {

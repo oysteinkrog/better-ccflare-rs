@@ -44,8 +44,8 @@ impl Provider for StubProvider {
         _headers: &mut HeaderMap,
         _access_token: Option<&str>,
         _api_key: Option<&str>,
-    ) {
-        // No-op for stub
+    ) -> Result<(), ProviderError> {
+        Ok(())
     }
 
     fn parse_rate_limit(&self, _headers: &HeaderMap, status_code: u16) -> RateLimitInfo {

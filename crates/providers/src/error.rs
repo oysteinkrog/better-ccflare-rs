@@ -4,6 +4,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
+    #[error("Auth error: {0}")]
+    Auth(String),
+
     #[error("Token refresh failed: {0}")]
     TokenRefresh(String),
 

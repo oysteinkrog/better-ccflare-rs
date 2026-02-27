@@ -293,7 +293,12 @@ fn truncate_body(body: Option<&str>) -> (Option<String>, bool) {
             if s.len() <= MAX_BODY_PREVIEW_BYTES {
                 (Some(s.to_string()), false)
             } else {
-                (Some(s[..MAX_BODY_PREVIEW_BYTES].to_string()), true)
+                // Find last valid UTF-8 char boundary at or before the limit
+                let end = (0..=4).find_map(|i| {
+                    let pos = MAX_BODY_PREVIEW_BYTES.saturating_sub(i);
+                    s.is_char_boundary(pos).then_some(pos)
+                }).unwrap_or(0);
+                (Some(s[..end].to_string()), true)
             }
         }
     }

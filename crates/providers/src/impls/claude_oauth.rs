@@ -137,10 +137,11 @@ pub struct ClaudeOAuthProvider {
 
 impl ClaudeOAuthProvider {
     pub fn new(mode: ClaudeOAuthMode) -> Self {
-        Self {
-            mode,
-            http_client: reqwest::Client::new(),
-        }
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+        Self { mode, http_client }
     }
 
     /// Create a claude-oauth mode provider.
@@ -232,8 +233,9 @@ impl ClaudeOAuthProvider {
         let text = resp.text().await.map_err(ProviderError::Http)?;
 
         if !status.is_success() {
+            let safe_text = text.chars().take(200).collect::<String>();
             return Err(ProviderError::TokenRefresh(format!(
-                "Token exchange failed ({}): {text}",
+                "Token exchange failed ({}): {safe_text}",
                 status.as_u16()
             )));
         }
@@ -428,16 +430,17 @@ impl Provider for ClaudeOAuthProvider {
         headers: &mut HeaderMap,
         access_token: Option<&str>,
         api_key: Option<&str>,
-    ) {
+    ) -> Result<(), ProviderError> {
         // Remove client auth headers to prevent leakage
         headers.remove("authorization");
         headers.remove("x-api-key");
 
         if let Some(token) = access_token {
             // OAuth access token → Bearer auth + beta header
-            if let Ok(val) = format!("Bearer {token}").parse() {
-                headers.insert("authorization", val);
-            }
+            let val = format!("Bearer {token}")
+                .parse()
+                .map_err(|e| ProviderError::Auth(format!("Invalid token format: {e}")))?;
+            headers.insert("authorization", val);
             // Append OAuth beta header to existing client betas (don't overwrite)
             // This preserves client-sent betas like context-management-*
             if let Some(existing) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok().map(String::from)) {
@@ -451,15 +454,18 @@ impl Provider for ClaudeOAuthProvider {
             }
         } else if let Some(key) = api_key {
             // Console API key → x-api-key header
-            if let Ok(val) = key.parse() {
-                headers.insert("x-api-key", val);
-            }
+            let val = key
+                .parse()
+                .map_err(|e| ProviderError::Auth(format!("Invalid API key format: {e}")))?;
+            headers.insert("x-api-key", val);
         }
 
         // Remove hop-by-hop headers
         headers.remove("host");
         headers.remove("accept-encoding");
         headers.remove("content-encoding");
+
+        Ok(())
     }
 
     fn parse_rate_limit(&self, headers: &HeaderMap, status_code: u16) -> RateLimitInfo {

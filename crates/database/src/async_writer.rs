@@ -4,6 +4,8 @@
 //! tokio task collects them and flushes to SQLite in batches (every 5 s
 //! or 100 ops, whichever comes first). Errors are logged, never propagated.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -85,23 +87,37 @@ pub enum WriteOp {
 /// Handle returned to callers. Cloneable and cheap.
 ///
 /// Sending through this handle never blocks — if the channel is full the
-/// op is dropped and a warning is logged.
+/// op is dropped and an error is logged. The `dropped_ops` counter tracks
+/// how many operations have been dropped due to backpressure.
 #[derive(Clone)]
 pub struct AsyncDbWriter {
     tx: mpsc::Sender<WriteOp>,
+    dropped_ops: Arc<AtomicU64>,
 }
 
 impl AsyncDbWriter {
     /// Send a write operation. Returns immediately.
     ///
-    /// If the channel is full the op is dropped silently (a tracing warning
-    /// is emitted inside the background task when backpressure is detected).
+    /// If the channel is full the op is dropped and the `dropped_ops` counter
+    /// is incremented. `SaveRequest` drops are logged at error level since they
+    /// represent critical data loss.
     pub fn send(&self, op: WriteOp) {
         if let Err(mpsc::error::TrySendError::Full(op)) = self.tx.try_send(op) {
-            tracing::warn!(
-                op = ?std::mem::discriminant(&op),
-                "Async DB writer channel full — dropping write op"
-            );
+            let total_dropped = self.dropped_ops.fetch_add(1, Ordering::Relaxed) + 1;
+            let is_save_request = matches!(op, WriteOp::SaveRequest(_));
+            if is_save_request {
+                tracing::error!(
+                    op = ?std::mem::discriminant(&op),
+                    total_dropped,
+                    "Async DB writer channel full — dropping SaveRequest (critical data loss)"
+                );
+            } else {
+                tracing::warn!(
+                    op = ?std::mem::discriminant(&op),
+                    total_dropped,
+                    "Async DB writer channel full — dropping write op"
+                );
+            }
         }
         // Closed channel: silently ignore (shutdown in progress)
     }
@@ -109,6 +125,11 @@ impl AsyncDbWriter {
     /// How many ops are currently queued (approximate).
     pub fn queued(&self) -> usize {
         CHANNEL_CAPACITY - self.tx.capacity()
+    }
+
+    /// Total number of write operations dropped due to channel backpressure.
+    pub fn dropped_ops(&self) -> u64 {
+        self.dropped_ops.load(Ordering::Relaxed)
     }
 
     /// True if the background task has been shut down.
@@ -176,7 +197,10 @@ pub fn spawn(pool: DbPool) -> (AsyncDbWriter, WriterTask) {
 
     let handle = tokio::spawn(flush_loop(rx, pool));
 
-    let writer = AsyncDbWriter { tx };
+    let writer = AsyncDbWriter {
+        tx,
+        dropped_ops: Arc::new(AtomicU64::new(0)),
+    };
     let task = WriterTask {
         handle: Some(handle),
         _tx: tx2,

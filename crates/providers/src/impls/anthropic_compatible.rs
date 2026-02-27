@@ -116,7 +116,7 @@ impl Provider for AnthropicCompatibleProvider {
         headers: &mut HeaderMap,
         access_token: Option<&str>,
         api_key: Option<&str>,
-    ) {
+    ) -> Result<(), crate::error::ProviderError> {
         // Remove any existing auth headers
         headers.remove("authorization");
         headers.remove("x-api-key");
@@ -128,18 +128,20 @@ impl Provider for AnthropicCompatibleProvider {
                 AuthType::Bearer => format!("Bearer {cred}"),
                 AuthType::Direct => cred.to_string(),
             };
-            if let (Ok(hn), Ok(hv)) = (
-                HeaderName::from_bytes(self.config.auth_header.as_bytes()),
-                value.parse(),
-            ) {
-                headers.insert(hn, hv);
-            }
+            let hn = HeaderName::from_bytes(self.config.auth_header.as_bytes())
+                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid auth header name: {e}")))?;
+            let hv = value
+                .parse()
+                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid token format: {e}")))?;
+            headers.insert(hn, hv);
         }
 
         // Remove hop-by-hop headers that shouldn't be forwarded
         headers.remove("host");
         headers.remove("accept-encoding");
         headers.remove("content-encoding");
+
+        Ok(())
     }
 
     fn parse_rate_limit(&self, headers: &HeaderMap, status_code: u16) -> RateLimitInfo {

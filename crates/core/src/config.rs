@@ -168,7 +168,12 @@ impl Config {
         // Env > config > default
         if let Ok(env_val) = std::env::var("LB_STRATEGY") {
             if crate::types::is_valid_strategy(&env_val) {
-                return StrategyName::Session; // Only one variant for now
+                // Parse the env value as a quoted JSON string to respect serde rename_all = "lowercase"
+                if let Ok(parsed) =
+                    serde_json::from_str::<StrategyName>(&format!("\"{}\"", env_val))
+                {
+                    return parsed;
+                }
             }
         }
         self.data.lb_strategy.unwrap_or_default()
@@ -231,7 +236,56 @@ impl Config {
     pub fn get_runtime(&self) -> RuntimeConfig {
         let mut rt = RuntimeConfig::default();
 
-        // Environment variable overrides
+        // Config file overrides (applied first as defaults over hardcoded defaults)
+        if let Some(ref v) = self.data.client_id {
+            rt.client_id.clone_from(v);
+        }
+        if let Some(v) = self.data.retry_attempts {
+            rt.retry_attempts = v;
+        }
+        if let Some(v) = self.data.retry_delay_ms {
+            rt.retry_delay_ms = v;
+        }
+        if let Some(v) = self.data.retry_backoff {
+            rt.retry_backoff = v;
+        }
+        if let Some(v) = self.data.session_duration_ms {
+            rt.session_duration_ms = v;
+        }
+        if let Some(v) = self.data.port {
+            rt.port = v;
+        }
+
+        // Database config file overrides
+        if let Some(v) = self.data.db_wal_mode {
+            rt.database.wal_mode = v;
+        }
+        if let Some(v) = self.data.db_busy_timeout_ms {
+            rt.database.busy_timeout_ms = v;
+        }
+        if let Some(v) = self.data.db_cache_size {
+            rt.database.cache_size = v;
+        }
+        if let Some(ref v) = self.data.db_synchronous {
+            rt.database.synchronous.clone_from(v);
+        }
+        if let Some(v) = self.data.db_mmap_size {
+            rt.database.mmap_size = v;
+        }
+        if let Some(v) = self.data.db_retry_attempts {
+            rt.database.retry_attempts = v;
+        }
+        if let Some(v) = self.data.db_retry_delay_ms {
+            rt.database.retry_delay_ms = v;
+        }
+        if let Some(v) = self.data.db_retry_backoff {
+            rt.database.retry_backoff = v;
+        }
+        if let Some(v) = self.data.db_retry_max_delay_ms {
+            rt.database.retry_max_delay_ms = v;
+        }
+
+        // Environment variable overrides (highest precedence, applied last)
         if let Ok(v) = std::env::var("CLIENT_ID") {
             rt.client_id = v;
         }
@@ -259,55 +313,6 @@ impl Config {
             if let Ok(n) = v.parse() {
                 rt.port = n;
             }
-        }
-
-        // Config file overrides
-        if let Some(ref v) = self.data.client_id {
-            rt.client_id.clone_from(v);
-        }
-        if let Some(v) = self.data.retry_attempts {
-            rt.retry_attempts = v;
-        }
-        if let Some(v) = self.data.retry_delay_ms {
-            rt.retry_delay_ms = v;
-        }
-        if let Some(v) = self.data.retry_backoff {
-            rt.retry_backoff = v;
-        }
-        if let Some(v) = self.data.session_duration_ms {
-            rt.session_duration_ms = v;
-        }
-        if let Some(v) = self.data.port {
-            rt.port = v;
-        }
-
-        // Database config overrides
-        if let Some(v) = self.data.db_wal_mode {
-            rt.database.wal_mode = v;
-        }
-        if let Some(v) = self.data.db_busy_timeout_ms {
-            rt.database.busy_timeout_ms = v;
-        }
-        if let Some(v) = self.data.db_cache_size {
-            rt.database.cache_size = v;
-        }
-        if let Some(ref v) = self.data.db_synchronous {
-            rt.database.synchronous.clone_from(v);
-        }
-        if let Some(v) = self.data.db_mmap_size {
-            rt.database.mmap_size = v;
-        }
-        if let Some(v) = self.data.db_retry_attempts {
-            rt.database.retry_attempts = v;
-        }
-        if let Some(v) = self.data.db_retry_delay_ms {
-            rt.database.retry_delay_ms = v;
-        }
-        if let Some(v) = self.data.db_retry_backoff {
-            rt.database.retry_backoff = v;
-        }
-        if let Some(v) = self.data.db_retry_max_delay_ms {
-            rt.database.retry_max_delay_ms = v;
         }
 
         rt

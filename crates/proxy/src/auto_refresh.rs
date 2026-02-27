@@ -263,24 +263,35 @@ async fn check_and_refresh(
         return;
     }
 
+    // Collect owned data before dropping the lock so HTTP calls don't hold it.
+    let to_refresh: Vec<RefreshableAccount> = to_refresh.into_iter().cloned().collect();
+
     info!(
         count = to_refresh.len(),
         "Found accounts with new windows for auto-refresh"
     );
 
-    for account in to_refresh {
+    // Drop the mutex guard before making any HTTP calls. Each call can take up
+    // to 30 s (the client timeout) and holding the lock across them would
+    // block the next scheduled check from running at all.
+    drop(guard);
+
+    for account in &to_refresh {
         let success = send_dummy_request(client, account, proxy_port, use_tls).await;
 
-        if success.is_some() {
-            guard.record_success(&account.id, success);
-        } else {
-            let failures = guard.record_failure(&account.id);
-            if failures >= FAILURE_THRESHOLD {
-                error!(
-                    account = %account.name,
-                    failures,
-                    "Account has exceeded failure threshold — may need re-authentication"
-                );
+        // Re-acquire the lock briefly just to record the result.
+        if let Ok(mut guard) = state.try_lock() {
+            if success.is_some() {
+                guard.record_success(&account.id, success);
+            } else {
+                let failures = guard.record_failure(&account.id);
+                if failures >= FAILURE_THRESHOLD {
+                    error!(
+                        account = %account.name,
+                        failures,
+                        "Account has exceeded failure threshold — may need re-authentication"
+                    );
+                }
             }
         }
     }

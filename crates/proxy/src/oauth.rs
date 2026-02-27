@@ -47,21 +47,28 @@ fn db_insert_pending(pool: &DbPool, csrf_token: &str, account_id: &str, verifier
 }
 
 /// Take (and delete) a pending PKCE verifier by CSRF token. Returns (account_id, verifier).
+///
+/// Uses a transaction so that concurrent callbacks with the same CSRF token
+/// cannot both read the row before either deletes it (PKCE race condition).
 fn db_take_pending(pool: &DbPool, csrf_token: &str) -> Option<(String, String)> {
-    let conn = pool.get().ok()?;
+    let mut conn = pool.get().ok()?;
     let now = chrono::Utc::now().timestamp_millis();
 
-    let result = conn.query_row(
+    let tx = conn.transaction().ok()?;
+
+    let result = tx.query_row(
         "SELECT account_name, verifier FROM oauth_sessions WHERE id = ?1 AND expires_at > ?2",
         rusqlite::params![csrf_token, now],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     ).ok()?;
 
-    // Delete after retrieval (one-time use)
-    let _ = conn.execute(
+    // Delete within the same transaction — one-time use, atomic with the SELECT
+    tx.execute(
         "DELETE FROM oauth_sessions WHERE id = ?1",
         rusqlite::params![csrf_token],
-    );
+    ).ok()?;
+
+    tx.commit().ok()?;
 
     Some(result)
 }
@@ -327,12 +334,21 @@ fn error_json(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "error": msg }))).into_response()
 }
 
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn render_callback_page(success: bool, message: &str) -> Response {
     let (icon, color, title) = if success {
         ("&#10003;", "#22c55e", "Re-authenticated")
     } else {
         ("&#10007;", "#ef4444", "Authentication Failed")
     };
+
+    let message = html_escape(message);
 
     let html = format!(
         r#"<!doctype html>
