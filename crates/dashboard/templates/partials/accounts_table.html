@@ -1,10 +1,17 @@
 {% if accounts.is_empty() %}
-<p>No accounts configured.</p>
+<div class="page-explainer">No accounts configured yet.</div>
 <details>
   <summary>Add account via CLI</summary>
   <pre><code>better-ccflare-rs --add-account my-account --mode claude-oauth --priority 0</code></pre>
 </details>
 {% else %}
+
+<div class="page-explainer">
+  Accounts are the upstream Claude subscriptions the proxy load-balances across.
+  The load balancer picks the <b>highest-priority</b> (lowest number) account that still has capacity.
+  <b>Usage bars</b> show how full each account's token windows are — fuller = less capacity left.
+  Click any account name to rename it. Use the <b>Capacity tab</b> to see estimated tokens remaining.
+</div>
 {% if let Some(ps) = pool_summary %}
 <div class="pool-summary" id="pool-summary-card">
   <div class="pool-summary-header">
@@ -786,12 +793,12 @@
     </div>
     <!-- Row 2: Key details + controls -->
     <div class="acct-details">
-      <div class="acct-chip" title="Selection priority — lower number = higher priority (click to edit)">
-        <span class="acct-chip-label">Pri</span>
+      <div class="acct-chip" title="Routing priority — lower number = higher priority = gets requests first. 0 = always prefer this account when it has capacity. Click to edit.">
+        <span class="acct-chip-label">Priority</span>
         <span class="acct-editable"
               onclick="startEditPriority(this, '{{ acct.id }}', {{ acct.priority }})">{{ acct.priority }}</span>
       </div>
-      <div class="acct-chip" title="Auto-fallback: if enabled, failed requests retry on another account">
+      <div class="acct-chip" title="Auto-fallback: if a request fails on this account (e.g. rate limit error), automatically retry it on the next available account instead of returning an error.">
         <span class="acct-chip-label">Fallback</span>
         <input type="checkbox"
                role="switch"
@@ -800,39 +807,39 @@
                onchange="toggleFallback('{{ acct.id }}', this.checked)">
       </div>
       {% if acct.has_usage %}
-      <div class="acct-chip" title="5-hour reserve — keep this % of 5h window unused (click to edit)">
-        <span class="acct-chip-label">Res 5h</span>
+      <div class="acct-chip" title="5-hour window reserve: keep at least this % of the 5-hour token window unused. The load balancer deprioritizes (or with Hard: excludes) this account when usage exceeds (100 − reserve)%. Click to edit.">
+        <span class="acct-chip-label">5h Reserve</span>
         <span class="acct-editable"
               onclick="startEditReserve5h(this, '{{ acct.id }}', {{ acct.reserve_5h }})">{{ acct.reserve_5h }}%</span>
       </div>
-      <div class="acct-chip" title="Weekly reserve — keep this % of weekly window unused (click to edit)">
-        <span class="acct-chip-label">Res Wk</span>
+      <div class="acct-chip" title="Weekly window reserve: keep at least this % of the weekly token window unused. Same behaviour as 5h reserve but for the 7-day window. Click to edit.">
+        <span class="acct-chip-label">Wk Reserve</span>
         <span class="acct-editable"
               onclick="startEditReserveWeekly(this, '{{ acct.id }}', {{ acct.reserve_weekly }})">{{ acct.reserve_weekly }}%</span>
       </div>
       {% if acct.reserve_5h > 0 || acct.reserve_weekly > 0 %}
-      <div class="acct-chip" title="Hard reserve: when enabled, completely excludes account at reserve threshold instead of just deprioritizing">
+      <div class="acct-chip" title="Hard reserve: when checked, the account is completely excluded from routing once it hits the reserve threshold. When unchecked, it is only deprioritized (moved to the back of the queue) but still used if no other accounts are available.">
         <label style="display:inline-flex;align-items:center;gap:0.25rem;margin:0;font-size:0.72rem;color:var(--pico-muted-color);">
           <input type="checkbox"
                  {% if acct.reserve_hard %}checked{% endif %}
                  style="margin:0;width:0.9rem;height:0.9rem;"
                  onchange="toggleReserveHard('{{ acct.id }}', this.checked)">
-          Hard
+          Hard exclude
         </label>
       </div>
       {% endif %}
       {% endif %}
-      <span class="acct-chip acct-more-toggle" title="Show request stats and session info"
+      <span class="acct-chip acct-more-toggle" title="Show lifetime request count, last-used time, and session state"
             onclick="toggleMore(this)">More ›</span>
-      <div class="acct-chip" title="Total requests routed to this account (session count in parentheses)" data-more="{{ acct.id }}" style="display:none">
+      <div class="acct-chip" title="Total requests routed to this account across all time (session count = requests in the current proxy session only)." data-more="{{ acct.id }}" style="display:none">
         <span class="acct-chip-label">Requests</span>
         {{ acct.total_requests }}{% if acct.request_count > 0 %} <small style="color:var(--pico-muted-color)">({{ acct.request_count }} sess)</small>{% endif %}
       </div>
-      <div class="acct-chip" title="Time since this account last handled a request" data-more="{{ acct.id }}" style="display:none">
+      <div class="acct-chip" title="How long ago this account last handled a request. 'Never' = no requests have been routed here yet." data-more="{{ acct.id }}" style="display:none">
         <span class="acct-chip-label">Last used</span>
         {% match acct.last_used_relative %}{% when Some with (val) %}{{ val }}{% when None %}<span style="color:var(--pico-muted-color)">Never</span>{% endmatch %}
       </div>
-      <div class="acct-chip" title="Current session state (active conversation / idle)" data-more="{{ acct.id }}" style="display:none">
+      <div class="acct-chip" title="Whether the account has an active streaming conversation in progress, or is idle and available." data-more="{{ acct.id }}" style="display:none">
         <span class="acct-chip-label">Session</span>
         {{ acct.session_info }}
       </div>

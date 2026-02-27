@@ -1,5 +1,11 @@
 <h2>Overview</h2>
 
+<div class="page-explainer">
+  Live summary of all requests proxied since stats were last reset.
+  <b>API Value</b> is what the tokens would cost at pay-per-token rates — not your actual subscription cost.
+  See the <b>Analytics</b> tab for time-filtered charts and savings breakdown, or <b>Capacity</b> for token window status.
+</div>
+
 <!-- Metric cards: auto-refresh every 30s -->
 <div hx-get="/dashboard/partials/overview" hx-trigger="every 30s" hx-swap="innerHTML" id="overview-metrics">
   <div class="grid">
@@ -8,72 +14,72 @@
       <p class="metric-value">{{ self.fmt_int(total_requests) }}</p>
     </article>
     <article>
-      <header><span class="metric-label" data-tt="Percentage of requests that completed without an error. Green ≥95%, yellow ≥80%, red below 80%.">Success Rate</span></header>
+      <header><span class="metric-label" data-tt="Percentage of requests that completed without a 5xx error. Green ≥95%, yellow ≥80%, red below 80%.">Success Rate</span></header>
       <p class="metric-value" style="color:{% if success_rate >= 95.0 %}var(--bccf-success){% elif success_rate >= 80.0 %}var(--bccf-warning){% else %}var(--bccf-danger){% endif %}">{{ self.fmt_pct(success_rate) }}%</p>
     </article>
     <article>
-      <header><span class="metric-label" data-tt="Median time from request received to final response byte sent, across all successful requests.">Avg Response Time</span></header>
+      <header><span class="metric-label" data-tt="Median time from when the request arrived to when the last response byte was sent, across all successful requests.">Avg Response Time</span></header>
       <p class="metric-value">{{ self.fmt_ms(avg_response_time) }}</p>
     </article>
   </div>
 
   <div class="grid">
     <article>
-      <header><span class="metric-label" data-tt="PAYG-equivalent API value delivered — calculated from token counts × published Anthropic pricing. Does not reflect your actual subscription cost.">Total Cost (USD)</span></header>
+      <header><span class="metric-label" data-tt="Pay-per-token equivalent value of tokens delivered — what this usage would cost at Anthropic's published per-token rates. This is NOT your actual subscription cost.">API Value (PAYG equiv.)</span></header>
       <p class="metric-value">${{ self.fmt_usd(total_cost_usd) }}</p>
     </article>
     <article>
-      <header><span class="metric-label" data-tt="Average output tokens generated per second across all successful requests. Higher is faster.">Output Speed</span></header>
+      <header><span class="metric-label" data-tt="Average output tokens generated per second across all successful requests. A proxy of model throughput — higher is faster.">Output Speed</span></header>
       <p class="metric-value">{{ self.fmt_speed(avg_tokens_per_second) }} <span style="font-size:0.5em;font-weight:500;letter-spacing:0;color:var(--bccf-text-secondary)">tok/s</span></p>
     </article>
     <article>
-      <header><span class="metric-label" data-tt="Combined input + output + cache read + cache creation tokens across all requests.">Total Tokens</span></header>
+      <header><span class="metric-label" data-tt="Total tokens across all requests: input (prompt) + output (response) + cache reads + cache creation tokens.">Total Tokens</span></header>
       <p class="metric-value">{{ self.fmt_int(total_tokens) }}</p>
     </article>
   </div>
 
   <!-- Account Health -->
   <article>
-    <header><span class="metric-label">Account Health</span></header>
+    <header><span class="metric-label" data-tt="Current status of all configured accounts. The load balancer only routes requests to healthy accounts.">Account Health</span></header>
     <div class="grid" style="text-align:center;">
       <div>
         <p style="font-size:1.5rem;font-weight:700;margin:0;font-variant-numeric:tabular-nums;">{{ total_accounts }}</p>
-        <small class="metric-label" data-tt="Total number of configured accounts.">Total</small>
+        <small class="metric-label" data-tt="Total configured accounts (all states).">Total</small>
       </div>
       <div>
         <p style="font-size:1.5rem;font-weight:700;margin:0;color:var(--bccf-success);font-variant-numeric:tabular-nums;">{{ healthy_accounts }}</p>
-        <small class="metric-label" data-tt="Accounts currently accepting requests — token windows are not exhausted.">Healthy</small>
+        <small class="metric-label" data-tt="Accounts actively receiving requests — token windows are not exhausted and the account is not paused.">Active</small>
       </div>
       <div>
         <p style="font-size:1.5rem;font-weight:700;margin:0;color:var(--bccf-warning);font-variant-numeric:tabular-nums;">{{ rate_limited_accounts }}</p>
-        <small class="metric-label" data-tt="Accounts whose token window is exhausted. The load balancer won't route requests here until the window resets.">Rate Limited</small>
+        <small class="metric-label" data-tt="Accounts that hit their token window limit. The load balancer skips these until the window resets (typically within 5 hours).">Window Full</small>
       </div>
       <div>
         <p style="font-size:1.5rem;font-weight:700;margin:0;color:var(--bccf-text-tertiary);font-variant-numeric:tabular-nums;">{{ paused_accounts }}</p>
-        <small class="metric-label" data-tt="Accounts manually paused. No requests will be routed here until you resume them.">Paused</small>
+        <small class="metric-label" data-tt="Accounts manually paused in the Accounts tab. No requests are routed here until you resume them.">Paused</small>
       </div>
     </div>
   </article>
 
   <!-- Token Breakdown -->
   <article>
-    <header><span class="metric-label">Token Breakdown</span></header>
+    <header><span class="metric-label" data-tt="Breakdown of where tokens were spent. Cache reads are cheapest; cache creation is most expensive but makes future reads cheap.">Token Breakdown</span></header>
     <div class="grid" style="text-align:center;">
       <div>
         <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(input_tokens) }}</p>
-        <small class="metric-label" data-tt="Tokens in your prompt and conversation history sent to the model.">Input</small>
+        <small class="metric-label" data-tt="Tokens you sent to the model: your prompts, system messages, and conversation history.">Input</small>
       </div>
       <div>
         <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(output_tokens) }}</p>
-        <small class="metric-label" data-tt="Tokens generated by the model in responses.">Output</small>
+        <small class="metric-label" data-tt="Tokens the model generated in responses.">Output</small>
       </div>
       <div>
         <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(cache_read_tokens) }}</p>
-        <small class="metric-label" data-tt="Tokens read from the prompt cache — billed at ~10% of the normal input rate. Reduces cost on repeated prompts.">Cache Read</small>
+        <small class="metric-label" data-tt="Tokens served from the prompt cache — billed at ~10% of the normal input rate. High cache reads = good cost efficiency.">Cache Read</small>
       </div>
       <div>
         <p style="font-weight:600;margin:0;font-variant-numeric:tabular-nums;">{{ self.fmt_int(cache_creation_tokens) }}</p>
-        <small class="metric-label" data-tt="Tokens written to the prompt cache — billed at ~125% of the normal input rate, but future reads are cheap.">Cache Create</small>
+        <small class="metric-label" data-tt="Tokens written to the prompt cache — billed at ~125% of the normal input rate, but future reads of the same content are very cheap.">Cache Write</small>
       </div>
     </div>
   </article>

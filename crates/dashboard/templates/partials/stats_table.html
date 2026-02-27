@@ -1,8 +1,14 @@
 {% if accounts.is_empty() && top_models.is_empty() && recent_errors.is_empty() %}
 <article>
-  <p>No statistics available yet. Start sending requests through the proxy to see data here.</p>
+  <div class="page-explainer">No statistics yet — send some requests through the proxy to see data here.</div>
 </article>
 {% else %}
+
+<div class="page-explainer">
+  All-time cumulative statistics since the last reset.
+  <b>API Value</b> is the pay-per-token equivalent of tokens delivered — not your actual subscription cost.
+  Per-account data shows lifetime totals across all sessions.
+</div>
 
 {# Summary row #}
 <div class="grid">
@@ -19,7 +25,7 @@
     <p class="metric-value">{{ fmt_ms(avg_response_time) }}</p>
   </article>
   <article>
-    <header><span class="metric-label" data-tt="PAYG-equivalent API value delivered, calculated from token counts × published Anthropic pricing.">Total Cost</span></header>
+    <header><span class="metric-label" data-tt="Pay-per-token equivalent value of all tokens delivered — what this usage would cost at Anthropic's published per-token rates. Not your actual subscription cost.">API Value (PAYG)</span></header>
     <p class="metric-value">${{ fmt_usd(total_cost_usd) }}</p>
   </article>
 </div>

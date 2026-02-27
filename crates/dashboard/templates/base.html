@@ -363,6 +363,20 @@
     .usage-zero { opacity: 0.35; }
     .usage-zero .usage-fill { width: 0 !important; }
 
+    /* Global page explainer box — used on every tab */
+    .page-explainer {
+      font-size: 0.78rem;
+      color: var(--bccf-text-secondary);
+      background: rgba(0,0,0,0.03);
+      border: 1px solid var(--bccf-border-subtle);
+      border-radius: 0.4rem;
+      padding: 0.6rem 0.8rem;
+      margin-bottom: 1rem;
+      line-height: 1.5;
+    }
+    [data-theme="dark"] .page-explainer { background: rgba(255,255,255,0.04); }
+    .page-explainer b { color: var(--bccf-text); }
+
     /* ================================================================
        Account Cards
        ================================================================ */
