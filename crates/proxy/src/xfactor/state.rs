@@ -202,7 +202,10 @@ impl AccountCapacityState {
     /// Persisted kf_e values can be tainted by early high-prior observations (before
     /// the posterior converged), producing false positives in suspected_shared().
     /// Starting the KF fresh on each startup is safe — it re-learns external usage
-    /// within a few hours, and the n_eff >= 10 gate prevents premature detections.
+    /// within a few hours.  Two gates prevent premature detections:
+    ///   - KF measurement updates only start at n_eff >= 5 (~25 min of polls)
+    ///   - suspected_shared() detection only fires at n_eff >= 10 (~50 min of polls),
+    ///     giving the KF ~25 minutes of clean updates before any detection is possible.
     pub fn restore_from_db(&mut self, db: &XFactorDbState) {
         self.mu = db.mu;
         self.sigma_sq = db.sigma_sq;
@@ -330,8 +333,9 @@ impl AccountCapacityState {
 
             self.kf_update(e_obs, r);
 
-            // Hard clip: external tokens can't be negative
-            self.kf_e = self.kf_e.max(0.0);
+            // Same soft floor as in kf_predict_to: allow slight negative so the
+            // filter can self-correct (see comment there for rationale).
+            self.kf_e = self.kf_e.max(-5_000.0);
             self.kf_e_dot = self.kf_e_dot.max(0.0);
         }
     }
@@ -371,12 +375,20 @@ impl AccountCapacityState {
         self.kf_p[1][0] = self.kf_p[0][1]; // symmetric
         self.kf_p[1][1] = p11 + KF_PROCESS_NOISE_RATE * dt;
 
-        // Clip to prevent covariance runaway
+        // Clip to prevent covariance runaway.
+        // P01/P10 are also clamped: they grow via dt*P11 during poll outages and
+        // could overflow f64 if left unchecked.
         self.kf_p[0][0] = self.kf_p[0][0].min(1e14);
+        self.kf_p[0][1] = self.kf_p[0][1].clamp(-1e14, 1e14);
+        self.kf_p[1][0] = self.kf_p[0][1]; // keep symmetric
         self.kf_p[1][1] = self.kf_p[1][1].min(1e14);
 
-        // Clip E: external usage can't be negative
-        self.kf_e = self.kf_e.max(0.0);
+        // Allow kf_e to go slightly negative so the filter can absorb downward
+        // corrections and self-correct back toward zero.  A hard floor of 0 creates
+        // an asymmetric random walk: noise drives kf_e up but can never pull it back
+        // down, causing slow upward drift even with no external usage.
+        // All callers that compute capacity / shared-score apply .max(0.0) themselves.
+        self.kf_e = self.kf_e.max(-5_000.0);
         self.kf_e_dot = self.kf_e_dot.max(0.0);
 
         self.last_kf_predict_ms = now_ms;
@@ -577,6 +589,9 @@ impl AccountCapacityState {
     }
 
     /// Snapshot for DB persistence.
+    ///
+    /// Note: KF fields (kf_e, kf_e_dot, kf_p*) are written for analytics/debugging
+    /// purposes but are intentionally NOT restored on startup (see `restore_from_db`).
     pub fn to_db_state(&self) -> XFactorDbState {
         XFactorDbState {
             account_id: self.account_id.clone(),
@@ -803,6 +818,147 @@ mod tests {
         s.on_request(now, 10_000.0);
         // kf_e = 0 → shared_score = 0
         assert_eq!(s.shared_score(), 0.0);
+    }
+
+    #[test]
+    fn kf_not_updated_when_n_eff_below_gate() {
+        let mut s = make_state(Some("Pro"));
+        let now = 1_700_000_000_000_i64;
+
+        // Inject proxy tokens so the LB is valid
+        s.on_request(now - 60_000, 10_000.0);
+
+        // Single poll → n_eff = 0.3, well below the KF gate of 5.0
+        s.on_usage_poll(now, 50.0);
+        assert!(s.n_eff < 5.0);
+
+        // KF measurement update should have been gated out
+        assert_eq!(s.kf_e, 0.0, "kf_e must stay 0 when n_eff < 5");
+        assert_eq!(s.kf_e_dot, 0.0, "kf_e_dot must stay 0 when n_eff < 5");
+
+        // kf_predict_to should still have advanced the clock
+        assert!(s.last_kf_predict_ms > 0, "kf_predict_to must still run");
+    }
+
+    #[test]
+    fn kf_updated_when_n_eff_above_gate() {
+        let mut s = make_state(Some("Pro"));
+        let now = 1_700_000_000_000_i64;
+
+        s.on_request(now - 60_000, 10_000.0);
+
+        // Force n_eff above the KF gate threshold
+        s.n_eff = 5.0;
+
+        // Poll at 50% — C_est(Pro) ≈ 88k, E_obs = 88k*0.5 - 10k = 34k
+        s.on_usage_poll(now, 50.0);
+
+        // KF should have received the measurement update
+        assert!(s.kf_e > 0.0, "kf_e should be positive after KF update fires");
+    }
+
+    #[test]
+    fn restore_from_db_resets_kf_state() {
+        let mut s = make_state(Some("Pro"));
+        let now = 1_700_000_000_000_i64;
+
+        let db = XFactorDbState {
+            account_id: "acc1".to_string(),
+            mu: s.mu,
+            sigma_sq: s.sigma_sq,
+            n_eff: 15.0,
+            ema_proxy_rate: 42.0,
+            c_i_hard_lower: 80_000.0,
+            updated_at_ms: now,
+            // Tainted KF state that must NOT be restored
+            kf_e: 50_000.0,
+            kf_e_dot: 5.0,
+            kf_p00: 100.0,
+            kf_p01: 10.0,
+            kf_p10: 10.0,
+            kf_p11: 50.0,
+            lag_estimate_ms: 120_000,
+        };
+
+        s.restore_from_db(&db);
+
+        // KF state must be reset — not restored from DB
+        assert_eq!(s.kf_e, 0.0, "kf_e must be reset on restore");
+        assert_eq!(s.kf_e_dot, 0.0, "kf_e_dot must be reset on restore");
+        assert_eq!(s.kf_p[0][0], KF_INIT_VARIANCE, "kf_p[0][0] must be reset");
+        assert_eq!(s.kf_p[0][1], 0.0, "kf_p off-diagonal must be reset");
+        assert_eq!(s.kf_p[1][1], KF_INIT_VARIANCE, "kf_p[1][1] must be reset");
+
+        // Non-KF fields should be restored from DB
+        assert_eq!(s.n_eff, 15.0);
+        assert_eq!(s.ema_proxy_rate, 42.0);
+        assert_eq!(s.c_i_hard_lower, 80_000.0);
+
+        // lag_estimate_ms is infrastructure, not KF state — must be restored
+        assert_eq!(s.lag_estimate_ms, 120_000);
+    }
+
+    #[test]
+    fn suspected_shared_requires_all_three_gates() {
+        let mut s = make_state(Some("Pro"));
+        let now = 1_700_000_000_000_i64;
+
+        // Baseline: set up state that passes all gates
+        s.n_eff = 15.0;
+        s.kf_e = 50_000.0;
+        s.on_request(now, 10_000.0); // proxy_tokens = 10k → shared_score = 5.0
+
+        assert!(s.suspected_shared(), "should detect when all gates pass");
+
+        // Gate 1 fail: n_eff too low
+        s.n_eff = 9.9;
+        assert!(!s.suspected_shared(), "n_eff < 10 must block detection");
+        s.n_eff = 15.0;
+
+        // Gate 2 fail: kf_e below absolute minimum
+        s.kf_e = 29_999.0;
+        assert!(!s.suspected_shared(), "kf_e < 30000 must block detection");
+        s.kf_e = 50_000.0;
+
+        // Gate 3 fail: shared_score <= 0.50
+        // With kf_e = 50k, need proxy > 100k for score to drop below 0.50
+        s.proxy_tokens_5h_weighted = 200_000.0;
+        assert!(!s.suspected_shared(), "shared_score <= 0.50 must block detection");
+    }
+
+    #[test]
+    fn suspected_shared_skips_already_shared_accounts() {
+        let mut s = AccountCapacityState::new(
+            "acc1".to_string(),
+            "test".to_string(),
+            Some("Pro".to_string()),
+            true, // is_shared = true
+        );
+        let now = 1_700_000_000_000_i64;
+
+        // Set up state that would pass all numeric gates
+        s.n_eff = 15.0;
+        s.kf_e = 50_000.0;
+        s.on_request(now, 10_000.0);
+
+        assert!(!s.suspected_shared(), "is_shared accounts must never be flagged");
+    }
+
+    #[test]
+    fn suspected_shared_kf_e_absolute_minimum_boundary() {
+        let mut s = make_state(Some("Pro"));
+        let now = 1_700_000_000_000_i64;
+
+        s.n_eff = 15.0;
+        s.on_request(now, 10_000.0);
+
+        // Exactly at boundary — should pass (>=)
+        s.kf_e = 30_000.0;
+        assert!(s.suspected_shared(), "kf_e == 30000 should pass the >= gate");
+
+        // Just below — should fail
+        s.kf_e = 29_999.9;
+        assert!(!s.suspected_shared(), "kf_e < 30000 should fail the gate");
     }
 
     #[test]
