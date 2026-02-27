@@ -228,16 +228,25 @@ pub async fn proxy_handler(
     if !session_resets.is_empty() {
         let pool_c = pool.clone();
         tokio::task::spawn_blocking(move || {
-            if let Ok(conn) = pool_c.get() {
-                // Batch all resets in a single transaction
-                let _ = conn.execute_batch("BEGIN");
-                for reset in &session_resets {
-                    let _ = conn.execute(
-                        "UPDATE accounts SET session_start = ?1, session_request_count = 0 WHERE id = ?2",
-                        rusqlite::params![reset.new_session_start, reset.account_id],
-                    );
+            if let Ok(mut conn) = pool_c.get() {
+                // Use a proper transaction so a mid-batch failure rolls back cleanly
+                // instead of committing partial updates.
+                if let Ok(tx) = conn.transaction() {
+                    let mut ok = true;
+                    for reset in &session_resets {
+                        if tx.execute(
+                            "UPDATE accounts SET session_start = ?1, session_request_count = 0 WHERE id = ?2",
+                            rusqlite::params![reset.new_session_start, reset.account_id],
+                        ).is_err() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        let _ = tx.commit();
+                    }
+                    // If not ok, tx is dropped here and the transaction is rolled back.
                 }
-                let _ = conn.execute_batch("COMMIT");
             }
         });
     }
@@ -315,11 +324,14 @@ pub async fn proxy_handler(
                 // then convert to reqwest format once (no back-and-forth)
                 let upstream_headers = {
                     let mut h = base_headers.clone();
-                    provider.prepare_headers(
+                    if let Err(e) = provider.prepare_headers(
                         &mut h,
                         account.access_token.as_deref(),
                         account.api_key.as_deref(),
-                    );
+                    ) {
+                        warn!(account = %account.name, error = %e, "Failed to prepare auth headers");
+                        return AccountResult::AuthFailed(StatusCode::UNAUTHORIZED);
+                    }
                     reqwest_headers(&h)
                 };
 
@@ -609,6 +621,9 @@ async fn build_success_response(
 
         // Forward relevant headers
         for (name, value) in &resp_headers {
+            if !should_forward_response_header(name.as_str(), is_streaming) {
+                continue;
+            }
             if let (Ok(name), Ok(value)) = (
                 axum::http::HeaderName::from_bytes(name.as_ref()),
                 axum::http::HeaderValue::from_bytes(value.as_ref()),
@@ -650,6 +665,9 @@ async fn build_success_response(
             .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
 
         for (name, value) in &resp_headers {
+            if !should_forward_response_header(name.as_str(), is_streaming) {
+                continue;
+            }
             if let (Ok(name), Ok(value)) = (
                 axum::http::HeaderName::from_bytes(name.as_ref()),
                 axum::http::HeaderValue::from_bytes(value.as_ref()),
@@ -677,7 +695,8 @@ fn reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
             reqwest::header::HeaderName::from_bytes(name.as_ref()),
             reqwest::header::HeaderValue::from_bytes(value.as_ref()),
         ) {
-            out.insert(n, v);
+            // Use append instead of insert to preserve multi-value headers (e.g. Set-Cookie).
+            out.append(n, v);
         }
     }
     out
@@ -691,10 +710,38 @@ fn axum_headers_from_reqwest(headers: &reqwest::header::HeaderMap) -> HeaderMap 
             axum::http::HeaderName::from_bytes(name.as_ref()),
             axum::http::HeaderValue::from_bytes(value.as_ref()),
         ) {
-            out.insert(n, v);
+            // Use append instead of insert to preserve multi-value headers (e.g. Set-Cookie).
+            out.append(n, v);
         }
     }
     out
+}
+
+/// Returns true if an upstream response header is safe to forward to the client.
+///
+/// Hop-by-hop headers are stripped for all responses. For streaming responses,
+/// Content-Length and Transfer-Encoding are also stripped so the server can own
+/// framing semantics.
+fn should_forward_response_header(name: &str, is_streaming: bool) -> bool {
+    if name.eq_ignore_ascii_case("connection")
+        || name.eq_ignore_ascii_case("keep-alive")
+        || name.eq_ignore_ascii_case("proxy-authenticate")
+        || name.eq_ignore_ascii_case("proxy-authorization")
+        || name.eq_ignore_ascii_case("te")
+        || name.eq_ignore_ascii_case("trailer")
+        || name.eq_ignore_ascii_case("upgrade")
+    {
+        return false;
+    }
+
+    if is_streaming
+        && (name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("transfer-encoding"))
+    {
+        return false;
+    }
+
+    true
 }
 
 // ---------------------------------------------------------------------------
