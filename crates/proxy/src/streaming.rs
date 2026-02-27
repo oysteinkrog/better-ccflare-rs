@@ -4,7 +4,6 @@
 //! while the analytics side accumulates up to 1 MB of bytes for background
 //! processing.
 
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -34,7 +33,7 @@ pub const ANALYTICS_MAX_BYTES: usize = 1_048_576;
 // ---------------------------------------------------------------------------
 
 /// Accumulated analytics data from a tee'd stream.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct AnalyticsBuffer {
     /// Buffered chunks (up to ANALYTICS_MAX_BYTES total).
     pub chunks: Vec<Bytes>,
@@ -83,6 +82,15 @@ struct TeeState {
     stream_start: Instant,
     last_chunk: Instant,
     timed_out: bool,
+    tx: Option<oneshot::Sender<AnalyticsBuffer>>,
+}
+
+impl Drop for TeeState {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(std::mem::take(&mut self.buffer));
+        }
+    }
 }
 
 pin_project! {
@@ -95,17 +103,16 @@ pin_project! {
         #[pin]
         inner: S,
         state: TeeState,
-        tx: Option<oneshot::Sender<AnalyticsBuffer>>,
         stream_timeout: Duration,
         chunk_timeout: Duration,
     }
 }
 
-impl<S> Stream for TeeStream<S>
+impl<S, E> Stream for TeeStream<S>
 where
-    S: Stream<Item = Result<Bytes, Infallible>>,
+    S: Stream<Item = Result<Bytes, E>>,
 {
-    type Item = Result<Bytes, Infallible>;
+    type Item = Result<Bytes, E>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -136,9 +143,9 @@ where
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
             Poll::Ready(None) => {
-                // Stream ended — send buffer
+                // Stream ended — send buffer (tx.take() prevents Drop from double-sending)
                 let buffer = std::mem::replace(&mut this.state.buffer, AnalyticsBuffer::new());
-                if let Some(tx) = this.tx.take() {
+                if let Some(tx) = this.state.tx.take() {
                     let _ = tx.send(buffer);
                 }
                 Poll::Ready(None)
@@ -156,9 +163,9 @@ where
 /// up to `ANALYTICS_MAX_BYTES` for analytics processing.
 ///
 /// Returns: (tee'd stream for client, receiver for analytics buffer)
-pub fn tee_stream<S>(inner: S) -> (TeeStream<S>, oneshot::Receiver<AnalyticsBuffer>)
+pub fn tee_stream<S, E>(inner: S) -> (TeeStream<S>, oneshot::Receiver<AnalyticsBuffer>)
 where
-    S: Stream<Item = Result<Bytes, Infallible>>,
+    S: Stream<Item = Result<Bytes, E>>,
 {
     let (tx, rx) = oneshot::channel();
     let now = Instant::now();
@@ -170,8 +177,8 @@ where
             stream_start: now,
             last_chunk: now,
             timed_out: false,
+            tx: Some(tx),
         },
-        tx: Some(tx),
         stream_timeout: Duration::from_millis(STREAM_TIMEOUT_MS),
         chunk_timeout: Duration::from_millis(CHUNK_TIMEOUT_MS),
     };
@@ -193,8 +200,8 @@ pub struct SseEvent {
 /// Stateful SSE line parser that handles chunks split across boundaries.
 #[derive(Debug, Default)]
 pub struct SseParser {
-    /// Incomplete line from previous chunk.
-    line_buffer: String,
+    /// Incomplete bytes from previous chunk (may be a partial multi-byte UTF-8 sequence).
+    byte_buffer: Vec<u8>,
     /// Current event type (persists across data lines).
     current_event: Option<String>,
 }
@@ -204,85 +211,70 @@ impl SseParser {
         Self::default()
     }
 
-    /// Feed a chunk of bytes, returning any complete SSE events found.
-    pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        let text = String::from_utf8_lossy(chunk);
-        let mut events = Vec::new();
+    /// Process a single complete line (bytes without trailing newline).
+    fn process_line(&mut self, line_bytes: &[u8], events: &mut Vec<SseEvent>) {
+        // Strip optional trailing CR
+        let line_bytes = line_bytes
+            .strip_suffix(b"\r")
+            .unwrap_or(line_bytes);
 
-        // Prepend any leftover from previous chunk
-        let has_leftover = !self.line_buffer.is_empty();
-        if has_leftover {
-            self.line_buffer.push_str(&text);
+        if line_bytes.is_empty() {
+            self.current_event = None;
+            return;
         }
-        let source = if has_leftover {
-            &self.line_buffer
-        } else {
-            text.as_ref()
+
+        // Convert only complete lines to str — avoids mid-sequence replacement
+        let line = match std::str::from_utf8(line_bytes) {
+            Ok(s) => s,
+            Err(_) => return, // malformed line; skip
         };
 
-        // Process complete lines using cursor (avoids repeated allocations)
-        let mut cursor = 0;
+        if let Some(event_type) = line
+            .strip_prefix("event: ")
+            .or_else(|| line.strip_prefix("event:"))
+        {
+            self.current_event = Some(event_type.trim().to_string());
+        } else if let Some(data) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            events.push(SseEvent {
+                event_type: self.current_event.clone(),
+                data: data.to_string(),
+            });
+        }
+    }
+
+    /// Feed a chunk of bytes, returning any complete SSE events found.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
+        let mut events = Vec::new();
+
+        // Append incoming bytes to the carry-over buffer
+        self.byte_buffer.extend_from_slice(chunk);
+
+        // Process all complete lines (split on '\n')
         loop {
-            let remaining = &source[cursor..];
-            let Some(pos) = remaining.find('\n') else {
+            let Some(pos) = self.byte_buffer.iter().position(|&b| b == b'\n') else {
                 break;
             };
-            let line = remaining[..pos].trim_end_matches('\r');
-            cursor += pos + 1;
-
-            if line.is_empty() {
-                self.current_event = None;
-                continue;
-            }
-
-            if let Some(event_type) = line
-                .strip_prefix("event: ")
-                .or_else(|| line.strip_prefix("event:"))
-            {
-                self.current_event = Some(event_type.trim().to_string());
-            } else if let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            {
-                events.push(SseEvent {
-                    event_type: self.current_event.clone(),
-                    data: data.to_string(),
-                });
-            }
-        }
-
-        // Keep only the incomplete trailing segment
-        let leftover = &source[cursor..];
-        if has_leftover {
-            // line_buffer was the source; drain processed portion
-            self.line_buffer.drain(..cursor);
-        } else if !leftover.is_empty() {
-            self.line_buffer = leftover.to_string();
+            let line_bytes: Vec<u8> = self.byte_buffer.drain(..pos).collect();
+            self.byte_buffer.remove(0); // consume the '\n'
+            self.process_line(&line_bytes, &mut events);
         }
 
         events
     }
 
-    /// Flush any remaining data in the line buffer.
+    /// Flush any remaining data in the byte buffer.
     pub fn flush(&mut self) -> Vec<SseEvent> {
-        if self.line_buffer.is_empty() {
+        if self.byte_buffer.is_empty() {
             return Vec::new();
         }
 
-        let line = std::mem::take(&mut self.line_buffer);
-        let line = line.trim_end_matches('\r');
-
-        if let Some(data) = line
-            .strip_prefix("data: ")
-            .or_else(|| line.strip_prefix("data:"))
-        {
-            vec![SseEvent {
-                event_type: self.current_event.clone(),
-                data: data.to_string(),
-            }]
-        } else {
-            Vec::new()
-        }
+        let line_bytes = std::mem::take(&mut self.byte_buffer);
+        let mut events = Vec::new();
+        self.process_line(&line_bytes, &mut events);
+        events
     }
 }
 
@@ -581,7 +573,7 @@ mod tests {
     async fn tee_stream_buffers_for_analytics() {
         use futures::StreamExt;
 
-        let chunks: Vec<Result<Bytes, Infallible>> = vec![
+        let chunks: Vec<Result<Bytes, std::convert::Infallible>> = vec![
             Ok(Bytes::from_static(b"chunk1")),
             Ok(Bytes::from_static(b"chunk2")),
             Ok(Bytes::from_static(b"chunk3")),
@@ -606,7 +598,7 @@ mod tests {
         use futures::StreamExt;
 
         let big_chunk = Bytes::from(vec![b'x'; ANALYTICS_MAX_BYTES + 100]);
-        let chunks: Vec<Result<Bytes, Infallible>> = vec![Ok(big_chunk.clone())];
+        let chunks: Vec<Result<Bytes, std::convert::Infallible>> = vec![Ok(big_chunk.clone())];
         let inner = futures::stream::iter(chunks);
         let (tee, rx) = tee_stream(inner);
 
