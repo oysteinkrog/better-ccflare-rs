@@ -1,3 +1,10 @@
+<div class="page-explainer">
+  <b>Agents</b> are AI tools or clients identified by the <code>User-Agent</code> header they send with API requests.
+  They are discovered automatically — no configuration needed.
+  You can <b>override which model</b> an agent uses, regardless of what model it requests.
+  This is useful to force a lighter model (e.g. Haiku instead of Sonnet) for a specific tool to save quota.
+</div>
+
 {% if agents.is_empty() %}
 <p>No agents discovered yet. Agents are detected automatically from <code>User-Agent</code> headers in API requests.</p>
 {% else %}
@@ -5,10 +12,10 @@
 <table role="grid">
   <thead>
     <tr>
-      <th data-tt="Unique identifier extracted from the User-Agent header sent with API requests.">Agent ID</th>
-      <th data-tt="Override the default model selection for requests from this specific agent. Leave as default to use the model requested by the client.">Preferred Model</th>
-      <th data-tt="When this agent's model preference was last changed.">Last Updated</th>
-      <th data-tt="Reset this agent's model preference back to the system default.">Actions</th>
+      <th data-tt="The agent's identifier, extracted from the User-Agent header. Usually the tool name and version.">Agent ID</th>
+      <th data-tt="Force all requests from this agent to use a specific model, regardless of what model the agent requests. 'default' = honour the agent's own model choice.">Model Override</th>
+      <th data-tt="When this agent's model override was last changed.">Last Updated</th>
+      <th data-tt="Remove the model override and return this agent to using whatever model it requests.">Actions</th>
     </tr>
   </thead>
   <tbody>

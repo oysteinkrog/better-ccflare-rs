@@ -1,7 +1,14 @@
 <h2>Analytics</h2>
 
+<div class="page-explainer">
+  Time-series charts and per-account breakdowns.
+  <b>Trailing windows</b> (1h–30d) show the most recent N hours/days of data.
+  <b>Calendar periods</b> (Today / This Week / This Month) align to midnight boundaries.
+  <b>API Value</b> is the pay-per-token equivalent — not your actual subscription cost. <b>Money Saved</b> = API Value − prorated subscription cost.
+</div>
+
 <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.5rem;flex-wrap:wrap;">
-  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);">Rolling</span>
+  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);" data-tt="Trailing window: show the last N hours or days up to right now.">Trailing</span>
   <div role="group" id="range-selector" style="display:flex;gap:0;">
     <button class="range-btn" data-range="1h">1h</button>
     <button class="range-btn" data-range="6h">6h</button>
@@ -9,7 +16,7 @@
     <button class="range-btn" data-range="7d">7d</button>
     <button class="range-btn" data-range="30d">30d</button>
   </div>
-  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);">Period</span>
+  <span style="font-size:0.82rem;font-weight:600;color:var(--bccf-text-secondary);" data-tt="Calendar period: show data from the start of today, this week, or this month.">Calendar</span>
   <div role="group" style="display:flex;gap:0;">
     <button class="range-btn" data-range="today">Today</button>
     <button class="range-btn" data-range="this_week">This Week</button>
@@ -111,34 +118,34 @@
 <!-- Chart grid -->
 <div class="chart-grid">
   <div class="chart-card">
-    <h3>Request Volume</h3>
+    <h3 data-tt="Number of API requests proxied per time bucket. Each bar = one bucket (minutes for short ranges, hours for longer ones).">Request Volume</h3>
     <canvas id="chart-requests"></canvas>
   </div>
   <div class="chart-card">
-    <h3>Response Time</h3>
+    <h3 data-tt="Median time from first request byte received to last response byte sent, per time bucket. Spikes indicate slow model responses or network delays.">Response Time</h3>
     <canvas id="chart-response-time"></canvas>
   </div>
   <div class="chart-card">
-    <h3>Token Usage</h3>
+    <h3 data-tt="Total tokens consumed per time bucket (input + output + cache). Reflects your actual usage intensity.">Token Usage</h3>
     <canvas id="chart-tokens"></canvas>
   </div>
   <div class="chart-card">
-    <h3>Cost</h3>
+    <h3 data-tt="Orange line: pay-per-token equivalent value of tokens delivered. Green line: money saved vs. PAYG (API Value − prorated subscription cost). The gap between them is your subscription overhead.">API Value vs. Savings</h3>
     <canvas id="chart-cost"></canvas>
   </div>
   <div class="chart-card">
-    <h3>Token Speed</h3>
+    <h3 data-tt="Average output tokens generated per second per time bucket. Higher = faster model responses. Drops may indicate model load or long prompts.">Output Speed (tok/s)</h3>
     <canvas id="chart-speed"></canvas>
   </div>
   <div class="chart-card">
-    <h3>Model Distribution</h3>
+    <h3 data-tt="Request count per model for the selected period. Shows which models your clients are actually using.">Model Distribution</h3>
     <canvas id="chart-models"></canvas>
   </div>
 </div>
 
 <!-- Cost by Account table -->
 <div class="chart-card" style="margin-top:1rem;">
-  <h3>Cost by Account</h3>
+  <h3 data-tt="Per-account breakdown of API value, savings, and costs for the selected period. Subscription cost is prorated: monthlyCost × days ÷ 30.">Cost by Account</h3>
   <div style="overflow-x:auto;">
     <table style="width:100%;font-size:0.82rem;border-collapse:collapse;">
       <thead>

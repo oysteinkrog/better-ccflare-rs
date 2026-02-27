@@ -1,3 +1,10 @@
+<div class="page-explainer">
+  A log of all API requests proxied. <b>Filters</b> narrow by account, model, or project.
+  Live updates appear at the top via server-sent events (SSE) — no refresh needed.
+  Click <b>Details</b> on any row to see the full request and response payload.
+  <b>Cost</b> is the pay-per-token equivalent, not your actual subscription cost.
+</div>
+
 <!-- Filter bar -->
 <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
   <input type="search" name="account" placeholder="Filter by account..."
@@ -33,7 +40,6 @@
 <table role="grid">
   <thead>
     <tr>
-      <th>Time</th>
       <th data-tt="When this request was received by the proxy.">Time</th>
       <th data-tt="Which account was selected by the load balancer to handle this request.">Account</th>
       <th data-tt="The Claude model requested (or mapped to by the load balancer).">Model</th>
@@ -41,7 +47,7 @@
       <th data-tt="Input tokens sent to the model / output tokens generated in the response.">Tokens</th>
       <th data-tt="Time from first request byte received to last response byte sent.">Response</th>
       <th data-tt="PAYG-equivalent cost for this request based on token counts and published pricing.">Cost</th>
-      <th></th>
+      <th data-tt="Click to expand and view the full request and response payload for this row.">Details</th>
     </tr>
   </thead>
   <tbody id="request-rows">

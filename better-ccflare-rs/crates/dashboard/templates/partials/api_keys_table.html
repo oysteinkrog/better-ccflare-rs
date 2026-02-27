@@ -1,3 +1,10 @@
+<div class="page-explainer">
+  API keys authenticate requests to this proxy.
+  Set <code>Authorization: Bearer &lt;key&gt;</code> in your API calls.
+  The full key is only shown once on creation — copy it immediately.
+  Disabling a key blocks authentication without deleting it, so it can be re-enabled later.
+</div>
+
 <div style="display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap;">
   <article style="flex: 1; min-width: 120px; padding: 0.75rem; margin: 0;">
     <small class="secondary">Total Keys</small>
@@ -33,11 +40,11 @@
 <table role="grid">
   <thead>
     <tr>
-      <th data-tt="A human-readable label for this API key.">Name</th>
-      <th data-tt="The last 8 characters of the key for identification. The full key is only shown once on creation.">Key (suffix)</th>
-      <th data-tt="Active keys are accepted for authentication. Disabled keys are rejected without affecting other keys.">Status</th>
-      <th data-tt="Total number of API requests authenticated with this key.">Usage</th>
-      <th data-tt="When this key was last used to authenticate a request.">Last Used</th>
+      <th data-tt="A human-readable label for this key, so you can tell which tool or client it belongs to.">Name</th>
+      <th data-tt="The last 8 characters of the key for identification. The full key is shown only once at creation — this suffix is just for reference.">Key (last 8)</th>
+      <th data-tt="Active keys are accepted for authentication. Disabled keys are rejected — no requests go through — but the key is kept and can be re-enabled.">Status</th>
+      <th data-tt="Total number of API requests that have been authenticated with this key since it was created.">Requests</th>
+      <th data-tt="How long ago this key was last used to authenticate a request. 'Never' means no request has used it yet.">Last Used</th>
       <th data-tt="When this key was generated.">Created</th>
       <th>Actions</th>
     </tr>
