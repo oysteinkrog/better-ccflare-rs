@@ -335,12 +335,21 @@ pub async fn proxy_handler(
                     reqwest_headers(&h)
                 };
 
+                // SDK clients (no agent detected) get passthrough — no proxy-level
+                // model replacement or thinking-block filtering. Agent IDEs
+                // (Claude Code, Cursor, Windsurf, Cline) get the full treatment.
+                let is_agent_client = req_meta.agent_used.is_some();
+
                 // Transform request body (model mapping, etc.)
                 let final_body = match provider.transform_request_body(&req_body, Some(&account)).await {
                     Ok(Some(transformed)) => Bytes::from(transformed),
                     Ok(None) => {
-                        // Apply model mappings from account config (cached parse)
-                        apply_model_mapping(&account, &requested_model, &req_body)
+                        // Provider had no mapping — apply proxy-level fallback only for agents
+                        if is_agent_client {
+                            apply_model_mapping(&account, &requested_model, &req_body)
+                        } else {
+                            req_body.clone()
+                        }
                     }
                     Err(e) => {
                         warn!("Body transform failed: {e}");
@@ -398,12 +407,14 @@ pub async fn proxy_handler(
                 }
 
                 // Handle thinking block error (400 + specific error message)
+                // Only attempt thinking-block filtering for agent clients —
+                // SDK clients get 400 errors passed through as-is.
                 if status == reqwest::StatusCode::BAD_REQUEST {
                     let resp_body = match upstream_resp.bytes().await {
                         Ok(b) => b,
                         Err(e) => return AccountResult::Error(e.to_string()),
                     };
-                    if is_thinking_block_error(StatusCode::BAD_REQUEST, &resp_body) {
+                    if is_agent_client && is_thinking_block_error(StatusCode::BAD_REQUEST, &resp_body) {
                         // Retry with thinking blocks filtered
                         if let Some(filtered) = filter_thinking_blocks(&final_body) {
                             debug!("Retrying with thinking blocks filtered");
@@ -442,7 +453,7 @@ pub async fn proxy_handler(
                             .unwrap_or_else(|_| error_response(StatusCode::BAD_REQUEST, "Bad request"));
                         return AccountResult::Success(axum_resp);
                     }
-                    // Non-thinking error — record and return as-is
+                    // Non-thinking error (or SDK client) — record and return as-is
                     if let Some(pp) = &post_processor {
                         pp.send(PostProcessorMsg::ResponseComplete {
                             request_id: req_meta.id.clone(),
