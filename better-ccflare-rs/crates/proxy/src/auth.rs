@@ -17,7 +17,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use tracing::debug;
 
 use bccf_core::AppState;
@@ -359,13 +359,10 @@ pub async fn auth_middleware(
             Ok(enabled) => enabled,
             Err(()) => {
                 // DB error — fail closed: return 500 rather than bypassing auth.
-                return (
+                return crate::handler::error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({
-                        "error": "Authentication check failed due to a database error"
-                    })),
-                )
-                    .into_response();
+                    "Authentication check failed due to a database error",
+                );
             }
         },
         None => false,
@@ -385,13 +382,10 @@ pub async fn auth_middleware(
         Some(key) => key,
         None => {
             debug!("Auth failed: no API key in request to {path}");
-            return (
+            return crate::handler::error_response(
                 StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": "API key required. Include it in the 'x-api-key' header or Authorization: Bearer <key>"
-                })),
-            )
-                .into_response();
+                "API key required. Include it in the 'x-api-key' header or Authorization: Bearer <key>",
+            );
         }
     };
 
@@ -417,13 +411,10 @@ pub async fn auth_middleware(
         }
         None => {
             debug!("Auth failed: invalid API key for {path}");
-            (
+            crate::handler::error_response(
                 StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": "Invalid API key"
-                })),
+                "Invalid API key",
             )
-                .into_response()
         }
     }
 }
