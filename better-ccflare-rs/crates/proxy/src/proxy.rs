@@ -733,7 +733,7 @@ fn axum_headers_from_reqwest(headers: &reqwest::header::HeaderMap) -> HeaderMap 
 /// Hop-by-hop headers are stripped for all responses. For streaming responses,
 /// Content-Length and Transfer-Encoding are also stripped so the server can own
 /// framing semantics.
-fn should_forward_response_header(name: &str, is_streaming: bool) -> bool {
+fn should_forward_response_header(name: &str, _is_streaming: bool) -> bool {
     if name.eq_ignore_ascii_case("connection")
         || name.eq_ignore_ascii_case("keep-alive")
         || name.eq_ignore_ascii_case("proxy-authenticate")
@@ -745,9 +745,14 @@ fn should_forward_response_header(name: &str, is_streaming: bool) -> bool {
         return false;
     }
 
-    if is_streaming
-        && (name.eq_ignore_ascii_case("content-length")
-            || name.eq_ignore_ascii_case("transfer-encoding"))
+    // Always strip framing/encoding headers — reqwest auto-decompresses responses,
+    // so the original content-length reflects the compressed size while the body
+    // we forward is decompressed. Forwarding the stale content-length causes
+    // hyper to reset the connection before the full body is sent. Let axum/hyper
+    // set the correct framing headers for the outgoing response.
+    if name.eq_ignore_ascii_case("content-length")
+        || name.eq_ignore_ascii_case("transfer-encoding")
+        || name.eq_ignore_ascii_case("content-encoding")
     {
         return false;
     }
