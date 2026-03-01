@@ -309,32 +309,11 @@ pub fn cap_body_for_analytics(body: &[u8]) -> String {
     }
 }
 
-/// Map an HTTP status code to the Anthropic API error type string.
-///
-/// See <https://docs.anthropic.com/en/api/errors> for the canonical mapping.
-fn anthropic_error_type(status: StatusCode) -> &'static str {
-    match status.as_u16() {
-        400 => "invalid_request_error",
-        401 => "authentication_error",
-        403 => "permission_error",
-        404 => "not_found_error",
-        413 => "request_too_large",
-        429 => "rate_limit_error",
-        529 => "overloaded_error",
-        500..=599 => "api_error",
-        _ => "invalid_request_error", // Anthropic uses this as catch-all for other 4xx
-    }
-}
-
-/// Build an error response with Anthropic-compatible JSON body.
-///
-/// Format: `{"type":"error","error":{"type":"<error_type>","message":"<msg>"}}`
-/// This matches the format expected by the official Anthropic SDKs.
+/// Build an error response with JSON body.
 pub fn error_response(status: StatusCode, message: &str) -> Response {
     let body = serde_json::json!({
-        "type": "error",
         "error": {
-            "type": anthropic_error_type(status),
+            "type": "proxy_error",
             "message": message,
         }
     });
