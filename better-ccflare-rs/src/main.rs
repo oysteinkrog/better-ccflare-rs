@@ -268,6 +268,14 @@ impl AccountSource for DbAccountSource {
             rt,
         );
     }
+
+    fn mark_token_revoked(&self, account_id: &str) {
+        let Ok(conn) = self.pool.get() else { return };
+        let _ = conn.execute(
+            "UPDATE accounts SET refresh_token = '', access_token = NULL, expires_at = NULL WHERE id = ?1",
+            &[account_id],
+        );
+    }
 }
 
 /// Check if a provider supports usage tracking.

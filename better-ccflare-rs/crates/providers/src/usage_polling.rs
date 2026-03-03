@@ -362,6 +362,9 @@ pub trait AccountSource: Send + Sync + 'static {
     fn get_pollable_accounts(&self) -> Vec<PollableAccount>;
     /// Persist a freshly-refreshed token pair back to the database.
     fn persist_refreshed_token(&self, account_id: &str, token: &RefreshedToken);
+    /// Clear tokens for an account whose refresh token has been permanently revoked.
+    /// This causes `check_token_health` to flag the account as `requires_reauth`.
+    fn mark_token_revoked(&self, account_id: &str);
 }
 
 // ---------------------------------------------------------------------------
@@ -422,14 +425,21 @@ pub async fn fetch_anthropic_usage(
 
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 
+/// Why a token refresh failed.
+enum TokenRefreshError {
+    /// The refresh token has been permanently revoked (`invalid_grant`).
+    /// The account must be re-authenticated by the user.
+    PermanentlyRevoked,
+    /// A transient or network error — safe to retry next cycle.
+    Transient,
+}
+
 /// Attempt to refresh an OAuth access token using the stored refresh token.
-///
-/// Returns `Some(RefreshedToken)` on success, `None` on any failure.
 async fn refresh_oauth_token(
     client: &reqwest::Client,
     refresh_token: &str,
     client_id: &str,
-) -> Option<RefreshedToken> {
+) -> Result<RefreshedToken, TokenRefreshError> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -445,8 +455,11 @@ async fn refresh_oauth_token(
 
     match resp {
         Ok(r) if r.status().is_success() => {
-            let json: JsonValue = r.json().await.ok()?;
-            let access_token = json["access_token"].as_str()?.to_string();
+            let json: JsonValue = r.json().await.map_err(|_| TokenRefreshError::Transient)?;
+            let access_token = json["access_token"]
+                .as_str()
+                .ok_or(TokenRefreshError::Transient)?
+                .to_string();
             let new_refresh = json["refresh_token"]
                 .as_str()
                 .unwrap_or(refresh_token)
@@ -454,7 +467,7 @@ async fn refresh_oauth_token(
             let expires_at = json["expires_in"].as_i64().map(|secs| {
                 chrono::Utc::now().timestamp_millis() + secs * 1000
             });
-            Some(RefreshedToken {
+            Ok(RefreshedToken {
                 access_token,
                 refresh_token: new_refresh,
                 expires_at,
@@ -463,16 +476,26 @@ async fn refresh_oauth_token(
         Ok(r) => {
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
+            // RFC 6749: error responses are JSON with an `error` field.
+            let is_revoked = serde_json::from_str::<JsonValue>(&body)
+                .ok()
+                .and_then(|json| json.get("error")?.as_str().map(String::from))
+                == Some("invalid_grant".to_string());
             warn!(
                 %status,
                 body = body.chars().take(200).collect::<String>(),
+                permanently_revoked = is_revoked,
                 "Failed to refresh OAuth token for usage polling"
             );
-            None
+            if is_revoked {
+                Err(TokenRefreshError::PermanentlyRevoked)
+            } else {
+                Err(TokenRefreshError::Transient)
+            }
         }
         Err(e) => {
             warn!(error = %e, "Error refreshing OAuth token for usage polling");
-            None
+            Err(TokenRefreshError::Transient)
         }
     }
 }
@@ -693,16 +716,28 @@ async fn poll_single_account(
                     account.client_id.as_deref(),
                 ) {
                     debug!(account_id = %account.id, "Usage poll got 401, refreshing token");
-                    if let Some(refreshed) = refresh_oauth_token(client, rt, cid).await {
-                        info!(account_id = %account.id, "Token refreshed for usage polling");
-                        source.persist_refreshed_token(&account.id, &refreshed);
-                        // Retry with the new token
-                        if let AnthropicUsageResult::Ok(data) =
-                            fetch_anthropic_usage(client, &refreshed.access_token).await
-                        {
-                            cache.set(&account.id, AnyUsageData::Anthropic(data));
+                    match refresh_oauth_token(client, rt, cid).await {
+                        Ok(refreshed) => {
+                            info!(account_id = %account.id, "Token refreshed for usage polling");
+                            source.persist_refreshed_token(&account.id, &refreshed);
+                            // Retry with the new token
+                            if let AnthropicUsageResult::Ok(data) =
+                                fetch_anthropic_usage(client, &refreshed.access_token).await
+                            {
+                                cache.set(&account.id, AnyUsageData::Anthropic(data));
+                                return;
+                            }
+                        }
+                        Err(TokenRefreshError::PermanentlyRevoked) => {
+                            warn!(
+                                account_id = %account.id,
+                                "Token permanently revoked, marking account for re-authentication"
+                            );
+                            source.mark_token_revoked(&account.id);
+                            cache.remove(&account.id);
                             return;
                         }
+                        Err(TokenRefreshError::Transient) => {}
                     }
                 } else {
                     debug!(
@@ -989,6 +1024,7 @@ mod tests {
             self.accounts.clone()
         }
         fn persist_refreshed_token(&self, _account_id: &str, _token: &RefreshedToken) {}
+        fn mark_token_revoked(&self, _account_id: &str) {}
     }
 
     #[tokio::test]
