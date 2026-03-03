@@ -292,19 +292,37 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
             "UPDATE accounts SET refresh_token_updated_at = created_at WHERE refresh_token_updated_at IS NULL AND created_at != 0",
             [],
         );
-        // Auto-detect monthly subscription cost from account name multiplier suffix.
-        // Patterns: "- 20x" → $200/mo (Claude Max 20x), "- 6.5x" → $130/mo,
-        //           "- 5x" → $100/mo (Claude Max 5x), OAuth default → $20/mo (Pro).
+        // Auto-detect monthly subscription cost from subscription_tier.
+        // Team Max 5x = $125/seat, individual Max 5x = $100, Max 20x = $200,
+        // Pro = $20, fallback for unrecognized OAuth = $20 (conservative).
         // Only updates rows that are still at the default (0) to preserve user edits.
         let _ = conn.execute(
             "UPDATE accounts SET monthly_cost_usd = CASE
-                WHEN name LIKE '% - 20x' OR name LIKE '% 20x' THEN 200.0
-                WHEN name LIKE '% - 6.5x' OR name LIKE '% 6.5x' THEN 130.0
-                WHEN name LIKE '% - 5x'  OR name LIKE '% 5x'  THEN 100.0
+                WHEN subscription_tier LIKE '%20x%' THEN 200.0
+                WHEN subscription_tier LIKE '%Team%' AND subscription_tier LIKE '%5x%' THEN 125.0
+                WHEN subscription_tier LIKE '%Team%' THEN 125.0
+                WHEN subscription_tier LIKE '%5x%' THEN 100.0
+                WHEN subscription_tier LIKE '%Max%' THEN 200.0
+                WHEN subscription_tier LIKE '%Pro%' THEN 20.0
                 WHEN provider IN ('anthropic', 'claude-oauth', 'console') THEN 20.0
                 ELSE 0.0
              END
              WHERE monthly_cost_usd = 0",
+            [],
+        );
+        // Fix incorrect costs from earlier name-based migration.
+        // Re-derive from subscription_tier where the tier is known.
+        let _ = conn.execute(
+            "UPDATE accounts SET monthly_cost_usd = CASE
+                WHEN subscription_tier LIKE '%20x%' THEN 200.0
+                WHEN subscription_tier LIKE '%Team%' AND subscription_tier LIKE '%5x%' THEN 125.0
+                WHEN subscription_tier LIKE '%Team%' THEN 125.0
+                WHEN subscription_tier LIKE '%5x%' THEN 100.0
+                WHEN subscription_tier LIKE '%Max%' THEN 200.0
+                WHEN subscription_tier LIKE '%Pro%' THEN 20.0
+                ELSE monthly_cost_usd
+             END
+             WHERE subscription_tier IS NOT NULL",
             [],
         );
 

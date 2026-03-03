@@ -27,14 +27,21 @@ const PAYG_CACHE_READ_USD_PER_M: f64 = 0.30;
 /// Subscription cost inference by tier (USD/month).
 fn infer_subscription_cost(tier: Option<&str>) -> Option<f64> {
     let t = tier?.trim().to_ascii_lowercase();
+    let is_team = t.contains("team");
     if t.contains("20x") {
         Some(200.0)
     } else if t.contains("5x") {
-        Some(100.0)
+        // Team Max 5x = $125/seat, individual Max 5x = $100
+        Some(if is_team { 125.0 } else { 100.0 })
+    } else if is_team {
+        // Team plan without explicit multiplier — assume premium ($125/seat)
+        Some(125.0)
     } else if t.contains("max") {
         Some(200.0) // conservative until confirmed
     } else if t.contains("pro") {
         Some(20.0)
+    } else if t.contains("enterprise") {
+        None // enterprise pricing varies
     } else if t.contains("free") {
         Some(0.0)
     } else {
