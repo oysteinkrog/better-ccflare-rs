@@ -35,6 +35,7 @@ pub fn test_account_with_key(api_key: &str) -> Account {
         email: None,
         refresh_token_updated_at: None,
         is_shared: false,
+        overage_protection: true,
     }
 }
 

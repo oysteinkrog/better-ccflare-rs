@@ -27,7 +27,8 @@ const ACCOUNT_SELECT: &str = "
         subscription_tier,
         email,
         refresh_token_updated_at,
-        COALESCE(is_shared, 0) as is_shared
+        COALESCE(is_shared, 0) as is_shared,
+        COALESCE(overage_protection, 1) as overage_protection
     FROM accounts
 ";
 
@@ -68,6 +69,7 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         email: row.get("email")?,
         refresh_token_updated_at: row.get("refresh_token_updated_at")?,
         is_shared: row.get::<_, i64>("is_shared")? != 0,
+        overage_protection: row.get::<_, i64>("overage_protection")? != 0,
     })
 }
 
@@ -391,11 +393,12 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             rate_limit_reset, rate_limit_status, rate_limit_remaining,
             priority, auto_fallback_enabled, auto_refresh_enabled,
             custom_endpoint, model_mappings, reserve_5h, reserve_weekly, reserve_hard,
-            subscription_tier, email, refresh_token_updated_at, is_shared
+            subscription_tier, email, refresh_token_updated_at, is_shared,
+            overage_protection
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-            ?29, ?30
+            ?29, ?30, ?31
         )",
         params![
             account.id,
@@ -428,7 +431,21 @@ pub fn create(conn: &Connection, account: &Account) -> Result<(), DbError> {
             account.email,
             account.refresh_token_updated_at,
             account.is_shared as i64,
+            account.overage_protection as i64,
         ],
+    )?;
+    Ok(())
+}
+
+/// Set overage_protection flag for an account.
+pub fn set_overage_protection(
+    conn: &Connection,
+    account_id: &str,
+    enabled: bool,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE accounts SET overage_protection = ?1 WHERE id = ?2",
+        params![enabled as i64, account_id],
     )?;
     Ok(())
 }
@@ -486,6 +503,7 @@ mod tests {
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: true,
         }
     }
 

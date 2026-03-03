@@ -239,6 +239,8 @@ pub struct AccountRow {
     pub subscription_tier: Option<String>,
     /// Email address of the authenticated OAuth user.
     pub email: Option<String>,
+    /// Whether overage protection is enabled (skip account at 100% usage).
+    pub overage_protection: bool,
 }
 
 /// Aggregate pool usage summary shown above account cards.

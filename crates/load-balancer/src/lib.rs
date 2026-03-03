@@ -283,6 +283,19 @@ pub fn is_account_available(
     if account.rate_limited_until.is_some_and(|until| until >= now) {
         return false;
     }
+    // Overage protection: hard-stop at 100% to prevent overage billing
+    if account.overage_protection {
+        if let Some(info) = usage.get(&account.id) {
+            let at_overage = if info.windows.is_empty() {
+                info.utilization_pct >= 100.0
+            } else {
+                info.windows.iter().any(|w| w.utilization_pct >= 100.0)
+            };
+            if at_overage {
+                return false;
+            }
+        }
+    }
     // Hard reserve: exclude account when any window hits its reserve threshold
     if account.reserve_hard {
         if is_at_reserve(account, usage) {
@@ -411,6 +424,7 @@ mod tests {
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: false,
         }
     }
 
@@ -1025,5 +1039,69 @@ mod tests {
 
         // Weekly at 99% but reserve_weekly=0 → not checked, 5h at 50% < 80% → not at reserve
         assert!(!is_at_reserve(&a, &usage));
+    }
+
+    // -----------------------------------------------------------------------
+    // Overage protection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn overage_protection_excludes_at_100() {
+        let mut a = make_account("a", "anthropic", 1);
+        a.overage_protection = true;
+
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(100.0, None));
+
+        assert!(!is_account_available(&a, &usage, NOW));
+    }
+
+    #[test]
+    fn overage_protection_allows_under_100() {
+        let mut a = make_account("a", "anthropic", 1);
+        a.overage_protection = true;
+
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(99.9, None));
+
+        assert!(is_account_available(&a, &usage, NOW));
+    }
+
+    #[test]
+    fn overage_protection_disabled_allows_100() {
+        let mut a = make_account("a", "anthropic", 1);
+        a.overage_protection = false;
+
+        let mut usage = HashMap::new();
+        usage.insert("a".to_string(), make_usage(100.0, None));
+
+        assert!(is_account_available(&a, &usage, NOW));
+    }
+
+    #[test]
+    fn overage_protection_no_usage_data_allows() {
+        let mut a = make_account("a", "anthropic", 1);
+        a.overage_protection = true;
+
+        assert!(is_account_available(&a, &no_usage(), NOW));
+    }
+
+    #[test]
+    fn overage_protection_per_window_any_at_100() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "anthropic", 1);
+        a.overage_protection = true;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 100.0, resets_at_ms: None },
+            ]),
+        );
+
+        assert!(!is_account_available(&a, &usage, NOW));
     }
 }

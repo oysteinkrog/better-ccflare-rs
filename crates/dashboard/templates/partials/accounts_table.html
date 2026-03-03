@@ -807,6 +807,14 @@
                onchange="toggleFallback('{{ acct.id }}', this.checked)">
       </div>
       {% if acct.has_usage %}
+      <div class="acct-chip" title="Overage protection: skip this account when any usage window reaches 100%. Prevents overage billing on team plans.">
+        <span class="acct-chip-label">Overage</span>
+        <input type="checkbox"
+               role="switch"
+               {% if acct.overage_protection %}checked{% endif %}
+               style="margin:0;"
+               onchange="toggleOverageProtection('{{ acct.id }}', this.checked)">
+      </div>
       <div class="acct-chip" title="5-hour window reserve: keep at least this % of the 5-hour token window unused. The load balancer deprioritizes (or with Hard: excludes) this account when usage exceeds (100 − reserve)%. Click to edit.">
         <span class="acct-chip-label">5h Reserve</span>
         <span class="acct-editable"
@@ -911,6 +919,11 @@ function updatePriority(id, value) {
 
 function toggleFallback(id, checked) {
   apiPost('/api/accounts/' + id + '/auto-fallback', {enabled: checked})
+    .then(refreshAccounts);
+}
+
+function toggleOverageProtection(id, checked) {
+  apiPost('/api/accounts/' + id + '/overage-protection', {enabled: checked})
     .then(refreshAccounts);
 }
 
