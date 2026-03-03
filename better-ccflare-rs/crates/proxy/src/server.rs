@@ -148,6 +148,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/accounts/{id}/shared",
             post(accounts::set_is_shared),
         )
+        .route(
+            "/api/accounts/{id}/overage-protection",
+            post(accounts::set_overage_protection),
+        )
         // Request history & payload
         .route("/api/requests", get(handlers::requests::list_requests))
         .route(

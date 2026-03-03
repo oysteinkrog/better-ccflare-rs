@@ -82,6 +82,12 @@ pub fn run_column_migrations(conn: &Connection) -> Result<(), DbError> {
         [],
     );
 
+    // overage_protection — hard-stop at 100% usage to prevent overage billing
+    let _ = conn.execute(
+        "ALTER TABLE accounts ADD COLUMN overage_protection INTEGER DEFAULT 1",
+        [],
+    );
+
     Ok(())
 }
 
@@ -118,7 +124,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     email TEXT,
     monthly_cost_usd REAL NOT NULL DEFAULT 0,
     refresh_token_updated_at INTEGER,
-    is_shared INTEGER DEFAULT 0
+    is_shared INTEGER DEFAULT 0,
+    overage_protection INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -330,6 +337,7 @@ mod tests {
             "subscription_tier",
             "email",
             "is_shared",
+            "overage_protection",
         ];
 
         for col in &expected {

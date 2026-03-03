@@ -45,6 +45,9 @@ pub struct Account {
     /// When true, the utilization API reports usage from all sources, not just proxy
     /// traffic — this biases X-factor estimates downward.
     pub is_shared: bool,
+    /// When true (default), the load balancer skips this account when any usage
+    /// window reaches 100%, preventing overage billing on team/org plans.
+    pub overage_protection: bool,
 }
 
 /// API response for an account — what clients receive.
@@ -83,6 +86,8 @@ pub struct AccountResponse {
     pub email: Option<String>,
     /// Whether this account is shared with external users outside better-ccflare.
     pub is_shared: bool,
+    /// Whether overage protection is enabled (skip account at 100% usage).
+    pub overage_protection: bool,
 }
 
 /// Token validity status.

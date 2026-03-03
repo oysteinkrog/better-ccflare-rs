@@ -401,6 +401,7 @@ async fn accounts_table_partial(
                 reserve_hard: a.reserve_hard,
                 subscription_tier: a.subscription_tier.clone(),
                 email: a.email.clone(),
+                overage_protection: a.overage_protection,
             }
         })
         .collect();

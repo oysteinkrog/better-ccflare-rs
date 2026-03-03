@@ -116,6 +116,7 @@ fn account_to_response(account: &Account, now: i64, usage: Option<&AnyUsageData>
         subscription_tier: account.subscription_tier.clone(),
         email: account.email.clone(),
         is_shared: account.is_shared,
+        overage_protection: account.overage_protection,
     }
 }
 
@@ -984,6 +985,7 @@ pub async fn create_account(
         email: None,
         refresh_token_updated_at: None,
         is_shared: false,
+        overage_protection: true,
     };
 
     if let Err(e) = account_repo::create(&conn, &account) {
@@ -1060,6 +1062,56 @@ pub async fn set_is_shared(
     Json(json!({"success": true, "shared": shared})).into_response()
 }
 
+/// POST /api/accounts/:id/overage-protection — toggle overage protection.
+pub async fn set_overage_protection(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let conn = get_conn!(state);
+
+    let enabled = match body.get("enabled").and_then(|v| v.as_bool()) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "enabled (boolean) is required"})),
+            )
+                .into_response();
+        }
+    };
+
+    match account_repo::find_by_id(&conn, &account_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Account not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!("Failed to find account {account_id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = account_repo::set_overage_protection(&conn, &account_id, enabled) {
+        warn!("Failed to set overage_protection for {account_id}: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to update overage protection"})),
+        )
+            .into_response();
+    }
+
+    Json(json!({"success": true, "enabled": enabled})).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1123,6 +1175,7 @@ mod tests {
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: true,
         };
         account_repo::create(&conn, &account).unwrap();
     }
@@ -1427,6 +1480,7 @@ mod tests {
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: true,
         };
 
         let resp = account_to_response(&account, now, None);
@@ -1468,6 +1522,7 @@ mod tests {
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: true,
         };
 
         let resp = account_to_response(&account, now, None);

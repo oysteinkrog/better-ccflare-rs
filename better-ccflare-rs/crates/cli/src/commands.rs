@@ -135,6 +135,7 @@ pub fn add_account(
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: true,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;
@@ -205,6 +206,7 @@ pub fn add_account(
             email: None,
             refresh_token_updated_at: None,
             is_shared: false,
+            overage_protection: true,
         };
 
         let conn = pool.get().context("Failed to get database connection")?;

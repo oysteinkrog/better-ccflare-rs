@@ -146,6 +146,7 @@ fn seed_test_data(pool: &DbPool) {
         email: None,
     refresh_token_updated_at: None,
     is_shared: false,
+    overage_protection: true,
     };
 
     let acc2 = Account {
@@ -179,6 +180,7 @@ fn seed_test_data(pool: &DbPool) {
         email: None,
     refresh_token_updated_at: None,
     is_shared: false,
+    overage_protection: true,
     };
 
     account_repo::create(&conn, &acc1).unwrap();
