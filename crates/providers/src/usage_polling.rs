@@ -375,6 +375,8 @@ pub trait AccountSource: Send + Sync + 'static {
 pub enum AnthropicUsageResult {
     Ok(AnthropicUsageData),
     Unauthorized,
+    /// Rate limited — caller should wait `retry_after` seconds and retry.
+    RateLimited(u64),
     Error,
 }
 
@@ -405,6 +407,18 @@ pub async fn fetch_anthropic_usage(
                 "Anthropic usage fetch: token expired (401)"
             );
             AnthropicUsageResult::Unauthorized
+        }
+        Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            let retry_after = r
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            // Enforce minimum 60s backoff — Anthropic sometimes returns retry_after=0
+            let backoff = retry_after.max(60);
+            warn!(retry_after, backoff, "Usage API rate limited (429)");
+            AnthropicUsageResult::RateLimited(backoff)
         }
         Ok(r) => {
             let status = r.status();
@@ -567,11 +581,15 @@ pub async fn fetch_zai_usage(client: &reqwest::Client, api_key: &str) -> Option<
 // Polling service
 // ---------------------------------------------------------------------------
 
-/// Default polling interval (90 seconds).
-const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(90);
+/// Default polling interval (5 minutes).
+///
+/// The Anthropic `/api/oauth/usage` endpoint has a tight per-account rate limit.
+/// Usage data reflects 5-hour windows so frequent polling provides no benefit.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(300);
 
-/// Delay before the very first poll so startup token refresh can complete.
-const STARTUP_DELAY: Duration = Duration::from_secs(10);
+/// Delay before the very first poll so startup token refresh and profile
+/// backfill can complete (each takes ~5s × N accounts).
+const STARTUP_DELAY: Duration = Duration::from_secs(60);
 
 /// Max retries per poll cycle.
 /// Usage data is non-critical display info — fail fast and retry next cycle.
@@ -587,7 +605,7 @@ pub struct UsagePollingService {
 impl UsagePollingService {
     /// Start the polling service.
     ///
-    /// Spawns a single tokio task that polls all eligible accounts every 90s.
+    /// Spawns a single tokio task that polls all eligible accounts every 5 minutes.
     /// The task is tracked via JoinHandle for clean shutdown.
     pub fn start(
         account_source: Arc<dyn AccountSource>,
@@ -600,25 +618,35 @@ impl UsagePollingService {
 
         let handle = tokio::spawn(async move {
             info!("Usage polling service started");
-            let mut interval = tokio::time::interval(DEFAULT_POLL_INTERVAL);
-            // Delay missed ticks instead of bursting to catch up — prevents
-            // back-to-back polls after a long system sleep or suspend.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Consume the immediate first tick so the loop only fires at the
-            // regular 90s cadence (not immediately upon entering it).
-            interval.tick().await;
 
             // Brief delay so startup token refresh can write fresh tokens to DB
             // before the first poll reads them.
             tokio::time::sleep(STARTUP_DELAY).await;
-            poll_all_accounts(&account_source, &cache_inner, &client).await;
+
+            let mut backoff_multiplier = 1u32;
 
             loop {
+                let all_rate_limited =
+                    poll_all_accounts(&account_source, &cache_inner, &client).await;
+                cache_inner.cleanup_stale();
+
+                // If all accounts were rate-limited, use exponential backoff
+                // (300s, 600s, 900s, …, capped at ~35min). Otherwise reset to normal.
+                let sleep_secs = if all_rate_limited {
+                    backoff_multiplier = (backoff_multiplier * 2).min(7); // max ~10min
+                    let secs = DEFAULT_POLL_INTERVAL.as_secs() * backoff_multiplier as u64;
+                    warn!(
+                        next_poll_secs = secs,
+                        "All accounts rate-limited, backing off"
+                    );
+                    secs
+                } else {
+                    backoff_multiplier = 1;
+                    DEFAULT_POLL_INTERVAL.as_secs()
+                };
+
                 tokio::select! {
-                    _ = interval.tick() => {
-                        poll_all_accounts(&account_source, &cache_inner, &client).await;
-                        cache_inner.cleanup_stale();
-                    }
+                    _ = tokio::time::sleep(Duration::from_secs(sleep_secs)) => {}
                     _ = shutdown_rx.notified() => {
                         info!("Usage polling service shutting down");
                         break;
@@ -650,31 +678,61 @@ impl UsagePollingService {
 }
 
 /// Poll all accounts that support usage tracking.
+///
+/// Returns `true` if all Anthropic accounts were rate-limited (429), indicating
+/// we should back off before the next cycle.
 async fn poll_all_accounts(
     source: &Arc<dyn AccountSource>,
     cache: &UsageCache,
     client: &reqwest::Client,
-) {
+) -> bool {
     let accounts = source.get_pollable_accounts();
     if accounts.is_empty() {
         debug!("No accounts eligible for usage polling");
-        return;
+        return false;
     }
 
     debug!(count = accounts.len(), "Polling usage for accounts");
 
-    for account in accounts {
-        poll_single_account(&account, source, cache, client).await;
+    let mut rate_limited_count = 0u32;
+    let mut polled_count = 0u32;
+
+    for (i, account) in accounts.iter().enumerate() {
+        if i > 0 {
+            // Stagger requests to avoid hitting Anthropic's usage API rate limit.
+            // The usage endpoint has a tight rate limit (~5 req/min), so we space
+            // them out to ~4 req/min.
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        }
+
+        polled_count += 1;
+        let was_rate_limited = poll_single_account(account, source, cache, client).await;
+        if was_rate_limited {
+            rate_limited_count += 1;
+        }
     }
+
+    if rate_limited_count > 0 {
+        warn!(
+            rate_limited = rate_limited_count,
+            total = polled_count,
+            "Some accounts were rate-limited on usage API"
+        );
+    }
+
+    // Only signal "all rate limited" if every single account was 429'd
+    rate_limited_count == polled_count && polled_count > 0
 }
 
 /// Poll usage data for a single account with retry logic.
+///
+/// Returns `true` if the account was rate-limited (429).
 async fn poll_single_account(
     account: &PollableAccount,
     source: &Arc<dyn AccountSource>,
     cache: &UsageCache,
     client: &reqwest::Client,
-) {
+) -> bool {
     let token = account
         .access_token
         .as_deref()
@@ -685,7 +743,7 @@ async fn poll_single_account(
             account_id = %account.id,
             "No token available for usage polling, skipping"
         );
-        return;
+        return false;
     };
 
     if token.trim().is_empty() {
@@ -693,73 +751,81 @@ async fn poll_single_account(
             account_id = %account.id,
             "Empty token for usage polling, skipping"
         );
-        return;
+        return false;
     }
 
     // For OAuth providers, try fetching usage; on 401 refresh the token and retry once.
     if account.provider == "claude-oauth" || account.provider == "anthropic" {
-        let result = fetch_anthropic_usage(client, token).await;
-        match result {
-            AnthropicUsageResult::Ok(data) => {
-                debug!(
-                    account_id = %account.id,
-                    utilization = ?AnyUsageData::Anthropic(data.clone()).utilization(),
-                    "Fetched Anthropic usage data"
-                );
-                cache.set(&account.id, AnyUsageData::Anthropic(data));
-                return;
-            }
-            AnthropicUsageResult::Unauthorized => {
-                // Token expired — try to refresh and retry once
-                if let (Some(rt), Some(cid)) = (
-                    account.refresh_token.as_deref(),
-                    account.client_id.as_deref(),
-                ) {
-                    debug!(account_id = %account.id, "Usage poll got 401, refreshing token");
-                    match refresh_oauth_token(client, rt, cid).await {
-                        Ok(refreshed) => {
-                            info!(account_id = %account.id, "Token refreshed for usage polling");
-                            source.persist_refreshed_token(&account.id, &refreshed);
-                            // Retry with the new token
-                            if let AnthropicUsageResult::Ok(data) =
-                                fetch_anthropic_usage(client, &refreshed.access_token).await
-                            {
-                                cache.set(&account.id, AnyUsageData::Anthropic(data));
-                                return;
-                            }
-                        }
-                        Err(TokenRefreshError::PermanentlyRevoked) => {
-                            warn!(
-                                account_id = %account.id,
-                                "Token permanently revoked, marking account for re-authentication"
-                            );
-                            source.mark_token_revoked(&account.id);
-                            cache.remove(&account.id);
-                            return;
-                        }
-                        Err(TokenRefreshError::Transient) => {}
-                    }
-                } else {
+        let mut current_token = token.to_string();
+
+        loop {
+            let result = fetch_anthropic_usage(client, &current_token).await;
+            match result {
+                AnthropicUsageResult::Ok(data) => {
                     debug!(
                         account_id = %account.id,
-                        "No refresh_token/client_id available, cannot refresh"
+                        utilization = ?AnyUsageData::Anthropic(data.clone()).utilization(),
+                        "Fetched Anthropic usage data"
                     );
+                    cache.set(&account.id, AnyUsageData::Anthropic(data));
+                    return false;
                 }
-                warn!(
-                    account_id = %account.id,
-                    provider = %account.provider,
-                    "Usage fetch failed (token expired, refresh failed or unavailable)"
-                );
-            }
-            AnthropicUsageResult::Error => {
-                warn!(
-                    account_id = %account.id,
-                    provider = %account.provider,
-                    "Usage fetch failed, will retry next cycle"
-                );
+                AnthropicUsageResult::RateLimited(retry_after) => {
+                    warn!(
+                        account_id = %account.id,
+                        retry_after,
+                        "Usage API rate limited (429), will retry next cycle"
+                    );
+                    return true;
+                }
+                AnthropicUsageResult::Unauthorized => {
+                    // Token expired — try to refresh and retry once
+                    if let (Some(rt), Some(cid)) = (
+                        account.refresh_token.as_deref(),
+                        account.client_id.as_deref(),
+                    ) {
+                        debug!(account_id = %account.id, "Usage poll got 401, refreshing token");
+                        match refresh_oauth_token(client, rt, cid).await {
+                            Ok(refreshed) => {
+                                info!(account_id = %account.id, "Token refreshed for usage polling");
+                                source.persist_refreshed_token(&account.id, &refreshed);
+                                current_token = refreshed.access_token;
+                                continue;
+                            }
+                            Err(TokenRefreshError::PermanentlyRevoked) => {
+                                warn!(
+                                    account_id = %account.id,
+                                    "Token permanently revoked, marking account for re-authentication"
+                                );
+                                source.mark_token_revoked(&account.id);
+                                cache.remove(&account.id);
+                                return false;
+                            }
+                            Err(TokenRefreshError::Transient) => {}
+                        }
+                    } else {
+                        debug!(
+                            account_id = %account.id,
+                            "No refresh_token/client_id available, cannot refresh"
+                        );
+                    }
+                    warn!(
+                        account_id = %account.id,
+                        provider = %account.provider,
+                        "Usage fetch failed (token expired, refresh failed or unavailable)"
+                    );
+                    return false;
+                }
+                AnthropicUsageResult::Error => {
+                    warn!(
+                        account_id = %account.id,
+                        provider = %account.provider,
+                        "Usage fetch failed, will retry next cycle"
+                    );
+                    return false;
+                }
             }
         }
-        return;
     }
 
     // Non-OAuth providers: simple retry loop
@@ -781,7 +847,7 @@ async fn poll_single_account(
                     "Fetched usage data"
                 );
                 cache.set(&account.id, data);
-                return;
+                return false;
             }
             None if attempt < MAX_RETRIES => {
                 debug!(
@@ -800,6 +866,7 @@ async fn poll_single_account(
             }
         }
     }
+    false
 }
 
 /// Dispatch usage fetch to the correct provider-specific function.

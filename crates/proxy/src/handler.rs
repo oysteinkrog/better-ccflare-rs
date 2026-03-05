@@ -34,6 +34,10 @@ fn generate_request_id(now: i64) -> String {
 /// Maximum request body size stored for analytics (256 KB).
 pub const ANALYTICS_BODY_CAP: usize = 256 * 1024;
 
+/// Maximum number of accounts to try during failover before giving up.
+/// Prevents excessive upstream requests when many accounts are in a bad state.
+const MAX_FAILOVER_ATTEMPTS: usize = 5;
+
 /// Thinking block signature error messages from Claude.
 const INVALID_THINKING_SIGNATURE: &str = "Invalid `signature` in `thinking` block";
 const THINKING_BLOCK_REQUIRED: &str = "final `assistant` message must start with a thinking block";
@@ -381,7 +385,23 @@ where
     F: Fn(Account, RequestMeta, Bytes, usize) -> Fut,
     Fut: std::future::Future<Output = AccountResult>,
 {
-    for (attempt, account) in accounts.iter().enumerate() {
+    let max_attempts = accounts.len().min(MAX_FAILOVER_ATTEMPTS);
+    // Track providers that returned 429 — Anthropic rate-limits at the IP level,
+    // so if one OAuth account is 429'd, all accounts on the same provider will be too.
+    let mut rate_limited_providers: Vec<String> = Vec::new();
+
+    for (attempt, account) in accounts.iter().take(max_attempts).enumerate() {
+        // Skip accounts whose provider is already known to be IP-rate-limited
+        if rate_limited_providers.contains(&account.provider) {
+            debug!(
+                request_id = %meta.id,
+                account = %account.name,
+                provider = %account.provider,
+                "Skipping — provider already rate-limited this request"
+            );
+            continue;
+        }
+
         debug!(
             request_id = %meta.id,
             account = %account.name,
@@ -405,8 +425,11 @@ where
                     request_id = %meta.id,
                     account = %account.name,
                     reset_time = ?rate_info.reset_time,
-                    "Account rate-limited, trying next"
+                    "Account rate-limited"
                 );
+                // Mark this provider as rate-limited so we skip remaining
+                // accounts on the same provider (IP-level rate limiting).
+                rate_limited_providers.push(account.provider.clone());
             }
             AccountResult::AuthFailed(status) => {
                 warn!(
@@ -666,15 +689,14 @@ mod tests {
 
     #[tokio::test]
     async fn try_accounts_returns_first_success() {
-        let accounts = vec![
-            make_test_account("a1"),
-            make_test_account("a2"),
-            make_test_account("a3"),
-        ];
+        // Use different providers so IP-aware rate-limit skip doesn't block a2
+        let mut a2 = make_test_account("a2");
+        a2.provider = "zai".to_string();
+        let accounts = vec![make_test_account("a1"), a2, make_test_account("a3")];
         let meta = RequestMeta::new(&Method::POST, "/v1/messages", "", 0);
         let body = Bytes::from_static(b"test");
 
-        // First account rate-limited, second succeeds
+        // First account rate-limited, second (different provider) succeeds
         let result =
             try_accounts_in_order(&accounts, &meta, &body, |account, _, _, _| async move {
                 if account.id == "a1" {
@@ -687,6 +709,31 @@ mod tests {
 
         let (_, account_id) = result.unwrap();
         assert_eq!(account_id, "a2"); // second account succeeded, not the first
+    }
+
+    #[tokio::test]
+    async fn try_accounts_skips_same_provider_on_429() {
+        // All accounts same provider — when a1 is rate-limited, a2 and a3 are skipped
+        let accounts = vec![
+            make_test_account("a1"),
+            make_test_account("a2"),
+            make_test_account("a3"),
+        ];
+        let meta = RequestMeta::new(&Method::POST, "/v1/messages", "", 0);
+        let body = Bytes::from_static(b"test");
+
+        let result =
+            try_accounts_in_order(&accounts, &meta, &body, |account, _, _, _| async move {
+                if account.id == "a1" {
+                    AccountResult::RateLimited(RateLimitInfo::default())
+                } else {
+                    AccountResult::Success((StatusCode::OK, "ok").into_response())
+                }
+            })
+            .await;
+
+        // All same provider — after a1 is 429'd, a2/a3 are skipped (IP-level rate limiting)
+        assert!(result.is_none());
     }
 
     #[tokio::test]

@@ -513,7 +513,7 @@ fn sort_account_rows(rows: &mut Vec<AccountRow>, sort: Option<&str>) {
 /// Assign a sort group that mirrors the load balancer's selection order.
 fn lb_group(row: &AccountRow, now: i64) -> u8 {
     const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
-    const RESET_DEBOUNCE_MS: i64 = 1000;
+    const RESET_DEBOUNCE_MS: i64 = 15_000;
 
     let is_available = !row.paused && row.rate_limit_status == "OK";
     let at_reserve = row.reserve_hard && max_usage_pct(row)
@@ -979,7 +979,7 @@ fn predict_next_account(
         .iter()
         .filter(|a| {
             a.auto_fallback_enabled
-                && a.rate_limit_reset.is_some_and(|reset| reset < now - 1000)
+                && a.rate_limit_reset.is_some_and(|reset| reset < now - 15_000)
                 && is_available(a)
         })
         .collect();
