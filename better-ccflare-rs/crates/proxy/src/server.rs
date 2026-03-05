@@ -12,6 +12,7 @@ use axum::middleware;
 use axum::routing::{any, delete, get, post};
 use axum::Router;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
@@ -33,6 +34,8 @@ pub struct ServerConfig {
     pub host: String,
     /// Port to bind to (default: 8080).
     pub port: u16,
+    /// Optional dashboard/UI port. When set, the same app is also exposed here.
+    pub dashboard_port: Option<u16>,
     /// Whether to enable TLS.
     pub tls_enabled: bool,
     /// Path to TLS certificate file.
@@ -46,6 +49,7 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: network::DEFAULT_PORT,
+            dashboard_port: None,
             tls_enabled: false,
             tls_cert_path: None,
             tls_key_path: None,
@@ -64,6 +68,10 @@ impl ServerConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(runtime.port);
+        let dashboard_port = std::env::var("DASHBOARD_PORT")
+            .or_else(|_| std::env::var("BETTER_CCFLARE_DASHBOARD_PORT"))
+            .ok()
+            .and_then(|s| s.parse().ok());
 
         let tls_cert_path = std::env::var("SSL_CERT_PATH").ok();
         let tls_key_path = std::env::var("SSL_KEY_PATH").ok();
@@ -72,6 +80,7 @@ impl ServerConfig {
         Self {
             host,
             port,
+            dashboard_port,
             tls_enabled,
             tls_cert_path,
             tls_key_path,
@@ -300,9 +309,18 @@ pub async fn start(
     server_config: ServerConfig,
     coordinator: crate::shutdown::ShutdownCoordinator,
 ) -> Result<(), ServerError> {
-    let addr: SocketAddr = format!("{}:{}", server_config.host, server_config.port)
+    let proxy_addr: SocketAddr = format!("{}:{}", server_config.host, server_config.port)
         .parse()
         .map_err(|e| ServerError::Bind(format!("Invalid address: {e}")))?;
+    let dashboard_addr = server_config
+        .dashboard_port
+        .filter(|p| *p != server_config.port)
+        .map(|p| format!("{}:{p}", server_config.host))
+        .map(|s| {
+            s.parse::<SocketAddr>()
+                .map_err(|e| ServerError::Bind(format!("Invalid dashboard address: {e}")))
+        })
+        .transpose()?;
 
     let app = build_router(state.clone());
 
@@ -312,20 +330,73 @@ pub async fn start(
         run_startup_maintenance(&startup_state).await;
     });
 
-    info!("Starting server on {addr}");
+    info!("Starting server on {proxy_addr}");
 
-    let listener = TcpListener::bind(addr)
+    let proxy_listener = TcpListener::bind(proxy_addr)
         .await
-        .map_err(|e| ServerError::Bind(format!("Failed to bind {addr}: {e}")))?;
+        .map_err(|e| ServerError::Bind(format!("Failed to bind {proxy_addr}: {e}")))?;
 
-    info!("Server listening on http://{addr}");
+    info!("Server listening on http://{proxy_addr}");
 
-    let serve_fut = axum::serve(listener, app)
-        .with_graceful_shutdown(crate::shutdown::shutdown_signal());
+    let dashboard_listener = if let Some(addr) = dashboard_addr {
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|e| ServerError::Bind(format!("Failed to bind {addr}: {e}")))?;
+        info!("Dashboard listener on http://{addr}");
+        Some(listener)
+    } else {
+        None
+    };
 
-    if let Err(e) = serve_fut.await {
-        return Err(ServerError::Serve(e.to_string()));
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    let shutdown_task = tokio::spawn({
+        let shutdown_tx = shutdown_tx.clone();
+        async move {
+            crate::shutdown::shutdown_signal().await;
+            let _ = shutdown_tx.send(());
+        }
+    });
+
+    let mut handles = Vec::new();
+    {
+        let app = app.clone();
+        let mut rx = shutdown_tx.subscribe();
+        handles.push(tokio::spawn(async move {
+            axum::serve(proxy_listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.recv().await;
+                })
+                .await
+        }));
     }
+    if let Some(listener) = dashboard_listener {
+        let app = app.clone();
+        let mut rx = shutdown_tx.subscribe();
+        handles.push(tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.recv().await;
+                })
+                .await
+        }));
+    }
+
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let _ = shutdown_tx.send(());
+                shutdown_task.abort();
+                return Err(ServerError::Serve(e.to_string()));
+            }
+            Err(e) => {
+                let _ = shutdown_tx.send(());
+                shutdown_task.abort();
+                return Err(ServerError::Serve(format!("server task failed: {e}")));
+            }
+        }
+    }
+    shutdown_task.abort();
 
     // Run ordered shutdown steps (flush DB, stop services, etc.)
     info!("Running shutdown coordinator...");
@@ -418,6 +489,7 @@ async fn refresh_expired_tokens(state: &AppState, pool: &DbPool, now: i64) {
     };
 
     let mut refreshed = 0u32;
+    let mut attempted = 0u32;
     for account in accounts {
         // Skip accounts without refresh tokens or non-OAuth providers
         if account.refresh_token.is_empty() {
@@ -437,6 +509,12 @@ async fn refresh_expired_tokens(state: &AppState, pool: &DbPool, now: i64) {
         let Some(provider) = registry.get(&account.provider) else {
             continue;
         };
+
+        // Stagger API calls to avoid thundering herd on startup
+        if attempted > 0 {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+        attempted += 1;
 
         let refresher = StartupRefresher { provider };
         let persister = StartupPersister { pool };
@@ -478,8 +556,12 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
         }
     };
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let mut updated = 0u32;
+    let mut attempted = 0u32;
 
     for account in accounts {
         // Only claude-oauth accounts with a valid access_token
@@ -494,6 +576,12 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
             continue;
         };
 
+        // Stagger API calls to avoid thundering herd on startup
+        if attempted > 0 {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+        attempted += 1;
+
         let resp = match client
             .get(PROFILE_URL)
             .header("Authorization", format!("Bearer {access_token}"))
@@ -507,6 +595,11 @@ async fn backfill_subscription_tiers(pool: &DbPool) {
                 continue;
             }
         };
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            warn!(account = %account.name, "backfill: rate limited (429), aborting remaining accounts");
+            break;
+        }
 
         if !resp.status().is_success() {
             warn!(account = %account.name, status = %resp.status(), "backfill: profile endpoint returned error");
@@ -773,6 +866,7 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
+        assert_eq!(config.dashboard_port, None);
         assert!(!config.tls_enabled);
     }
 
