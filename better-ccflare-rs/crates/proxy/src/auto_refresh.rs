@@ -75,6 +75,8 @@ struct SchedulerState {
     last_refresh_reset: HashMap<String, i64>,
     /// Consecutive failure count per account.
     consecutive_failures: HashMap<String, u32>,
+    /// Global backoff multiplier — increases on 429s, resets on success.
+    backoff_multiplier: u32,
 }
 
 impl SchedulerState {
@@ -82,6 +84,7 @@ impl SchedulerState {
         Self {
             last_refresh_reset: HashMap::new(),
             consecutive_failures: HashMap::new(),
+            backoff_multiplier: 1,
         }
     }
 
@@ -188,11 +191,16 @@ impl AutoRefreshScheduler {
                 "Auto-refresh scheduler started (interval: {}s)",
                 CHECK_INTERVAL.as_secs()
             );
-            let mut interval = tokio::time::interval(CHECK_INTERVAL);
 
             loop {
+                // Dynamic sleep: base interval × backoff multiplier
+                let multiplier = {
+                    state.try_lock().map(|g| g.backoff_multiplier).unwrap_or(1)
+                };
+                let sleep_duration = CHECK_INTERVAL * multiplier;
+
                 tokio::select! {
-                    _ = interval.tick() => {
+                    _ = tokio::time::sleep(sleep_duration) => {
                         check_and_refresh(
                             &account_source,
                             &state,
@@ -276,25 +284,58 @@ async fn check_and_refresh(
     // block the next scheduled check from running at all.
     drop(guard);
 
-    for account in &to_refresh {
-        let success = send_dummy_request(client, account, proxy_port, use_tls).await;
+    let mut saw_429 = false;
+    for (i, account) in to_refresh.iter().enumerate() {
+        // Stagger requests to avoid bursting when multiple accounts need refresh
+        if i > 0 {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+
+        let result = send_dummy_request(client, account, proxy_port, use_tls).await;
 
         // Re-acquire the lock briefly just to record the result.
         if let Ok(mut guard) = state.try_lock() {
-            if success.is_some() {
-                guard.record_success(&account.id, success);
-            } else {
-                let failures = guard.record_failure(&account.id);
-                if failures >= FAILURE_THRESHOLD {
-                    error!(
-                        account = %account.name,
-                        failures,
-                        "Account has exceeded failure threshold — may need re-authentication"
-                    );
+            match result {
+                RefreshResult::Success(reset_time) => {
+                    guard.record_success(&account.id, reset_time);
+                    // Reset backoff on any success
+                    guard.backoff_multiplier = 1;
+                }
+                RefreshResult::RateLimited => {
+                    saw_429 = true;
+                    warn!(account = %account.name, "Auto-refresh hit 429, aborting remaining accounts");
+                    guard.backoff_multiplier = (guard.backoff_multiplier * 2).min(8);
+                    break;
+                }
+                RefreshResult::Failed => {
+                    let failures = guard.record_failure(&account.id);
+                    if failures >= FAILURE_THRESHOLD {
+                        error!(
+                            account = %account.name,
+                            failures,
+                            "Account has exceeded failure threshold — may need re-authentication"
+                        );
+                    }
                 }
             }
         }
     }
+
+    if saw_429 {
+        warn!(
+            "Auto-refresh cycle interrupted by rate limiting — next check will use backoff"
+        );
+    }
+}
+
+/// Outcome of a single auto-refresh attempt.
+enum RefreshResult {
+    /// Success — contains the new rate_limit_reset timestamp (if available).
+    Success(Option<i64>),
+    /// Got a 429 from the proxy (upstream rate-limited).
+    RateLimited,
+    /// Non-rate-limit failure (auth error, network error, all models failed).
+    Failed,
 }
 
 /// Send a dummy request through the proxy for a specific account.
@@ -306,7 +347,7 @@ async fn send_dummy_request(
     account: &RefreshableAccount,
     proxy_port: u16,
     use_tls: bool,
-) -> Option<i64> {
+) -> RefreshResult {
     let protocol = if use_tls { "https" } else { "http" };
     let endpoint = format!("{protocol}://localhost:{proxy_port}/v1/messages");
 
@@ -340,6 +381,18 @@ async fn send_dummy_request(
             .await;
 
         match result {
+            Ok(resp) if resp.status() == 429 || resp.status() == 503 => {
+                // The proxy returns 503 (not 429) when a force-pinned account
+                // is rate-limited, because the single-account failover list
+                // is exhausted. Treat both as upstream rate limiting.
+                warn!(
+                    account = %account.name,
+                    model,
+                    status = %resp.status(),
+                    "Auto-refresh got rate-limit response from proxy"
+                );
+                return RefreshResult::RateLimited;
+            }
             Ok(resp) if resp.status().is_success() => {
                 info!(
                     account = %account.name,
@@ -361,14 +414,16 @@ async fn send_dummy_request(
                         })
                     });
 
-                return reset_time.or(Some(chrono::Utc::now().timestamp_millis()));
+                return RefreshResult::Success(
+                    reset_time.or(Some(chrono::Utc::now().timestamp_millis())),
+                );
             }
             Ok(resp) if resp.status() == 401 => {
                 error!(
                     account = %account.name,
                     "Authentication failed — account needs re-authentication"
                 );
-                return None;
+                return RefreshResult::Failed;
             }
             Ok(resp) if resp.status() == 404 => {
                 debug!(
@@ -385,7 +440,7 @@ async fn send_dummy_request(
                     status = %resp.status(),
                     "Auto-refresh request failed"
                 );
-                return None;
+                return RefreshResult::Failed;
             }
             Err(e) => {
                 warn!(
@@ -403,7 +458,7 @@ async fn send_dummy_request(
         account = %account.name,
         "All models failed for auto-refresh"
     );
-    None
+    RefreshResult::Failed
 }
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,11 @@ use bccf_core::types::{Account, RoutingUsageInfo};
 
 /// Debounce for rate-limit-reset detection: a window must have reset at least
 /// this many ms ago before we act on the reset timestamp.
-const RESET_DEBOUNCE_MS: i64 = 1000;
+///
+/// Set to 15 s to prevent thundering-herd when multiple accounts' windows
+/// reset nearly simultaneously — gives usage polling time to fetch fresh data
+/// before the load balancer starts routing to the "recovered" account.
+const RESET_DEBOUNCE_MS: i64 = 15_000;
 
 /// Metadata about an incoming request, used by the strategy to make routing decisions.
 #[derive(Debug, Clone, Default)]
@@ -553,7 +557,7 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut high_prio = make_account("high", "anthropic", 1);
         high_prio.auto_fallback_enabled = true;
-        high_prio.rate_limit_reset = Some(NOW - 2000); // Usage window reset 2 seconds ago
+        high_prio.rate_limit_reset = Some(NOW - 20_000); // Usage window reset 20 seconds ago (past debounce)
 
         let mut low_prio = make_account("low", "anthropic", 5);
         low_prio.session_start = Some(NOW - time::HOUR); // Active session
@@ -568,7 +572,7 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut high_prio = make_account("high", "anthropic", 1);
         high_prio.auto_fallback_enabled = true;
-        high_prio.rate_limit_reset = Some(NOW - 2000); // Window reset
+        high_prio.rate_limit_reset = Some(NOW - 20_000); // Window reset (past debounce)
         high_prio.rate_limited_until = Some(NOW + 60_000); // But still rate-limited by our system
 
         let low_prio = make_account("low", "zai", 5);
@@ -583,7 +587,7 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut zai = make_account("zai", "zai", 1);
         zai.auto_fallback_enabled = true;
-        zai.rate_limit_reset = Some(NOW - 2000);
+        zai.rate_limit_reset = Some(NOW - 20_000); // Past debounce, tests provider filter (not debounce)
 
         let other = make_account("other", "zai", 5);
 
@@ -723,7 +727,7 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut anthropic = make_account("oauth", "anthropic", 1);
         anthropic.session_start = Some(NOW - time::HOUR); // Active session, 1hr in
-        anthropic.rate_limit_reset = Some(NOW - 2000); // Window reset 2s ago
+        anthropic.rate_limit_reset = Some(NOW - 20_000); // Window reset 20s ago (past debounce)
 
         let (result, resets) = strategy.select(&[anthropic], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 1);

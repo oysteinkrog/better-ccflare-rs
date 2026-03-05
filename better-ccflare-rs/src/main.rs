@@ -36,12 +36,29 @@ async fn run(cli: Cli) -> Result<()> {
     // Load config
     let mut config = Config::load(None).context("Failed to load config")?;
 
-    // Initialize database
+    // Initialize database (retry with backoff on WAL corruption / lock contention)
     let db_path = resolve_db_path();
     ensure_db_dir(&db_path)?;
 
-    let pool =
-        create_pool(&db_path, &PoolConfig::default()).context("Failed to create database pool")?;
+    let pool = {
+        let max_attempts = 5u32;
+        let mut result = create_pool(&db_path, &PoolConfig::default());
+        for attempt in 1..max_attempts {
+            if result.is_ok() {
+                break;
+            }
+            tracing::warn!(
+                attempt,
+                max_attempts,
+                error = %result.as_ref().unwrap_err(),
+                "Database pool creation failed, retrying after backoff"
+            );
+            // Exponential backoff: 2s, 4s, 8s, 16s
+            std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
+            result = create_pool(&db_path, &PoolConfig::default());
+        }
+        result.context("Failed to create database pool after retries")?
+    };
 
     // Ensure schema exists
     {
@@ -84,6 +101,7 @@ async fn run(cli: Cli) -> Result<()> {
         .pool_max_idle_per_host(20)
         .timeout(std::time::Duration::from_secs(300))
         .connect_timeout(std::time::Duration::from_secs(10))
+        .user_agent("better-ccflare/1.0")
         .build()
         .expect("Failed to create HTTP client");
 
