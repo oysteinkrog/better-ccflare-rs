@@ -297,7 +297,10 @@ pub struct DbSummaryReceiver {
 
 impl DbSummaryReceiver {
     pub fn new(pool: bccf_database::pool::DbPool) -> Self {
-        Self { pool, xfactor: None }
+        Self {
+            pool,
+            xfactor: None,
+        }
     }
 
     pub fn with_xfactor(mut self, cache: crate::xfactor::XFactorCache) -> Self {

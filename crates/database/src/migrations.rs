@@ -245,13 +245,7 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
                 tracing::info!("Renamed accounts.reserve_percent → reserve_5h");
             }
         } else {
-            add_column_if_missing(
-                conn,
-                "accounts",
-                "reserve_5h",
-                "INTEGER DEFAULT 0",
-                &cols,
-            );
+            add_column_if_missing(conn, "accounts", "reserve_5h", "INTEGER DEFAULT 0", &cols);
         }
         // Re-read cols after potential rename
         let cols = table_columns(conn, "accounts");
@@ -262,13 +256,7 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
             "INTEGER DEFAULT 0",
             &cols,
         );
-        add_column_if_missing(
-            conn,
-            "accounts",
-            "reserve_hard",
-            "INTEGER DEFAULT 0",
-            &cols,
-        );
+        add_column_if_missing(conn, "accounts", "reserve_hard", "INTEGER DEFAULT 0", &cols);
         add_column_if_missing(conn, "accounts", "subscription_tier", "TEXT", &cols);
         add_column_if_missing(conn, "accounts", "email", "TEXT", &cols);
         add_column_if_missing(
@@ -334,35 +322,11 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
     if table_exists(conn, "requests") {
         let cols = table_columns(conn, "requests");
         add_column_if_missing(conn, "requests", "model", "TEXT", &cols);
-        add_column_if_missing(
-            conn,
-            "requests",
-            "prompt_tokens",
-            "INTEGER",
-            &cols,
-        );
-        add_column_if_missing(
-            conn,
-            "requests",
-            "completion_tokens",
-            "INTEGER",
-            &cols,
-        );
-        add_column_if_missing(
-            conn,
-            "requests",
-            "total_tokens",
-            "INTEGER",
-            &cols,
-        );
+        add_column_if_missing(conn, "requests", "prompt_tokens", "INTEGER", &cols);
+        add_column_if_missing(conn, "requests", "completion_tokens", "INTEGER", &cols);
+        add_column_if_missing(conn, "requests", "total_tokens", "INTEGER", &cols);
         add_column_if_missing(conn, "requests", "cost_usd", "REAL", &cols);
-        add_column_if_missing(
-            conn,
-            "requests",
-            "input_tokens",
-            "INTEGER",
-            &cols,
-        );
+        add_column_if_missing(conn, "requests", "input_tokens", "INTEGER", &cols);
         add_column_if_missing(
             conn,
             "requests",
@@ -377,13 +341,7 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
             "INTEGER",
             &cols,
         );
-        add_column_if_missing(
-            conn,
-            "requests",
-            "output_tokens",
-            "INTEGER",
-            &cols,
-        );
+        add_column_if_missing(conn, "requests", "output_tokens", "INTEGER", &cols);
         add_column_if_missing(conn, "requests", "agent_used", "TEXT", &cols);
         add_column_if_missing(conn, "requests", "project", "TEXT", &cols);
         add_column_if_missing(conn, "requests", "api_key_id", "TEXT", &cols);
@@ -393,10 +351,7 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
         if cols.iter().any(|c| c == "output_tokens_per_second")
             && !cols.iter().any(|c| c == "tokens_per_second")
         {
-            conn.execute(
-                "ALTER TABLE requests ADD COLUMN tokens_per_second REAL",
-                [],
-            )?;
+            conn.execute("ALTER TABLE requests ADD COLUMN tokens_per_second REAL", [])?;
             conn.execute(
                 "UPDATE requests SET tokens_per_second = output_tokens_per_second WHERE output_tokens_per_second IS NOT NULL",
                 [],
@@ -418,7 +373,8 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
     // RS schema: (request_id TEXT PK, request_body TEXT, response_body TEXT)
     if table_exists(conn, "request_payloads") {
         let cols = table_columns(conn, "request_payloads");
-        let has_old_schema = cols.iter().any(|c| c == "json") && !cols.iter().any(|c| c == "request_body");
+        let has_old_schema =
+            cols.iter().any(|c| c == "json") && !cols.iter().any(|c| c == "request_body");
 
         if has_old_schema {
             tracing::info!("Restructuring request_payloads table (old → new schema)");
@@ -449,7 +405,8 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
     //             created_at INTEGER, updated_at INTEGER)
     if table_exists(conn, "agent_preferences") {
         let cols = table_columns(conn, "agent_preferences");
-        let has_old_schema = cols.iter().any(|c| c == "model") && !cols.iter().any(|c| c == "preferred_model");
+        let has_old_schema =
+            cols.iter().any(|c| c == "model") && !cols.iter().any(|c| c == "preferred_model");
 
         if has_old_schema {
             tracing::info!("Restructuring agent_preferences table (old → new schema)");

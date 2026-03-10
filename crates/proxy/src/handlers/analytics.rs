@@ -89,25 +89,47 @@ fn get_range_config(range: &str) -> (i64, BucketConfig) {
         "today" => {
             use chrono::Timelike;
             let start = now
-                .with_hour(0).unwrap()
-                .with_minute(0).unwrap()
-                .with_second(0).unwrap()
-                .with_nanosecond(0).unwrap()
+                .with_hour(0)
+                .unwrap()
+                .with_minute(0)
+                .unwrap()
+                .with_second(0)
+                .unwrap()
+                .with_nanosecond(0)
+                .unwrap()
                 .timestamp_millis();
-            (start, BucketConfig { bucket_ms: 60_000, display_name: "1m" })
+            (
+                start,
+                BucketConfig {
+                    bucket_ms: 60_000,
+                    display_name: "1m",
+                },
+            )
         }
         "this_week" => {
             use chrono::Datelike;
             // Monday of current week
             let days_since_monday = now.weekday().num_days_from_monday() as i64;
             let start = (now_ms - days_since_monday * day) / day * day;
-            (start, BucketConfig { bucket_ms: hour, display_name: "1h" })
+            (
+                start,
+                BucketConfig {
+                    bucket_ms: hour,
+                    display_name: "1h",
+                },
+            )
         }
         "this_month" => {
             use chrono::Datelike;
             let days_since_month_start = (now.day() as i64) - 1;
             let start = (now_ms - days_since_month_start * day) / day * day;
-            (start, BucketConfig { bucket_ms: day, display_name: "1d" })
+            (
+                start,
+                BucketConfig {
+                    bucket_ms: day,
+                    display_name: "1d",
+                },
+            )
         }
         _ => (
             // Default: 24h
@@ -134,7 +156,8 @@ fn range_days(range: &str) -> f64 {
             match range {
                 "today" => {
                     use chrono::Timelike;
-                    (now.hour() as f64 * 3600.0 + now.minute() as f64 * 60.0 + now.second() as f64) / 86400.0
+                    (now.hour() as f64 * 3600.0 + now.minute() as f64 * 60.0 + now.second() as f64)
+                        / 86400.0
                 }
                 "this_week" => {
                     use chrono::Datelike;
@@ -697,7 +720,10 @@ fn apply_cumulative(time_series: &mut [serde_json::Value], model_breakdown: bool
             running_requests += map.get("requests").and_then(|v| v.as_i64()).unwrap_or(0);
             running_tokens += map.get("tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             running_cost += map.get("costUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            running_saved += map.get("moneySavedUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            running_saved += map
+                .get("moneySavedUsd")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
 
             map.insert("requests".to_string(), json!(running_requests));
             map.insert("tokens".to_string(), json!(running_tokens));
@@ -720,7 +746,10 @@ fn apply_cumulative(time_series: &mut [serde_json::Value], model_breakdown: bool
             entry.0 += map.get("requests").and_then(|v| v.as_i64()).unwrap_or(0);
             entry.1 += map.get("tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             entry.2 += map.get("costUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            entry.3 += map.get("moneySavedUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            entry.3 += map
+                .get("moneySavedUsd")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
 
             map.insert("requests".to_string(), json!(entry.0));
             map.insert("tokens".to_string(), json!(entry.1));

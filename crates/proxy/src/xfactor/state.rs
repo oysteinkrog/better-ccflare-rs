@@ -95,9 +95,7 @@ pub fn tier_prior(tier: Option<&str>) -> (f64, f64) {
             ((440_000.0_f64).ln(), 0.5_f64 * 0.5)
         }
         Some(t) if t.to_ascii_lowercase().contains("pro") => ((88_000.0_f64).ln(), sigma_sq),
-        Some(t) if t.to_ascii_lowercase().contains("free") => {
-            ((10_000.0_f64).ln(), 0.693 * 0.693)
-        }
+        Some(t) if t.to_ascii_lowercase().contains("free") => ((10_000.0_f64).ln(), 0.693 * 0.693),
         _ => {
             // Unknown tier — very uncertain prior (σ ≈ 0.693 → 95% within ×4)
             ((200_000.0_f64).ln(), 0.693 * 0.693)
@@ -145,7 +143,6 @@ pub struct AccountCapacityState {
     //   E   = external tokens consumed in current 5h window
     //   Ė   = external token consumption rate (tokens/sec)
     // -----------------------------------------------------------------------
-
     /// KF state: estimated external tokens in 5h window.
     pub kf_e: f64,
     /// KF state: estimated external token rate (tokens/sec).
@@ -247,8 +244,7 @@ impl AccountCapacityState {
         self.proxy_tokens_5h_weighted += weighted_tokens;
 
         // EMA: treat each completed request as ~1s duration
-        self.ema_proxy_rate =
-            EMA_ALPHA * weighted_tokens + (1.0 - EMA_ALPHA) * self.ema_proxy_rate;
+        self.ema_proxy_rate = EMA_ALPHA * weighted_tokens + (1.0 - EMA_ALPHA) * self.ema_proxy_rate;
 
         self.updated_at_ms = now_ms;
     }
@@ -585,7 +581,8 @@ impl AccountCapacityState {
 
     /// Seconds since the last usage poll, or None if never polled.
     pub fn poll_age_seconds(&self, now_ms: i64) -> Option<f64> {
-        self.last_poll_at_ms.map(|t| (now_ms - t).max(0) as f64 / 1000.0)
+        self.last_poll_at_ms
+            .map(|t| (now_ms - t).max(0) as f64 / 1000.0)
     }
 
     /// Snapshot for DB persistence.
@@ -854,7 +851,10 @@ mod tests {
         s.on_usage_poll(now, 50.0);
 
         // KF should have received the measurement update
-        assert!(s.kf_e > 0.0, "kf_e should be positive after KF update fires");
+        assert!(
+            s.kf_e > 0.0,
+            "kf_e should be positive after KF update fires"
+        );
     }
 
     #[test]
@@ -923,7 +923,10 @@ mod tests {
         // Gate 3 fail: shared_score <= 0.50
         // With kf_e = 50k, need proxy > 100k for score to drop below 0.50
         s.proxy_tokens_5h_weighted = 200_000.0;
-        assert!(!s.suspected_shared(), "shared_score <= 0.50 must block detection");
+        assert!(
+            !s.suspected_shared(),
+            "shared_score <= 0.50 must block detection"
+        );
     }
 
     #[test]
@@ -941,7 +944,10 @@ mod tests {
         s.kf_e = 50_000.0;
         s.on_request(now, 10_000.0);
 
-        assert!(!s.suspected_shared(), "is_shared accounts must never be flagged");
+        assert!(
+            !s.suspected_shared(),
+            "is_shared accounts must never be flagged"
+        );
     }
 
     #[test]
@@ -954,7 +960,10 @@ mod tests {
 
         // Exactly at boundary — should pass (>=)
         s.kf_e = 30_000.0;
-        assert!(s.suspected_shared(), "kf_e == 30000 should pass the >= gate");
+        assert!(
+            s.suspected_shared(),
+            "kf_e == 30000 should pass the >= gate"
+        );
 
         // Just below — should fail
         s.kf_e = 29_999.9;
@@ -968,7 +977,7 @@ mod tests {
 
         // Add tokens at various times
         s.window_5h.push_back((now - 120_000, 5_000.0)); // 2min ago — in lagged window
-        s.window_5h.push_back((now - 30_000, 3_000.0));  // 30s ago — after lag
+        s.window_5h.push_back((now - 30_000, 3_000.0)); // 30s ago — after lag
 
         let lagged = now - 90_000; // 90s lag
         let p = s.p_at_lagged_time(lagged);

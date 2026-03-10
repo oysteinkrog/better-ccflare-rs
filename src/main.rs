@@ -13,10 +13,12 @@ use bccf_core::state::AppStateBuilder;
 use bccf_database::paths::{ensure_db_dir, resolve_db_path};
 use bccf_database::pool::{create_pool, PoolConfig};
 use bccf_database::schema;
+use bccf_providers::usage_polling::{
+    AccountSource, PollableAccount, RefreshedToken, UsageCache, UsagePollingService,
+};
+use bccf_providers::ProviderRegistry;
 use bccf_proxy::auto_refresh::{AutoRefreshScheduler, RefreshAccountSource, RefreshableAccount};
 use bccf_proxy::token_health::{TokenHealthService, HEALTH_CHECK_INTERVAL_MS};
-use bccf_providers::usage_polling::{AccountSource, PollableAccount, RefreshedToken, UsageCache, UsagePollingService};
-use bccf_providers::ProviderRegistry;
 
 fn main() {
     let cli = Cli::parse();
@@ -111,21 +113,14 @@ async fn run(cli: Cli) -> Result<()> {
         pool: pool.clone(),
         client_id: client_id.clone(),
     });
-    let _usage_polling = UsagePollingService::start(
-        account_source,
-        usage_cache.clone(),
-        http_client.clone(),
-    );
+    let _usage_polling =
+        UsagePollingService::start(account_source, usage_cache.clone(), http_client.clone());
 
     // Clone pool before moving into AppState (needed for background services)
     let bg_pool = pool.clone();
 
     // Start X-factor background service (restores state, runs 95s update loop)
-    bccf_proxy::xfactor::start(
-        xfactor_cache.clone(),
-        usage_cache.clone(),
-        pool.clone(),
-    );
+    bccf_proxy::xfactor::start(xfactor_cache.clone(), usage_cache.clone(), pool.clone());
 
     let state = Arc::new(
         AppStateBuilder::new(config)
@@ -155,7 +150,9 @@ async fn run(cli: Cli) -> Result<()> {
     }
 
     // Start auto-refresh scheduler (sends dummy requests to keep OAuth usage windows fresh)
-    let refresh_source = Arc::new(DbRefreshSource { pool: bg_pool.clone() });
+    let refresh_source = Arc::new(DbRefreshSource {
+        pool: bg_pool.clone(),
+    });
     let auto_refresh = AutoRefreshScheduler::start(
         refresh_source,
         server_config.port,
@@ -260,8 +257,16 @@ impl AccountSource for DbAccountSource {
                     id: a.id,
                     provider: a.provider,
                     access_token: a.access_token,
-                    refresh_token: if a.refresh_token.is_empty() { None } else { Some(a.refresh_token) },
-                    client_id: if is_oauth { Some(self.client_id.clone()) } else { None },
+                    refresh_token: if a.refresh_token.is_empty() {
+                        None
+                    } else {
+                        Some(a.refresh_token)
+                    },
+                    client_id: if is_oauth {
+                        Some(self.client_id.clone())
+                    } else {
+                        None
+                    },
                     api_key: a.api_key,
                     custom_endpoint: a.custom_endpoint,
                     paused: a.paused,
@@ -303,10 +308,10 @@ fn supports_usage_tracking(provider: &str) -> bool {
 
 /// Create a provider registry with all known provider implementations.
 fn create_provider_registry() -> ProviderRegistry {
-    use std::sync::Arc;
-    use bccf_providers::impls::*;
     use bccf_providers::impls::anthropic_compatible::AnthropicCompatibleConfig;
     use bccf_providers::impls::openai_compatible::OpenAiCompatibleConfig;
+    use bccf_providers::impls::*;
+    use std::sync::Arc;
 
     let mut registry = ProviderRegistry::new();
 

@@ -252,9 +252,9 @@ impl Provider for VertexAiProvider {
 
         // Set Bearer auth
         if let Some(token) = access_token {
-            let hv = format!("Bearer {token}")
-                .parse()
-                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid token format: {e}")))?;
+            let hv = format!("Bearer {token}").parse().map_err(|e| {
+                crate::error::ProviderError::Auth(format!("Invalid token format: {e}"))
+            })?;
             headers.insert("authorization", hv);
         }
 

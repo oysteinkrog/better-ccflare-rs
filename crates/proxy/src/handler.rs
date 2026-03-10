@@ -794,8 +794,8 @@ mod tests {
             subscription_tier: None,
             email: None,
             refresh_token_updated_at: None,
-        is_shared: false,
-        overage_protection: true,
+            is_shared: false,
+            overage_protection: true,
         }
     }
 }

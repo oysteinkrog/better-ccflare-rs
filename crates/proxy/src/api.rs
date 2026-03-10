@@ -84,7 +84,9 @@ pub async fn system_info() -> impl IntoResponse {
 
 /// ISO 8601 timestamp with millisecond precision and Z suffix (matches JS `new Date().toISOString()`).
 fn timestamp_iso() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 /// Detect if running inside a Docker container.
@@ -295,7 +297,10 @@ pub async fn maintenance_cleanup(State(state): State<Arc<AppState>>) -> Response
         .unwrap_or(0);
 
     let requests_deleted = conn
-        .execute("DELETE FROM requests WHERE timestamp < ?1", [request_cutoff])
+        .execute(
+            "DELETE FROM requests WHERE timestamp < ?1",
+            [request_cutoff],
+        )
         .unwrap_or(0);
 
     Json(json!({

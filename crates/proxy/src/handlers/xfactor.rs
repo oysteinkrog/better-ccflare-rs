@@ -118,15 +118,18 @@ pub async fn get_pool_capacity(State(state): State<Arc<AppState>>) -> Response {
     });
 
     // Pool totals
-    let total_remaining_pessimistic: f64 =
-        snap.values().map(|s| s.remaining_pessimistic).sum();
+    let total_remaining_pessimistic: f64 = snap.values().map(|s| s.remaining_pessimistic).sum();
     let total_remaining_expected: f64 = snap.values().map(|s| s.remaining_expected).sum();
     let soonest_tte = snap
         .values()
         .filter(|s| s.ema_proxy_rate > 0.01)
         .filter_map(|s| {
             let t = s.tte_minutes;
-            if t.is_finite() { Some(t) } else { None }
+            if t.is_finite() {
+                Some(t)
+            } else {
+                None
+            }
         })
         .fold(f64::INFINITY, f64::min);
 
@@ -135,7 +138,11 @@ pub async fn get_pool_capacity(State(state): State<Arc<AppState>>) -> Response {
         .filter(|s| s.ema_proxy_rate > 0.01)
         .filter_map(|s| {
             let t = s.tte_minutes_with_recovery;
-            if t.is_finite() { Some(t) } else { None }
+            if t.is_finite() {
+                Some(t)
+            } else {
+                None
+            }
         })
         .fold(f64::INFINITY, f64::min);
 
@@ -229,7 +236,10 @@ pub async fn get_xfactor(State(state): State<Arc<AppState>>) -> Response {
         .collect();
 
     accounts.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
     });
 
     Json(json!({
@@ -266,13 +276,14 @@ pub async fn get_value(State(state): State<Arc<AppState>>) -> Response {
         }
     };
 
-    let aggregates = match bccf_database::repositories::xfactor::value_aggregates(&conn, since_30d_ms) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("get_value: value_aggregates query failed: {e}");
-            return Json(json!({ "error": "query failed" })).into_response();
-        }
-    };
+    let aggregates =
+        match bccf_database::repositories::xfactor::value_aggregates(&conn, since_30d_ms) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("get_value: value_aggregates query failed: {e}");
+                return Json(json!({ "error": "query failed" })).into_response();
+            }
+        };
 
     let rl_counts = bccf_database::repositories::xfactor::rate_limit_counts_7d(&conn, since_7d_ms)
         .unwrap_or_default()
@@ -284,7 +295,9 @@ pub async fn get_value(State(state): State<Arc<AppState>>) -> Response {
     let mut account_values: Vec<serde_json::Value> = Vec::new();
 
     for agg in &aggregates {
-        let Some(xf) = snap.get(&agg.account_id) else { continue };
+        let Some(xf) = snap.get(&agg.account_id) else {
+            continue;
+        };
 
         // Active-time normalization
         let active_start_ms = agg.first_ts_ms.max(since_30d_ms);
@@ -306,14 +319,13 @@ pub async fn get_value(State(state): State<Arc<AppState>>) -> Response {
             bccf_database::repositories::xfactor::get_monthly_cost_usd(&conn, &agg.account_id)
                 .unwrap_or(0.0);
 
-        let (monthly_cost_usd, cost_source) =
-            if monthly_cost_usd_db > 0.0 {
-                (monthly_cost_usd_db, "explicit")
-            } else if let Some(inferred) = infer_subscription_cost(xf.subscription_tier.as_deref()) {
-                (inferred, "inferred_from_tier")
-            } else {
-                (0.0, "unknown")
-            };
+        let (monthly_cost_usd, cost_source) = if monthly_cost_usd_db > 0.0 {
+            (monthly_cost_usd_db, "explicit")
+        } else if let Some(inferred) = infer_subscription_cost(xf.subscription_tier.as_deref()) {
+            (inferred, "inferred_from_tier")
+        } else {
+            (0.0, "unknown")
+        };
 
         // CPM variants (only compute if we have cost)
         let cpm_actual = if cost_source != "unknown" && tokens_30d_equiv > 0.0 {
@@ -466,7 +478,11 @@ pub async fn get_account_xfactor(
             .into_response();
     };
 
-    let (r_p, r_e, r_o) = (snap.remaining_pessimistic, snap.remaining_expected, snap.remaining_optimistic);
+    let (r_p, r_e, r_o) = (
+        snap.remaining_pessimistic,
+        snap.remaining_expected,
+        snap.remaining_optimistic,
+    );
 
     let tte = if snap.tte_minutes.is_infinite() {
         serde_json::Value::Null

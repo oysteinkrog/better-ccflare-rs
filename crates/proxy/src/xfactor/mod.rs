@@ -20,8 +20,8 @@ use bccf_database::pool::DbPool;
 use bccf_database::repositories::{account as account_repo, xfactor as xfactor_repo};
 use bccf_providers::usage_polling::{AnyUsageData, UsageCache};
 
-use bccf_database::repositories::xfactor::XFactorDbState;
 use crate::xfactor::state::{model_weight, AccountCapacityState};
+use bccf_database::repositories::xfactor::XFactorDbState;
 
 // ---------------------------------------------------------------------------
 // Public cache type
@@ -212,10 +212,7 @@ pub async fn run_background_task(cache: XFactorCache, usage_cache: UsageCache, p
     if let Err(e) = initialize_cache(&cache, &pool).await {
         warn!("XFactor service: initialization error: {e}");
     }
-    info!(
-        accounts = cache.len(),
-        "XFactor service: initialized"
-    );
+    info!(accounts = cache.len(), "XFactor service: initialized");
 
     let mut update_interval = tokio::time::interval(UPDATE_INTERVAL);
     let mut persist_interval = tokio::time::interval(PERSIST_INTERVAL);

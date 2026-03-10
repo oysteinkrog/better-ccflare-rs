@@ -144,9 +144,9 @@ fn seed_test_data(pool: &DbPool) {
         reserve_hard: false,
         subscription_tier: None,
         email: None,
-    refresh_token_updated_at: None,
-    is_shared: false,
-    overage_protection: true,
+        refresh_token_updated_at: None,
+        is_shared: false,
+        overage_protection: true,
     };
 
     let acc2 = Account {
@@ -178,9 +178,9 @@ fn seed_test_data(pool: &DbPool) {
         reserve_hard: false,
         subscription_tier: None,
         email: None,
-    refresh_token_updated_at: None,
-    is_shared: false,
-    overage_protection: true,
+        refresh_token_updated_at: None,
+        is_shared: false,
+        overage_protection: true,
     };
 
     account_repo::create(&conn, &acc1).unwrap();
@@ -645,10 +645,7 @@ async fn all_expected_routes_registered() {
 
     for route in get_routes {
         let app = setup_with_proxy();
-        let req = Request::builder()
-            .uri(route)
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri(route).body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_ne!(
             resp.status().as_u16(),

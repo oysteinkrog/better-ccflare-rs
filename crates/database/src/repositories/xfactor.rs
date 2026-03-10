@@ -194,10 +194,7 @@ pub fn get_monthly_cost_usd(conn: &Connection, account_id: &str) -> Result<f64, 
 /// Query rolling 30-day token and cost aggregates per account.
 ///
 /// Returns (account_id, raw_tokens, payg_cost_usd, request_count, first_ts_ms, last_ts_ms).
-pub fn value_aggregates(
-    conn: &Connection,
-    since_ms: i64,
-) -> Result<Vec<ValueAggregate>, DbError> {
+pub fn value_aggregates(conn: &Connection, since_ms: i64) -> Result<Vec<ValueAggregate>, DbError> {
     let mut stmt = conn.prepare(
         "SELECT account_used,
                 SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
@@ -314,7 +311,8 @@ mod tests {
     fn save_and_load_state() {
         let conn = in_memory_db();
         // Insert a parent account first
-        conn.execute("INSERT INTO accounts (id) VALUES ('acc1')", []).unwrap();
+        conn.execute("INSERT INTO accounts (id) VALUES ('acc1')", [])
+            .unwrap();
 
         let state = XFactorDbState {
             account_id: "acc1".to_string(),
@@ -349,7 +347,8 @@ mod tests {
     #[test]
     fn upsert_updates_existing() {
         let conn = in_memory_db();
-        conn.execute("INSERT INTO accounts (id) VALUES ('acc1')", []).unwrap();
+        conn.execute("INSERT INTO accounts (id) VALUES ('acc1')", [])
+            .unwrap();
 
         let state1 = XFactorDbState {
             account_id: "acc1".to_string(),
@@ -369,7 +368,11 @@ mod tests {
         };
         save_state(&conn, &state1).unwrap();
 
-        let state2 = XFactorDbState { mu: 11.0, updated_at_ms: 2000, ..state1 };
+        let state2 = XFactorDbState {
+            mu: 11.0,
+            updated_at_ms: 2000,
+            ..state1
+        };
         save_state(&conn, &state2).unwrap();
 
         let loaded = load_state(&conn, "acc1").unwrap().unwrap();

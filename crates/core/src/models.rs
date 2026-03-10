@@ -19,8 +19,8 @@ pub const DEFAULT_AGENT_MODEL: &str = SONNET_4_6;
 
 /// All known model IDs.
 pub const ALL_MODEL_IDS: &[&str] = &[
-    HAIKU_3_5, SONNET_3_5, SONNET_4, SONNET_4_5, SONNET_4_6, HAIKU_4_5, OPUS_4, OPUS_4_1,
-    OPUS_4_5, OPUS_4_6, OPUS_3, SONNET_3,
+    HAIKU_3_5, SONNET_3_5, SONNET_4, SONNET_4_5, SONNET_4_6, HAIKU_4_5, OPUS_4, OPUS_4_1, OPUS_4_5,
+    OPUS_4_6, OPUS_3, SONNET_3,
 ];
 
 /// Get a human-readable display name for a model ID.

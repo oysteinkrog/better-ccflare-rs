@@ -25,7 +25,6 @@ use super::openai_format;
 /// Default endpoint for the OpenAI API.
 pub const DEFAULT_OPENAI_ENDPOINT: &str = "https://api.openai.com";
 
-
 /// Configuration for an OpenAI-compatible provider instance.
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleConfig {
@@ -97,7 +96,6 @@ impl OpenAiCompatibleProvider {
             path
         }
     }
-
 }
 
 #[async_trait]
@@ -133,11 +131,12 @@ impl Provider for OpenAiCompatibleProvider {
                 AuthType::Bearer => format!("Bearer {cred}"),
                 AuthType::Direct => cred.to_string(),
             };
-            let hn = HeaderName::from_bytes(self.config.auth_header.as_bytes())
-                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid auth header name: {e}")))?;
-            let hv = value
-                .parse()
-                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid token format: {e}")))?;
+            let hn = HeaderName::from_bytes(self.config.auth_header.as_bytes()).map_err(|e| {
+                crate::error::ProviderError::Auth(format!("Invalid auth header name: {e}"))
+            })?;
+            let hv = value.parse().map_err(|e| {
+                crate::error::ProviderError::Auth(format!("Invalid token format: {e}"))
+            })?;
             headers.insert(hn, hv);
         }
 

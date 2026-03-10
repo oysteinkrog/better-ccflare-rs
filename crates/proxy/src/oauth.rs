@@ -27,7 +27,12 @@ const PENDING_TTL_MS: i64 = 10 * 60 * 1000; // 10 minutes
 // ---------------------------------------------------------------------------
 
 /// Store a pending PKCE verifier in the oauth_sessions table.
-fn db_insert_pending(pool: &DbPool, csrf_token: &str, account_id: &str, verifier: &str) -> Result<(), String> {
+fn db_insert_pending(
+    pool: &DbPool,
+    csrf_token: &str,
+    account_id: &str,
+    verifier: &str,
+) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp_millis();
     let expires_at = now + PENDING_TTL_MS;
@@ -56,17 +61,20 @@ fn db_take_pending(pool: &DbPool, csrf_token: &str) -> Option<(String, String)> 
 
     let tx = conn.transaction().ok()?;
 
-    let result = tx.query_row(
-        "SELECT account_name, verifier FROM oauth_sessions WHERE id = ?1 AND expires_at > ?2",
-        rusqlite::params![csrf_token, now],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-    ).ok()?;
+    let result = tx
+        .query_row(
+            "SELECT account_name, verifier FROM oauth_sessions WHERE id = ?1 AND expires_at > ?2",
+            rusqlite::params![csrf_token, now],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok()?;
 
     // Delete within the same transaction — one-time use, atomic with the SELECT
     tx.execute(
         "DELETE FROM oauth_sessions WHERE id = ?1",
         rusqlite::params![csrf_token],
-    ).ok()?;
+    )
+    .ok()?;
 
     tx.commit().ok()?;
 
@@ -116,7 +124,10 @@ pub async fn oauth_init(
         &account.provider
     };
     let Some(oauth_provider) = registry.get_oauth(provider_name) else {
-        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "OAuth provider not found");
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OAuth provider not found",
+        );
     };
 
     let client_id = state.config().get_runtime().client_id.clone();
@@ -139,7 +150,10 @@ pub async fn oauth_init(
 
     // Store PKCE verifier in database (survives server restarts)
     if let Err(e) = db_insert_pending(pool, &csrf.csrf_token, &account_id, &verifier) {
-        return error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to store PKCE state: {e}"));
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to store PKCE state: {e}"),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "url": auth_url }))).into_response()
@@ -187,7 +201,11 @@ pub async fn oauth_complete(
     let (code, explicit_state) = extract_code_from_input(&params.code);
 
     match exchange_and_persist(&state, &code, explicit_state.as_deref()).await {
-        Ok(msg) => (StatusCode::OK, Json(json!({ "success": true, "message": msg }))).into_response(),
+        Ok(msg) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "message": msg })),
+        )
+            .into_response(),
         Err(msg) => (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response(),
     }
 }
@@ -300,7 +318,12 @@ async fn exchange_and_persist(
     let conn = pool.get().map_err(|e| format!("Database error: {e}"))?;
     conn.execute(
         "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3 WHERE id = ?4",
-        rusqlite::params![tokens.access_token, tokens.expires_at, tokens.refresh_token, account_id],
+        rusqlite::params![
+            tokens.access_token,
+            tokens.expires_at,
+            tokens.refresh_token,
+            account_id
+        ],
     )
     .map_err(|e| {
         warn!(account_id = %account_id, error = %e, "Failed to persist OAuth tokens");

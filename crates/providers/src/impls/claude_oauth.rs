@@ -183,9 +183,7 @@ impl ClaudeOAuthProvider {
             ClaudeOAuthMode::ClaudeOAuth => {
                 let return_to = format!("/oauth/authorize?{params}");
                 let encoded = percent_encode(&return_to);
-                format!(
-                    "https://claude.ai/login?selectAccount=true&returnTo={encoded}"
-                )
+                format!("https://claude.ai/login?selectAccount=true&returnTo={encoded}")
             }
             ClaudeOAuthMode::Console => {
                 format!("https://console.anthropic.com/oauth/authorize?{params}")
@@ -341,9 +339,7 @@ impl ClaudeOAuthProvider {
         // from the profile endpoint (PROFILE_URL) after tokens are obtained.
 
         // Extract email from account.email_address (present in every token response).
-        let email = json["account"]["email_address"]
-            .as_str()
-            .map(String::from);
+        let email = json["account"]["email_address"].as_str().map(String::from);
 
         Ok(TokenRefreshResult {
             access_token,
@@ -443,7 +439,10 @@ impl Provider for ClaudeOAuthProvider {
             headers.insert("authorization", val);
             // Append OAuth beta header to existing client betas (don't overwrite)
             // This preserves client-sent betas like context-management-*
-            if let Some(existing) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok().map(String::from)) {
+            if let Some(existing) = headers
+                .get("anthropic-beta")
+                .and_then(|v| v.to_str().ok().map(String::from))
+            {
                 if !existing.contains(OAUTH_BETA_HEADER) {
                     if let Ok(val) = format!("{existing},{OAUTH_BETA_HEADER}").parse() {
                         headers.insert("anthropic-beta", val);
@@ -828,12 +827,19 @@ mod tests {
         assert!(url.starts_with("https://claude.ai/login?selectAccount=true&returnTo="));
         // returnTo is percent-encoded, so params appear encoded (lowercase hex)
         assert!(url.contains("client_id%3dtest-client"), "url: {url}");
-        assert!(url.contains("code_challenge%3dtest-challenge"), "url: {url}");
+        assert!(
+            url.contains("code_challenge%3dtest-challenge"),
+            "url: {url}"
+        );
         assert!(url.contains("state%3dtest-state"), "url: {url}");
         // Only two top-level query params: selectAccount and returnTo
         let query = url.split('?').nth(1).unwrap();
         let top_params: Vec<&str> = query.split('&').collect();
-        assert_eq!(top_params.len(), 2, "Should only have selectAccount and returnTo as top-level params, got: {top_params:?}");
+        assert_eq!(
+            top_params.len(),
+            2,
+            "Should only have selectAccount and returnTo as top-level params, got: {top_params:?}"
+        );
     }
 
     #[test]

@@ -128,11 +128,12 @@ impl Provider for AnthropicCompatibleProvider {
                 AuthType::Bearer => format!("Bearer {cred}"),
                 AuthType::Direct => cred.to_string(),
             };
-            let hn = HeaderName::from_bytes(self.config.auth_header.as_bytes())
-                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid auth header name: {e}")))?;
-            let hv = value
-                .parse()
-                .map_err(|e| crate::error::ProviderError::Auth(format!("Invalid token format: {e}")))?;
+            let hn = HeaderName::from_bytes(self.config.auth_header.as_bytes()).map_err(|e| {
+                crate::error::ProviderError::Auth(format!("Invalid auth header name: {e}"))
+            })?;
+            let hv = value.parse().map_err(|e| {
+                crate::error::ProviderError::Auth(format!("Invalid token format: {e}"))
+            })?;
             headers.insert(hn, hv);
         }
 

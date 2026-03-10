@@ -252,7 +252,9 @@ impl SessionStrategy {
                 }
 
                 // Check if the usage window has reset (works for all providers)
-                let window_reset = a.rate_limit_reset.is_some_and(|reset| reset < now - RESET_DEBOUNCE_MS);
+                let window_reset = a
+                    .rate_limit_reset
+                    .is_some_and(|reset| reset < now - RESET_DEBOUNCE_MS);
 
                 // Must pass full availability check (paused, rate-limited, hard reserve)
                 window_reset && is_account_available(a, usage, now)
@@ -503,7 +505,8 @@ mod tests {
 
         let higher_prio = make_account("higher", "zai", 1); // Higher priority but no session
 
-        let (result, _) = strategy.select(&[anthropic, higher_prio], &no_usage(), &default_meta(), NOW);
+        let (result, _) =
+            strategy.select(&[anthropic, higher_prio], &no_usage(), &default_meta(), NOW);
         // Anthropic with active session should come first, even though lower priority
         assert_eq!(result[0].id, "oauth");
         assert_eq!(result[1].id, "higher");
@@ -518,7 +521,8 @@ mod tests {
 
         let higher_prio = make_account("higher", "zai", 1);
 
-        let (result, _) = strategy.select(&[anthropic, higher_prio], &no_usage(), &default_meta(), NOW);
+        let (result, _) =
+            strategy.select(&[anthropic, higher_prio], &no_usage(), &default_meta(), NOW);
         // Expired session means no active session, falls back to priority ordering
         assert_eq!(result[0].id, "higher");
         assert_eq!(result[1].id, "oauth");
@@ -562,7 +566,8 @@ mod tests {
         let mut low_prio = make_account("low", "anthropic", 5);
         low_prio.session_start = Some(NOW - time::HOUR); // Active session
 
-        let (result, _) = strategy.select(&[high_prio, low_prio], &no_usage(), &default_meta(), NOW);
+        let (result, _) =
+            strategy.select(&[high_prio, low_prio], &no_usage(), &default_meta(), NOW);
         // Auto-fallback should choose the higher-priority account
         assert_eq!(result[0].id, "high");
     }
@@ -577,7 +582,8 @@ mod tests {
 
         let low_prio = make_account("low", "zai", 5);
 
-        let (result, _) = strategy.select(&[high_prio, low_prio], &no_usage(), &default_meta(), NOW);
+        let (result, _) =
+            strategy.select(&[high_prio, low_prio], &no_usage(), &default_meta(), NOW);
         // Should not auto-fallback because account is still rate-limited
         assert_eq!(result[0].id, "low");
     }
@@ -769,7 +775,10 @@ mod tests {
     }
 
     fn make_usage_with_windows(windows: Vec<bccf_core::types::WindowUsage>) -> RoutingUsageInfo {
-        let pct = windows.iter().map(|w| w.utilization_pct).fold(0.0_f64, f64::max);
+        let pct = windows
+            .iter()
+            .map(|w| w.utilization_pct)
+            .fold(0.0_f64, f64::max);
         let resets_at_ms = windows.iter().filter_map(|w| w.resets_at_ms).min();
         RoutingUsageInfo {
             utilization_pct: pct,
@@ -903,8 +912,7 @@ mod tests {
         let mut usage = HashMap::new();
         usage.insert("oauth".to_string(), make_usage(85.0, None));
 
-        let (result, _) =
-            strategy.select(&[anthropic, fallback], &usage, &default_meta(), NOW);
+        let (result, _) = strategy.select(&[anthropic, fallback], &usage, &default_meta(), NOW);
         assert_eq!(result[0].id, "oauth"); // session affinity preserved
         assert_eq!(result[1].id, "fallback");
     }
@@ -945,8 +953,16 @@ mod tests {
         usage.insert(
             "a".to_string(),
             make_usage_with_windows(vec![
-                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 85.0, resets_at_ms: None },
-                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 85.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Weekly,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
             ]),
         );
 
@@ -966,8 +982,16 @@ mod tests {
         usage.insert(
             "a".to_string(),
             make_usage_with_windows(vec![
-                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
-                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 95.0, resets_at_ms: None },
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Weekly,
+                    utilization_pct: 95.0,
+                    resets_at_ms: None,
+                },
             ]),
         );
 
@@ -987,8 +1011,16 @@ mod tests {
         usage.insert(
             "a".to_string(),
             make_usage_with_windows(vec![
-                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
-                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 50.0, resets_at_ms: None },
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Weekly,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
             ]),
         );
 
@@ -1014,8 +1046,16 @@ mod tests {
         usage.insert(
             "a".to_string(),
             make_usage_with_windows(vec![
-                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
-                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 92.0, resets_at_ms: None },
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Weekly,
+                    utilization_pct: 92.0,
+                    resets_at_ms: None,
+                },
             ]),
         );
 
@@ -1036,8 +1076,16 @@ mod tests {
         usage.insert(
             "a".to_string(),
             make_usage_with_windows(vec![
-                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
-                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 99.0, resets_at_ms: None },
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Weekly,
+                    utilization_pct: 99.0,
+                    resets_at_ms: None,
+                },
             ]),
         );
 
@@ -1101,8 +1149,16 @@ mod tests {
         usage.insert(
             "a".to_string(),
             make_usage_with_windows(vec![
-                WindowUsage { kind: WindowKind::FiveHour, utilization_pct: 50.0, resets_at_ms: None },
-                WindowUsage { kind: WindowKind::Weekly, utilization_pct: 100.0, resets_at_ms: None },
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 50.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Weekly,
+                    utilization_pct: 100.0,
+                    resets_at_ms: None,
+                },
             ]),
         );
 

@@ -214,9 +214,7 @@ impl SseParser {
     /// Process a single complete line (bytes without trailing newline).
     fn process_line(&mut self, line_bytes: &[u8], events: &mut Vec<SseEvent>) {
         // Strip optional trailing CR
-        let line_bytes = line_bytes
-            .strip_suffix(b"\r")
-            .unwrap_or(line_bytes);
+        let line_bytes = line_bytes.strip_suffix(b"\r").unwrap_or(line_bytes);
 
         if line_bytes.is_empty() {
             self.current_event = None;

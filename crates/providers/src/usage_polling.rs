@@ -206,12 +206,20 @@ fn nanogpt_routing_info(data: &NanoGptUsageData) -> Option<RoutingUsageInfo> {
         WindowUsage {
             kind: WindowKind::Other,
             utilization_pct: daily_pct,
-            resets_at_ms: if data.daily.reset_at > 0 { Some(data.daily.reset_at) } else { None },
+            resets_at_ms: if data.daily.reset_at > 0 {
+                Some(data.daily.reset_at)
+            } else {
+                None
+            },
         },
         WindowUsage {
             kind: WindowKind::Other,
             utilization_pct: monthly_pct,
-            resets_at_ms: if data.monthly.reset_at > 0 { Some(data.monthly.reset_at) } else { None },
+            resets_at_ms: if data.monthly.reset_at > 0 {
+                Some(data.monthly.reset_at)
+            } else {
+                None
+            },
         },
     ];
 
@@ -478,9 +486,9 @@ async fn refresh_oauth_token(
                 .as_str()
                 .unwrap_or(refresh_token)
                 .to_string();
-            let expires_at = json["expires_in"].as_i64().map(|secs| {
-                chrono::Utc::now().timestamp_millis() + secs * 1000
-            });
+            let expires_at = json["expires_in"]
+                .as_i64()
+                .map(|secs| chrono::Utc::now().timestamp_millis() + secs * 1000);
             Ok(RefreshedToken {
                 access_token,
                 refresh_token: new_refresh,
@@ -882,7 +890,10 @@ async fn fetch_usage_for_provider(
             .map(AnyUsageData::NanoGpt),
         "zai" => fetch_zai_usage(client, token).await.map(AnyUsageData::Zai),
         _ => {
-            debug!(provider, "Provider does not support usage polling via this path");
+            debug!(
+                provider,
+                "Provider does not support usage polling via this path"
+            );
             None
         }
     }

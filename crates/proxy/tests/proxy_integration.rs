@@ -95,8 +95,8 @@ fn make_account(id: &str, name: &str, api_key: &str, priority: i64) -> Account {
         subscription_tier: None,
         email: None,
         refresh_token_updated_at: None,
-    is_shared: false,
-    overage_protection: true,
+        is_shared: false,
+        overage_protection: true,
     }
 }
 
@@ -145,7 +145,9 @@ async fn proxy_forwards_to_upstream() {
         .method("POST")
         .uri("/v1/messages")
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
         .unwrap();
 
     let resp = router.oneshot(req).await.unwrap();
@@ -205,7 +207,9 @@ async fn proxy_retries_on_rate_limit() {
         .method("POST")
         .uri("/v1/messages")
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
         .unwrap();
 
     let resp = router.oneshot(req).await.unwrap();
@@ -228,7 +232,9 @@ async fn proxy_no_accounts_returns_503() {
         .method("POST")
         .uri("/v1/messages")
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
         .unwrap();
 
     let resp = router.oneshot(req).await.unwrap();
@@ -274,7 +280,9 @@ async fn proxy_preserves_client_headers() {
         .header("anthropic-beta", "context-management-2025-01-01")
         .header("user-agent", "Claude-Code/1.0")
         .header("x-custom-header", "should-pass-through")
-        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
         .unwrap();
 
     let resp = router.oneshot(req).await.unwrap();
@@ -282,41 +290,66 @@ async fn proxy_preserves_client_headers() {
 
     // Inspect what the upstream server actually received
     let received = mock_server.received_requests().await.unwrap();
-    assert_eq!(received.len(), 1, "Expected exactly one request to upstream");
+    assert_eq!(
+        received.len(),
+        1,
+        "Expected exactly one request to upstream"
+    );
     let upstream_req = &received[0];
 
     // anthropic-version must be preserved
     assert_eq!(
-        upstream_req.headers.get("anthropic-version").map(|v| v.to_str().unwrap()),
+        upstream_req
+            .headers
+            .get("anthropic-version")
+            .map(|v| v.to_str().unwrap()),
         Some("2023-06-01"),
         "anthropic-version header must pass through unchanged"
     );
 
     // anthropic-beta must be preserved (not replaced)
-    let beta = upstream_req.headers.get("anthropic-beta").map(|v| v.to_str().unwrap().to_string());
+    let beta = upstream_req
+        .headers
+        .get("anthropic-beta")
+        .map(|v| v.to_str().unwrap().to_string());
     assert!(
-        beta.as_deref().unwrap_or("").contains("context-management-2025-01-01"),
+        beta.as_deref()
+            .unwrap_or("")
+            .contains("context-management-2025-01-01"),
         "anthropic-beta must contain client's original beta value, got: {:?}",
         beta
     );
 
     // user-agent must be preserved
     assert_eq!(
-        upstream_req.headers.get("user-agent").map(|v| v.to_str().unwrap()),
+        upstream_req
+            .headers
+            .get("user-agent")
+            .map(|v| v.to_str().unwrap()),
         Some("Claude-Code/1.0"),
         "user-agent header must pass through unchanged"
     );
 
     // Custom headers must be preserved
     assert_eq!(
-        upstream_req.headers.get("x-custom-header").map(|v| v.to_str().unwrap()),
+        upstream_req
+            .headers
+            .get("x-custom-header")
+            .map(|v| v.to_str().unwrap()),
         Some("should-pass-through"),
         "Custom headers must pass through unchanged"
     );
 
     // Auth header must be set by the proxy (replaced, not from client)
-    let auth = upstream_req.headers.get("x-api-key").map(|v| v.to_str().unwrap().to_string());
-    assert_eq!(auth.as_deref(), Some("sk-hdr"), "Proxy must set the account's API key");
+    let auth = upstream_req
+        .headers
+        .get("x-api-key")
+        .map(|v| v.to_str().unwrap().to_string());
+    assert_eq!(
+        auth.as_deref(),
+        Some("sk-hdr"),
+        "Proxy must set the account's API key"
+    );
 }
 
 /// Request body must pass through the proxy byte-for-byte (when no model
@@ -418,7 +451,9 @@ async fn proxy_preserves_response_headers() {
         .method("POST")
         .uri("/v1/messages")
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
         .unwrap();
 
     let resp = router.oneshot(req).await.unwrap();
@@ -426,12 +461,16 @@ async fn proxy_preserves_response_headers() {
 
     // Verify upstream response headers are forwarded to client
     assert_eq!(
-        resp.headers().get("x-request-id").map(|v| v.to_str().unwrap()),
+        resp.headers()
+            .get("x-request-id")
+            .map(|v| v.to_str().unwrap()),
         Some("req-abc-123"),
         "x-request-id response header must be forwarded"
     );
     assert_eq!(
-        resp.headers().get("anthropic-ratelimit-requests-remaining").map(|v| v.to_str().unwrap()),
+        resp.headers()
+            .get("anthropic-ratelimit-requests-remaining")
+            .map(|v| v.to_str().unwrap()),
         Some("42"),
         "Rate limit response headers must be forwarded"
     );
@@ -471,7 +510,9 @@ async fn proxy_removes_hop_by_hop_headers() {
         .header("host", "should-be-removed.example.com")
         .header("accept-encoding", "gzip, br")
         .header("content-encoding", "identity")
-        .body(Body::from(serde_json::to_vec(&proxy_request_body()).unwrap()))
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
         .unwrap();
 
     let resp = router.oneshot(req).await.unwrap();
@@ -492,7 +533,10 @@ async fn proxy_removes_hop_by_hop_headers() {
     );
     // Note: host is typically rewritten by reqwest to the actual target host,
     // so we just verify the original client value is not present
-    let host = upstream_req.headers.get("host").map(|v| v.to_str().unwrap().to_string());
+    let host = upstream_req
+        .headers
+        .get("host")
+        .map(|v| v.to_str().unwrap().to_string());
     assert!(
         host.as_deref() != Some("should-be-removed.example.com"),
         "Client's host header must not be forwarded verbatim"

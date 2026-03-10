@@ -411,10 +411,7 @@ pub async fn auth_middleware(
         }
         None => {
             debug!("Auth failed: invalid API key for {path}");
-            crate::handler::error_response(
-                StatusCode::UNAUTHORIZED,
-                "Invalid API key",
-            )
+            crate::handler::error_response(StatusCode::UNAUTHORIZED, "Invalid API key")
         }
     }
 }

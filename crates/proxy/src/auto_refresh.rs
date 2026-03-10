@@ -194,9 +194,7 @@ impl AutoRefreshScheduler {
 
             loop {
                 // Dynamic sleep: base interval × backoff multiplier
-                let multiplier = {
-                    state.try_lock().map(|g| g.backoff_multiplier).unwrap_or(1)
-                };
+                let multiplier = { state.try_lock().map(|g| g.backoff_multiplier).unwrap_or(1) };
                 let sleep_duration = CHECK_INTERVAL * multiplier;
 
                 tokio::select! {
@@ -322,9 +320,7 @@ async fn check_and_refresh(
     }
 
     if saw_429 {
-        warn!(
-            "Auto-refresh cycle interrupted by rate limiting — next check will use backoff"
-        );
+        warn!("Auto-refresh cycle interrupted by rate limiting — next check will use backoff");
     }
 }
 

@@ -53,7 +53,11 @@ pub fn anthropic_to_openai_request(body: &[u8]) -> Option<Vec<u8>> {
     // Convert Anthropic messages to OpenAI messages — take() the array to avoid cloning
     if let Some(msgs) = obj.get_mut("messages").and_then(|v| v.as_array_mut()) {
         for msg in msgs.iter_mut() {
-            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let role = msg
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
             let content = msg.get_mut("content").map(Value::take);
 
             match content {
@@ -235,14 +239,19 @@ pub fn openai_to_anthropic_response(body: &[u8]) -> Option<Vec<u8>> {
     }
 
     // Tool calls → tool_use blocks
-    if let Some(tool_calls) = message
-        .get_mut("tool_calls")
-        .and_then(|v| v.as_array_mut())
-    {
+    if let Some(tool_calls) = message.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
         for tc in tool_calls.iter_mut() {
-            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let id = tc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
             if let Some(func) = tc.get_mut("function") {
-                let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let name = func
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 let args_str = func
                     .get("arguments")
                     .and_then(|v| v.as_str())
@@ -269,16 +278,16 @@ pub fn openai_to_anthropic_response(body: &[u8]) -> Option<Vec<u8>> {
     };
 
     // Usage — take() to avoid cloning the usage object
-    let usage = input
-        .get_mut("usage")
-        .map(Value::take)
-        .unwrap_or(json!({}));
+    let usage = input.get_mut("usage").map(Value::take).unwrap_or(json!({}));
     let model = input
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_owned();
-    let id = input.get_mut("id").map(Value::take).unwrap_or(json!("msg_unknown"));
+    let id = input
+        .get_mut("id")
+        .map(Value::take)
+        .unwrap_or(json!("msg_unknown"));
 
     let response = json!({
         "id": id,

@@ -292,11 +292,7 @@ pub fn set_model_mappings(
 }
 
 /// Set 5-hour reserve percent (0-100).
-pub fn set_reserve_5h(
-    conn: &Connection,
-    account_id: &str,
-    percent: i64,
-) -> Result<(), DbError> {
+pub fn set_reserve_5h(conn: &Connection, account_id: &str, percent: i64) -> Result<(), DbError> {
     conn.execute(
         "UPDATE accounts SET reserve_5h = ?1 WHERE id = ?2",
         params![percent, account_id],
@@ -318,11 +314,7 @@ pub fn set_reserve_weekly(
 }
 
 /// Set reserve hard mode (strict exclusion when at reserve threshold).
-pub fn set_reserve_hard(
-    conn: &Connection,
-    account_id: &str,
-    hard: bool,
-) -> Result<(), DbError> {
+pub fn set_reserve_hard(conn: &Connection, account_id: &str, hard: bool) -> Result<(), DbError> {
     conn.execute(
         "UPDATE accounts SET reserve_hard = ?1 WHERE id = ?2",
         params![hard as i64, account_id],
@@ -344,11 +336,7 @@ pub fn set_subscription_tier(
 }
 
 /// Set email address for an account (OAuth accounts only).
-pub fn set_email(
-    conn: &Connection,
-    account_id: &str,
-    email: Option<&str>,
-) -> Result<(), DbError> {
+pub fn set_email(conn: &Connection, account_id: &str, email: Option<&str>) -> Result<(), DbError> {
     conn.execute(
         "UPDATE accounts SET email = ?1 WHERE id = ?2",
         params![email, account_id],
