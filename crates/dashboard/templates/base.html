@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="bccf-api-key" content="{% match dashboard_api_key %}{% when Some with (k) %}{{ k }}{% when None %}{% endmatch %}">
   <title>better-ccflare-rs — Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/dashboard/assets/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -664,6 +665,56 @@
   </main>
   <script src="/dashboard/assets/htmx.min.js"></script>
   <script>
+    function bccfApiKey() {
+      var fromStorage = localStorage.getItem('bccf-api-key');
+      if (fromStorage && fromStorage.trim()) return fromStorage.trim();
+      var meta = document.querySelector('meta[name="bccf-api-key"]');
+      return meta && meta.content ? meta.content.trim() : '';
+    }
+
+    function bccfNeedsAuthHeader(path) {
+      return path.startsWith('/api/') || path.startsWith('/v1/') || path.startsWith('/messages/');
+    }
+
+    // Add x-api-key to all dashboard HTMX calls to protected API routes.
+    document.body.addEventListener('htmx:configRequest', function(evt) {
+      var path = evt.detail.path || '';
+      if (!bccfNeedsAuthHeader(path)) return;
+      var key = bccfApiKey();
+      if (!key) return;
+      if (!evt.detail.headers['x-api-key'] && !evt.detail.headers['Authorization']) {
+        evt.detail.headers['x-api-key'] = key;
+      }
+    });
+
+    // Add x-api-key to fetch() calls targeting protected API routes.
+    (function() {
+      var originalFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        init = init || {};
+        var url = '';
+        if (typeof input === 'string') {
+          url = input;
+        } else if (input && input.url) {
+          url = input.url;
+        }
+        try {
+          var path = new URL(url, window.location.origin).pathname;
+          if (bccfNeedsAuthHeader(path)) {
+            var key = bccfApiKey();
+            if (key) {
+              var headers = new Headers(init.headers || (input && input.headers) || {});
+              if (!headers.has('x-api-key') && !headers.has('Authorization')) {
+                headers.set('x-api-key', key);
+              }
+              init.headers = headers;
+            }
+          }
+        } catch (_) {}
+        return originalFetch(input, init);
+      };
+    })();
+
     // Theme toggle
     function toggleTheme() {
       const html = document.documentElement;

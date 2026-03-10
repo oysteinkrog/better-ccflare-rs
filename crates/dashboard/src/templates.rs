@@ -64,6 +64,7 @@ pub struct BasePage<'a> {
     pub tabs: &'a [TabInfo],
     pub active_tab: &'a str,
     pub tab_content: &'a str,
+    pub dashboard_api_key: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------

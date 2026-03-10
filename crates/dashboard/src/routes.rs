@@ -117,11 +117,13 @@ async fn dashboard_tab(
     }
 
     // Full page request: wrap in base layout
+    let dashboard_api_key = std::env::var("DASHBOARD_API_KEY").ok();
     let page = BasePage {
         version,
         tabs: TABS,
         active_tab: &tab,
         tab_content: &tab_content,
+        dashboard_api_key: dashboard_api_key.as_deref(),
     };
 
     match page.render() {
@@ -298,7 +300,10 @@ async fn accounts_table_partial(
             accounts
                 .iter()
                 .filter_map(|a| {
-                    cache.get(&a.id)?.routing_info().map(|info| (a.id.clone(), info))
+                    cache
+                        .get(&a.id)?
+                        .routing_info()
+                        .map(|info| (a.id.clone(), info))
                 })
                 .collect()
         } else {
@@ -315,7 +320,12 @@ async fn accounts_table_partial(
         .map(|a| {
             let token_status_str = {
                 let health = check_token_health(a, now);
-                if health.requires_reauth {
+                let auth_failed = a
+                    .rate_limit_status
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("Auth failed"));
+                let token_expired = a.expires_at.is_none_or(|exp| exp <= now);
+                if health.requires_reauth || auth_failed || token_expired {
                     "expired".to_string()
                 } else {
                     "valid".to_string()
@@ -374,7 +384,13 @@ async fn accounts_table_partial(
             AccountRow {
                 id: a.id.clone(),
                 name: a.name.clone(),
-                provider_initial: a.provider.chars().next().unwrap_or('?').to_uppercase().to_string(),
+                provider_initial: a
+                    .provider
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_uppercase()
+                    .to_string(),
                 provider: a.provider.clone(),
                 priority: a.priority,
                 paused: a.paused,
@@ -502,9 +518,7 @@ fn sort_account_rows(rows: &mut Vec<AccountRow>, sort: Option<&str>) {
             // Group 3: available, at/over soft-reserve (still usable, deprioritised)
             // Group 4: unavailable (paused or rate-limited)
             // Within each group: priority ASC, then soonest reset first.
-            rows.sort_by(|a, b| {
-                lb_sort_group(a, b)
-            });
+            rows.sort_by(|a, b| lb_sort_group(a, b));
         }
         _ => {} // "priority" or unknown — already sorted by DB query (priority ASC)
     }
@@ -516,12 +530,13 @@ fn lb_group(row: &AccountRow, now: i64) -> u8 {
     const RESET_DEBOUNCE_MS: i64 = 15_000;
 
     let is_available = !row.paused && row.rate_limit_status == "OK";
-    let at_reserve = row.reserve_hard && max_usage_pct(row)
-        .map(|p| {
-            let threshold = row.reserve_5h.max(row.reserve_weekly);
-            threshold > 0 && p >= (100 - threshold).max(0)
-        })
-        .unwrap_or(false);
+    let at_reserve = row.reserve_hard
+        && max_usage_pct(row)
+            .map(|p| {
+                let threshold = row.reserve_5h.max(row.reserve_weekly);
+                threshold > 0 && p >= (100 - threshold).max(0)
+            })
+            .unwrap_or(false);
 
     if !is_available || at_reserve {
         return 4; // unavailable / hard-excluded
@@ -554,7 +569,11 @@ fn lb_group(row: &AccountRow, now: i64) -> u8 {
         })
         .unwrap_or(false);
 
-    if soft_at_reserve { 3 } else { 2 }
+    if soft_at_reserve {
+        3
+    } else {
+        2
+    }
 }
 
 fn lb_sort_group(a: &AccountRow, b: &AccountRow) -> std::cmp::Ordering {
@@ -580,7 +599,12 @@ fn lb_sort_group(a: &AccountRow, b: &AccountRow) -> std::cmp::Ordering {
 /// Returns the highest usage percentage across all windows for a row,
 /// or `None` if the account has no usage data.
 fn max_usage_pct(row: &AccountRow) -> Option<i64> {
-    let valid: Vec<i64> = row.usage_windows.iter().map(|w| w.pct).filter(|&p| p >= 0).collect();
+    let valid: Vec<i64> = row
+        .usage_windows
+        .iter()
+        .map(|w| w.pct)
+        .filter(|&p| p >= 0)
+        .collect();
     if valid.is_empty() {
         None
     } else {
@@ -606,15 +630,23 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
     let mut groups: BTreeMap<String, Vec<(i64, String, Option<i64>)>> = BTreeMap::new();
 
     // Maintain insertion order using a separate vec
-    let label_order = ["5-hour", "Weekly", "Opus (Wk)", "Sonnet (Wk)", "Daily", "Monthly"];
+    let label_order = [
+        "5-hour",
+        "Weekly",
+        "Opus (Wk)",
+        "Sonnet (Wk)",
+        "Daily",
+        "Monthly",
+    ];
 
     for row in &active_rows {
         for w in &row.usage_windows {
             if w.pct >= 0 {
-                groups
-                    .entry(w.label.clone())
-                    .or_default()
-                    .push((w.pct, w.reset_text.clone(), w.resets_at_ms));
+                groups.entry(w.label.clone()).or_default().push((
+                    w.pct,
+                    w.reset_text.clone(),
+                    w.resets_at_ms,
+                ));
             }
         }
     }
@@ -639,19 +671,26 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
     // Traffic light: based on worst avg across windows
     let max_avg = windows.iter().map(|w| w.avg_pct).max().unwrap_or(0);
     let (pool_status, status_text) = if max_avg >= 80 {
-        ("red".to_string(), "Constrained \u{2014} defer big jobs".to_string())
+        (
+            "red".to_string(),
+            "Constrained \u{2014} defer big jobs".to_string(),
+        )
     } else if max_avg >= 50 {
-        ("yellow".to_string(), "Moderate \u{2014} light work preferred".to_string())
+        (
+            "yellow".to_string(),
+            "Moderate \u{2014} light work preferred".to_string(),
+        )
     } else {
-        ("green".to_string(), "All clear \u{2014} launch heavy jobs".to_string())
+        (
+            "green".to_string(),
+            "All clear \u{2014} launch heavy jobs".to_string(),
+        )
     };
 
     let total_accounts = rows.iter().filter(|r| !r.paused).count();
     let available_accounts = rows
         .iter()
-        .filter(|r| {
-            !r.paused && r.rate_limit_status == "OK"
-        })
+        .filter(|r| !r.paused && r.rate_limit_status == "OK")
         .count();
 
     Some(PoolUsageSummary {
@@ -675,9 +714,7 @@ fn build_pool_window(label: String, entries: &[(i64, String, Option<i64>)]) -> P
         .iter()
         .filter(|(_, r, _)| !r.is_empty())
         .map(|(_, r, _)| r.as_str())
-        .min_by(|a, b| {
-            parse_reset_minutes(a).cmp(&parse_reset_minutes(b))
-        })
+        .min_by(|a, b| parse_reset_minutes(a).cmp(&parse_reset_minutes(b)))
         .unwrap_or("")
         .to_string();
 
@@ -725,16 +762,13 @@ fn query_account_request_rates(
     let Ok(mut stmt) = conn.prepare(sql) else {
         return map;
     };
-    let Ok(rows) = stmt.query_map(
-        rusqlite::params![h1_cutoff, h24_cutoff, d7_cutoff],
-        |row| {
-            let id: String = row.get(0)?;
-            let cnt_1h: i64 = row.get(1)?;
-            let cnt_24h: i64 = row.get(2)?;
-            let cnt_7d: i64 = row.get(3)?;
-            Ok((id, cnt_1h, cnt_24h, cnt_7d))
-        },
-    ) else {
+    let Ok(rows) = stmt.query_map(rusqlite::params![h1_cutoff, h24_cutoff, d7_cutoff], |row| {
+        let id: String = row.get(0)?;
+        let cnt_1h: i64 = row.get(1)?;
+        let cnt_24h: i64 = row.get(2)?;
+        let cnt_7d: i64 = row.get(3)?;
+        Ok((id, cnt_1h, cnt_24h, cnt_7d))
+    }) else {
         return map;
     };
     for row in rows.flatten() {
@@ -742,9 +776,9 @@ fn query_account_request_rates(
         map.insert(
             id,
             ReqRates {
-                h1: cnt_1h as f64,           // count over 1h = req/h
-                h24: cnt_24h as f64 / 24.0,  // normalise to req/h
-                d7: cnt_7d as f64 / 168.0,   // 7*24 hours
+                h1: cnt_1h as f64,          // count over 1h = req/h
+                h24: cnt_24h as f64 / 24.0, // normalise to req/h
+                d7: cnt_7d as f64 / 168.0,  // 7*24 hours
             },
         );
     }

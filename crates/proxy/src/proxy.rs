@@ -61,9 +61,7 @@ fn accounts_cache() -> &'static RwLock<Option<CachedAccounts>> {
 
 /// Get accounts, using cache if fresh enough, otherwise query DB.
 /// Returns Arc to avoid cloning 10+ Account structs on every cache hit.
-async fn get_accounts_cached(
-    pool: &DbPool,
-) -> Result<Arc<Vec<bccf_core::types::Account>>, String> {
+async fn get_accounts_cached(pool: &DbPool) -> Result<Arc<Vec<bccf_core::types::Account>>, String> {
     // Check cache (read lock) — Arc::clone is a single atomic op
     {
         let cache = accounts_cache().read();
@@ -99,11 +97,7 @@ async fn get_accounts_cached(
 }
 
 /// Get parsed model mapping for a given model from a JSON mappings string.
-fn get_model_mapping(
-    _account_id: &str,
-    mappings_json: &str,
-    model: &str,
-) -> Option<String> {
+fn get_model_mapping(_account_id: &str, mappings_json: &str, model: &str) -> Option<String> {
     let parsed: HashMap<String, String> = serde_json::from_str(mappings_json).ok()?;
     parsed.get(model).cloned()
 }
@@ -132,6 +126,11 @@ pub async fn proxy_handler(
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let headers = req.headers().clone();
+
+    // Reject path traversal attempts before any forwarding
+    if !bccf_core::path_validator::is_safe_request_path(&path) {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid request path");
+    }
 
     // Buffer request body
     let body_bytes = match axum::body::to_bytes(req.into_body(), MAX_BODY_SIZE).await {
@@ -163,10 +162,7 @@ pub async fn proxy_handler(
 
     // Get database pool
     let Some(pool) = state.db_pool::<DbPool>() else {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Database not available",
-        );
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "Database not available");
     };
 
     // Load accounts (cached — avoids DB query per request)
@@ -174,10 +170,7 @@ pub async fn proxy_handler(
         Ok(accs) => accs,
         Err(e) => {
             error!("{e}");
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Failed to load accounts",
-            );
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "Failed to load accounts");
         }
     };
 
@@ -403,6 +396,27 @@ pub async fn proxy_handler(
 
                 // Handle auth failure (401/403)
                 if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                    // Persist an explicit auth-failed marker so dashboard/API status can
+                    // surface re-authentication needs instead of showing accounts as valid.
+                    if let Some(pool) = state.db_pool::<DbPool>() {
+                        let pool_c = pool.clone();
+                        let account_id = account.id.clone();
+                        let status_label = format!("Auth failed ({})", status.as_u16());
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        tokio::task::spawn_blocking(move || {
+                            if let Ok(conn) = pool_c.get() {
+                                let _ = conn.execute(
+                                    "UPDATE accounts
+                                     SET rate_limit_status = ?1,
+                                         rate_limit_reset = NULL,
+                                         rate_limit_remaining = NULL,
+                                         expires_at = CASE WHEN api_key IS NULL THEN ?2 ELSE expires_at END
+                                     WHERE id = ?3",
+                                    rusqlite::params![status_label, now_ms - 1, account_id],
+                                );
+                            }
+                        });
+                    }
                     return AccountResult::AuthFailed(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::UNAUTHORIZED));
                 }
 

@@ -32,12 +32,20 @@ fn is_api_key_provider(provider: &str) -> bool {
 const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
 
 /// Convert an `Account` to the API response format.
-fn account_to_response(account: &Account, now: i64, usage: Option<&AnyUsageData>) -> AccountResponse {
+fn account_to_response(
+    account: &Account,
+    now: i64,
+    usage: Option<&AnyUsageData>,
+) -> AccountResponse {
+    let auth_failed = account
+        .rate_limit_status
+        .as_deref()
+        .is_some_and(|s| s.starts_with("Auth failed"));
     let token_status = if is_api_key_provider(&account.provider) {
         TokenStatus::ApiKey
     } else {
         match account.expires_at {
-            Some(exp) if exp > now => TokenStatus::Valid,
+            Some(exp) if exp > now && !auth_failed => TokenStatus::Valid,
             _ => TokenStatus::Expired,
         }
     };
@@ -557,7 +565,10 @@ pub async fn set_custom_endpoint(
 ) -> Response {
     let conn = get_conn!(state);
 
-    let endpoint = body.get("endpoint").and_then(|v| v.as_str()).map(|s| s.trim());
+    let endpoint = body
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim());
 
     // Empty string clears the endpoint
     let endpoint = match endpoint {
@@ -651,9 +662,7 @@ pub async fn set_model_mappings(
         }
     }
 
-    if let Err(e) =
-        account_repo::set_model_mappings(&conn, &account_id, mappings_str.as_deref())
-    {
+    if let Err(e) = account_repo::set_model_mappings(&conn, &account_id, mappings_str.as_deref()) {
         warn!("Failed to set model_mappings for {account_id}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -895,10 +904,7 @@ pub async fn create_account(
     };
 
     // Validate priority
-    let priority = body
-        .get("priority")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let priority = body.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
     if !(0..=100).contains(&priority) {
         return (
             StatusCode::BAD_REQUEST,
