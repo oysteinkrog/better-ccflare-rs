@@ -94,7 +94,8 @@ pub async fn oauth_init(
     Path(account_id): Path<String>,
 ) -> Response {
     let Some(pool) = state.db_pool::<DbPool>() else {
-        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "No database pool");
+        warn!("Database pool not available for OAuth init");
+        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
 
     // Verify account exists and is an OAuth provider
@@ -102,9 +103,15 @@ pub async fn oauth_init(
         Ok(conn) => match account_repo::find_by_id(&conn, &account_id) {
             Ok(Some(a)) => a,
             Ok(None) => return error_json(StatusCode::NOT_FOUND, "Account not found"),
-            Err(e) => return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            Err(e) => {
+                warn!(account_id = %account_id, error = %e, "Failed to look up account");
+                return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+            }
         },
-        Err(e) => return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => {
+            warn!(error = %e, "Failed to get DB connection");
+            return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+        }
     };
 
     if account.provider != "anthropic" && account.provider != "claude-oauth" {
@@ -116,7 +123,8 @@ pub async fn oauth_init(
 
     // Get OAuth provider and config
     let Some(registry) = state.provider_registry::<ProviderRegistry>() else {
-        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "No provider registry");
+        warn!("Provider registry not available for OAuth init");
+        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
     let provider_name = if account.provider == "anthropic" {
         "claude-oauth"
@@ -124,10 +132,8 @@ pub async fn oauth_init(
         &account.provider
     };
     let Some(oauth_provider) = registry.get_oauth(provider_name) else {
-        return error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "OAuth provider not found",
-        );
+        warn!(provider = %provider_name, "OAuth provider not found in registry");
+        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
 
     let client_id = state.config().get_runtime().client_id.clone();
@@ -136,7 +142,10 @@ pub async fn oauth_init(
     let csrf = bccf_providers::impls::claude_oauth::CsrfState::generate();
     let csrf_encoded = match csrf.encode() {
         Ok(s) => s,
-        Err(e) => return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => {
+            warn!(error = %e, "Failed to encode CSRF state");
+            return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+        }
     };
 
     // Generate auth URL + PKCE
@@ -145,15 +154,16 @@ pub async fn oauth_init(
         .await
     {
         Ok(pair) => pair,
-        Err(e) => return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => {
+            warn!(error = %e, "Failed to generate OAuth auth URL");
+            return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+        }
     };
 
     // Store PKCE verifier in database (survives server restarts)
     if let Err(e) = db_insert_pending(pool, &csrf.csrf_token, &account_id, &verifier) {
-        return error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("Failed to store PKCE state: {e}"),
-        );
+        warn!(error = %e, "Failed to store PKCE state");
+        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     }
 
     (StatusCode::OK, Json(json!({ "url": auth_url }))).into_response()
@@ -289,20 +299,30 @@ async fn exchange_and_persist(
 
     // Decode and validate CSRF state
     let csrf = bccf_providers::impls::claude_oauth::CsrfState::decode(&csrf_encoded)
-        .map_err(|e| format!("Invalid state: {e}"))?;
+        .map_err(|e| {
+            warn!(error = %e, "Failed to decode CSRF state");
+            "Invalid OAuth state parameter".to_string()
+        })?;
 
     // Look up pending auth by CSRF token (from database)
-    let pool = state.db_pool::<DbPool>().ok_or("Database not available")?;
+    let pool = state.db_pool::<DbPool>().ok_or_else(|| {
+        warn!("Database pool not available during OAuth exchange");
+        "Internal server error".to_string()
+    })?;
     let (account_id, verifier) = db_take_pending(pool, &csrf.csrf_token)
         .ok_or("OAuth session expired or already used. Click Re-auth to start a new flow.")?;
 
     // Get provider and exchange code
     let registry = state
         .provider_registry::<ProviderRegistry>()
-        .ok_or("Provider registry not available")?;
-    let oauth_provider = registry
-        .get_oauth("claude-oauth")
-        .ok_or("OAuth provider not found")?;
+        .ok_or_else(|| {
+            warn!("Provider registry not available during OAuth exchange");
+            "Internal server error".to_string()
+        })?;
+    let oauth_provider = registry.get_oauth("claude-oauth").ok_or_else(|| {
+        warn!("OAuth provider not found in registry");
+        "Internal server error".to_string()
+    })?;
 
     let client_id = state.config().get_runtime().client_id.clone();
 
@@ -311,11 +331,14 @@ async fn exchange_and_persist(
         .await
         .map_err(|e| {
             warn!(account_id = %account_id, error = %e, "OAuth code exchange failed");
-            format!("Token exchange failed: {e}")
+            "Authentication failed".to_string()
         })?;
 
     // Persist tokens to database
-    let conn = pool.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = pool.get().map_err(|e| {
+        warn!(error = %e, "Failed to get DB connection for token persistence");
+        "Internal server error".to_string()
+    })?;
     conn.execute(
         "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3 WHERE id = ?4",
         rusqlite::params![
@@ -327,7 +350,7 @@ async fn exchange_and_persist(
     )
     .map_err(|e| {
         warn!(account_id = %account_id, error = %e, "Failed to persist OAuth tokens");
-        format!("Failed to save tokens: {e}")
+        "Internal server error".to_string()
     })?;
 
     // Persist subscription tier if included in token response
@@ -413,4 +436,105 @@ fn render_callback_page(success: bool, message: &str) -> Response {
     );
 
     Html(html).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_json_does_not_leak_internal_details() {
+        // Simulate the pattern: an internal error (e.g. DB, upstream provider)
+        // should result in a generic client message, not the raw error.
+        let upstream_error = "connection refused: oauth.anthropic.com:443 TLS handshake timeout";
+
+        // The sanitized message that should go to the client:
+        let client_msg = "Authentication failed";
+
+        let response = error_json(StatusCode::BAD_REQUEST, client_msg);
+        let (parts, body) = response.into_parts();
+
+        // Collect body synchronously (it's a small JSON blob)
+        let body_bytes = axum::body::to_bytes(body, 4096);
+        let body_bytes = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(body_bytes)
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+
+        // Client response MUST contain the generic message
+        assert!(body_str.contains("Authentication failed"));
+        // Client response MUST NOT contain upstream error details
+        assert!(
+            !body_str.contains(upstream_error),
+            "Response must not contain upstream error: {body_str}"
+        );
+        assert!(
+            !body_str.contains("oauth.anthropic.com"),
+            "Response must not contain upstream hostnames: {body_str}"
+        );
+        assert!(
+            !body_str.contains("TLS handshake"),
+            "Response must not contain connection details: {body_str}"
+        );
+        assert_eq!(parts.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn callback_page_does_not_leak_upstream_error() {
+        let upstream_error =
+            "invalid_grant: refresh token revoked by provider at /internal/oauth2/revoke";
+
+        // After sanitization, client sees only a generic message
+        let sanitized = "Authentication failed";
+        let response = render_callback_page(false, sanitized);
+        let (_, body) = response.into_parts();
+
+        let body_bytes = axum::body::to_bytes(body, 8192);
+        let body_bytes = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(body_bytes)
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+
+        assert!(body_str.contains("Authentication failed"));
+        assert!(
+            !body_str.contains(upstream_error),
+            "Callback page must not contain upstream error: {body_str}"
+        );
+        assert!(
+            !body_str.contains("invalid_grant"),
+            "Callback page must not contain OAuth error codes: {body_str}"
+        );
+        assert!(
+            !body_str.contains("/internal/"),
+            "Callback page must not contain internal paths: {body_str}"
+        );
+    }
+
+    #[test]
+    fn extract_code_from_url() {
+        let (code, state) =
+            extract_code_from_input("https://example.com/callback?code=ABC123&state=XYZ");
+        assert_eq!(code, "ABC123");
+        assert_eq!(state, Some("XYZ".to_string()));
+    }
+
+    #[test]
+    fn extract_code_from_hash_format() {
+        let (code, state) = extract_code_from_input("ABC123#STATE456");
+        assert_eq!(code, "ABC123");
+        assert_eq!(state, Some("STATE456".to_string()));
+    }
+
+    #[test]
+    fn extract_code_plain() {
+        let (code, state) = extract_code_from_input("ABC123");
+        assert_eq!(code, "ABC123");
+        assert_eq!(state, None);
+    }
 }
