@@ -295,9 +295,11 @@ pub fn is_account_available(
     if account.overage_protection {
         if let Some(info) = usage.get(&account.id) {
             let at_overage = if info.windows.is_empty() {
-                info.utilization_pct >= 100.0
+                !info.utilization_pct.is_finite() || info.utilization_pct >= 100.0
             } else {
-                info.windows.iter().any(|w| w.utilization_pct >= 100.0)
+                info.windows
+                    .iter()
+                    .any(|w| !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0)
             };
             if at_overage {
                 return false;
@@ -391,7 +393,9 @@ fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -
             // Clamp to [0, 100]: reserve values >100 would produce negative target
             // utilization, incorrectly marking every account as at-reserve.
             let trigger_at = (100_i64.saturating_sub(threshold)).max(0) as f64;
-            if threshold > 0 && w.utilization_pct >= trigger_at {
+            if threshold > 0
+                && (!w.utilization_pct.is_finite() || w.utilization_pct >= trigger_at)
+            {
                 return true;
             }
         }
@@ -401,7 +405,7 @@ fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -
     // Fallback for accounts with no per-window data: use aggregate
     let threshold = account.reserve_5h.max(account.reserve_weekly);
     let trigger_at = (100_i64.saturating_sub(threshold)).max(0) as f64;
-    if threshold > 0 && info.utilization_pct >= trigger_at {
+    if threshold > 0 && (!info.utilization_pct.is_finite() || info.utilization_pct >= trigger_at) {
         return true;
     }
     false

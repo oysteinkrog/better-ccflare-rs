@@ -15,8 +15,11 @@ pub struct Account {
     pub id: String,
     pub name: String,
     pub provider: String,
+    #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    #[serde(skip_serializing)]
     pub refresh_token: String,
+    #[serde(skip_serializing)]
     pub access_token: Option<String>,
     pub expires_at: Option<i64>,
     pub request_count: i64,
