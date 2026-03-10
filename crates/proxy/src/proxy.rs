@@ -313,10 +313,10 @@ pub async fn proxy_handler(
                 // Build upstream URL
                 let url = provider.build_url(&req_meta.path, &req_meta.query, Some(&account));
 
-                // Prepare headers — provider mutates axum headers (strips hop-by-hop, adds auth),
-                // then convert to reqwest format once (no back-and-forth)
+                // Prepare headers — filter through allowlist first, then let provider
+                // add auth headers, then convert to reqwest format.
                 let upstream_headers = {
-                    let mut h = base_headers.clone();
+                    let mut h = filter_request_headers(&base_headers);
                     if let Err(e) = provider.prepare_headers(
                         &mut h,
                         account.access_token.as_deref(),
@@ -712,6 +712,56 @@ async fn build_success_response(
 // Header conversion helpers
 // ---------------------------------------------------------------------------
 
+/// Filter client request headers through an allowlist before forwarding upstream.
+///
+/// Only explicitly safe headers pass through. This prevents:
+/// - Hop-by-hop headers from being forwarded (RFC 7230 §6.1)
+/// - Client IP leakage via X-Forwarded-For, X-Real-IP, X-Forwarded-Host
+/// - Internal proxy headers from reaching upstream
+/// - Attacker-injected headers from influencing upstream behavior
+///
+/// Auth headers (authorization, x-api-key) are included in the allowlist because
+/// the provider's `prepare_headers()` overwrites them with the correct upstream
+/// credentials after filtering.
+fn filter_request_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::with_capacity(8);
+    for (name, value) in headers {
+        if should_forward_request_header(name.as_str()) {
+            out.append(name.clone(), value.clone());
+        }
+    }
+    out
+}
+
+/// Returns true if a client request header should be forwarded to the upstream API.
+///
+/// Allowlist approach — everything not listed is stripped.
+fn should_forward_request_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+
+    // Exact-match allowlist
+    if matches!(
+        lower.as_str(),
+        "content-type"
+            | "content-length"
+            | "accept"
+            | "accept-encoding"
+            | "authorization"
+            | "x-api-key"
+            | "x-request-id"
+            | "user-agent"
+    ) {
+        return true;
+    }
+
+    // Prefix-match allowlist
+    if lower.starts_with("anthropic-") || lower.starts_with("x-stainless-") {
+        return true;
+    }
+
+    false
+}
+
 /// Convert axum HeaderMap to reqwest HeaderMap.
 fn reqwest_headers(headers: &HeaderMap) -> reqwest::header::HeaderMap {
     let mut out = reqwest::header::HeaderMap::with_capacity(headers.len());
@@ -838,5 +888,126 @@ impl TokenPersister for DbPersister<'_> {
         let pool = self.pool?;
         let conn = pool.get().ok()?;
         account_repo::find_by_id(&conn, account_id).ok().flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_header_is_stripped() {
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", "keep-alive".parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
+
+        let filtered = filter_request_headers(&headers);
+        assert!(filtered.get("connection").is_none());
+        assert!(filtered.get("content-type").is_some());
+    }
+
+    #[test]
+    fn hop_by_hop_headers_stripped() {
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", "keep-alive".parse().unwrap());
+        headers.insert("keep-alive", "timeout=5".parse().unwrap());
+        headers.insert("transfer-encoding", "chunked".parse().unwrap());
+        headers.insert("upgrade", "websocket".parse().unwrap());
+        headers.insert("proxy-authenticate", "Basic".parse().unwrap());
+        headers.insert("proxy-authorization", "Basic dGVzdA==".parse().unwrap());
+        headers.insert("te", "trailers".parse().unwrap());
+        headers.insert("trailer", "Expires".parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
+
+        let filtered = filter_request_headers(&headers);
+        assert!(filtered.get("connection").is_none());
+        assert!(filtered.get("keep-alive").is_none());
+        assert!(filtered.get("transfer-encoding").is_none());
+        assert!(filtered.get("upgrade").is_none());
+        assert!(filtered.get("proxy-authenticate").is_none());
+        assert!(filtered.get("proxy-authorization").is_none());
+        assert!(filtered.get("te").is_none());
+        assert!(filtered.get("trailer").is_none());
+        assert_eq!(filtered.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn custom_attacker_headers_not_forwarded() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-evil", "1".parse().unwrap());
+        headers.insert("x-internal-secret", "leak".parse().unwrap());
+        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        headers.insert("x-real-ip", "1.2.3.4".parse().unwrap());
+        headers.insert("x-forwarded-host", "attacker.com".parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
+
+        let filtered = filter_request_headers(&headers);
+        assert!(filtered.get("x-evil").is_none());
+        assert!(filtered.get("x-internal-secret").is_none());
+        assert!(filtered.get("x-forwarded-for").is_none());
+        assert!(filtered.get("x-real-ip").is_none());
+        assert!(filtered.get("x-forwarded-host").is_none());
+        assert_eq!(filtered.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn anthropic_beta_header_passes_through() {
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-beta", "messages-2024-04-04".parse().unwrap());
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
+
+        let filtered = filter_request_headers(&headers);
+        assert_eq!(
+            filtered.get("anthropic-beta").unwrap(),
+            "messages-2024-04-04"
+        );
+        assert_eq!(
+            filtered.get("anthropic-version").unwrap(),
+            "2023-06-01"
+        );
+        assert_eq!(filtered.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn allowlisted_headers_forwarded() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("content-length", "42".parse().unwrap());
+        headers.insert("accept", "*/*".parse().unwrap());
+        headers.insert("accept-encoding", "gzip".parse().unwrap());
+        headers.insert("authorization", "Bearer test".parse().unwrap());
+        headers.insert("x-api-key", "sk-test".parse().unwrap());
+        headers.insert("x-request-id", "req-123".parse().unwrap());
+        headers.insert("user-agent", "test/1.0".parse().unwrap());
+        headers.insert("x-stainless-lang", "rust".parse().unwrap());
+
+        let filtered = filter_request_headers(&headers);
+        assert_eq!(filtered.len(), 9);
+        assert_eq!(filtered.get("content-type").unwrap(), "application/json");
+        assert_eq!(filtered.get("content-length").unwrap(), "42");
+        assert_eq!(filtered.get("accept").unwrap(), "*/*");
+        assert_eq!(filtered.get("accept-encoding").unwrap(), "gzip");
+        assert_eq!(filtered.get("authorization").unwrap(), "Bearer test");
+        assert_eq!(filtered.get("x-api-key").unwrap(), "sk-test");
+        assert_eq!(filtered.get("x-request-id").unwrap(), "req-123");
+        assert_eq!(filtered.get("user-agent").unwrap(), "test/1.0");
+        assert_eq!(filtered.get("x-stainless-lang").unwrap(), "rust");
+    }
+
+    #[test]
+    fn response_hop_by_hop_stripped() {
+        assert!(!should_forward_response_header("connection", false));
+        assert!(!should_forward_response_header("keep-alive", false));
+        assert!(!should_forward_response_header("proxy-authenticate", false));
+        assert!(!should_forward_response_header("proxy-authorization", false));
+        assert!(!should_forward_response_header("te", false));
+        assert!(!should_forward_response_header("trailer", false));
+        assert!(!should_forward_response_header("upgrade", false));
+        assert!(!should_forward_response_header("transfer-encoding", false));
+        assert!(!should_forward_response_header("content-length", false));
+        // Safe headers pass through
+        assert!(should_forward_response_header("content-type", false));
+        assert!(should_forward_response_header("x-ratelimit-remaining", false));
     }
 }
