@@ -794,34 +794,46 @@ fn axum_headers_from_reqwest(headers: &reqwest::header::HeaderMap) -> HeaderMap 
 
 /// Returns true if an upstream response header is safe to forward to the client.
 ///
-/// Hop-by-hop headers are stripped for all responses. For streaming responses,
-/// Content-Length and Transfer-Encoding are also stripped so the server can own
-/// framing semantics.
+/// Uses an allowlist approach: only explicitly permitted headers are forwarded.
+/// This prevents upstream servers (including malicious custom endpoints) from
+/// injecting headers like `set-cookie`, `www-authenticate`, or `access-control-*`
+/// that could override the proxy's own security policies (CORS, auth).
+///
+/// Framing headers (content-length, transfer-encoding, content-encoding) are always
+/// excluded: reqwest auto-decompresses responses, so the original content-length
+/// reflects the compressed size while the body we forward is decompressed. Forwarding
+/// the stale content-length causes hyper to reset the connection before the full body
+/// is sent. Let axum/hyper set the correct framing headers for the outgoing response.
 fn should_forward_response_header(name: &str, _is_streaming: bool) -> bool {
-    if name.eq_ignore_ascii_case("connection")
-        || name.eq_ignore_ascii_case("keep-alive")
-        || name.eq_ignore_ascii_case("proxy-authenticate")
-        || name.eq_ignore_ascii_case("proxy-authorization")
-        || name.eq_ignore_ascii_case("te")
-        || name.eq_ignore_ascii_case("trailer")
-        || name.eq_ignore_ascii_case("upgrade")
-    {
-        return false;
+    // Core content headers
+    if name.eq_ignore_ascii_case("content-type") {
+        return true;
     }
 
-    // Always strip framing/encoding headers — reqwest auto-decompresses responses,
-    // so the original content-length reflects the compressed size while the body
-    // we forward is decompressed. Forwarding the stale content-length causes
-    // hyper to reset the connection before the full body is sent. Let axum/hyper
-    // set the correct framing headers for the outgoing response.
-    if name.eq_ignore_ascii_case("content-length")
-        || name.eq_ignore_ascii_case("transfer-encoding")
-        || name.eq_ignore_ascii_case("content-encoding")
+    // Caching and retry
+    if name.eq_ignore_ascii_case("cache-control")
+        || name.eq_ignore_ascii_case("retry-after")
+        || name.eq_ignore_ascii_case("expires")
     {
-        return false;
+        return true;
     }
 
-    true
+    // Request tracing / correlation IDs
+    if name.eq_ignore_ascii_case("x-request-id")
+        || name.eq_ignore_ascii_case("request-id")
+        || name.eq_ignore_ascii_case("x-correlation-id")
+    {
+        return true;
+    }
+
+    // Anthropic-specific headers: rate limits, request metadata
+    // Forward any header starting with "anthropic-" so new API headers pass through.
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("anthropic-") {
+        return true;
+    }
+
+    false
 }
 
 // ---------------------------------------------------------------------------
