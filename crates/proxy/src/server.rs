@@ -13,7 +13,7 @@ use axum::routing::{any, delete, get, post};
 use axum::Router;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
@@ -282,14 +282,76 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             state.clone(),
             auth::auth_middleware,
         ))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(build_cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Build a restrictive CORS layer.
+///
+/// By default, only localhost origins (`http://localhost:*`, `http://127.0.0.1:*`,
+/// `http://[::1]:*`) are allowed.  Additional origins can be added via the
+/// `ALLOWED_ORIGINS` environment variable (comma-separated).
+fn build_cors_layer() -> CorsLayer {
+    use http::Method;
+
+    let extra_origins: Vec<http::HeaderValue> = std::env::var("ALLOWED_ORIGINS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .filter_map(|o| o.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let layer = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(AllowHeaders::mirror_request())
+        .allow_credentials(true);
+
+    if extra_origins.is_empty() {
+        layer.allow_origin(AllowOrigin::predicate(|origin, _| {
+            is_localhost_origin(origin.as_bytes())
+        }))
+    } else {
+        // Merge localhost predicate with explicit extra origins.
+        layer.allow_origin(AllowOrigin::predicate(move |origin, _| {
+            is_localhost_origin(origin.as_bytes())
+                || extra_origins.iter().any(|allowed| allowed == origin)
+        }))
+    }
+}
+
+/// Returns true if `origin` is a localhost address (any port).
+///
+/// Matches `http(s)://localhost`, `http(s)://localhost:PORT`,
+/// `http(s)://127.0.0.1`, `http(s)://127.0.0.1:PORT`,
+/// `http(s)://[::1]`, `http(s)://[::1]:PORT`.
+fn is_localhost_origin(origin: &[u8]) -> bool {
+    // Check each known localhost host prefix; after stripping it the remainder
+    // must be empty (bare host) or start with ':' (port separator).
+    const PREFIXES: &[&[u8]] = &[
+        b"http://localhost",
+        b"http://127.0.0.1",
+        b"http://[::1]",
+        b"https://localhost",
+        b"https://127.0.0.1",
+        b"https://[::1]",
+    ];
+    for prefix in PREFIXES {
+        if let Some(rest) = origin.strip_prefix(*prefix) {
+            if rest.is_empty() || rest.starts_with(b":") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Check if any API keys exist; if not and `ALLOW_UNAUTHENTICATED` is not set,
@@ -996,7 +1058,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cors_headers_present() {
+    async fn cors_allows_localhost_origin() {
         let state = test_state();
         let app = build_router(state);
 
@@ -1009,10 +1071,66 @@ mod tests {
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        // CORS layer should handle OPTIONS
-        assert!(
-            resp.headers().contains_key("access-control-allow-origin")
-                || resp.status().is_success()
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:3000"),
+            "localhost origin should be allowed"
         );
+    }
+
+    #[tokio::test]
+    async fn cors_allows_127_0_0_1_origin() {
+        let state = test_state();
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri("/health")
+            .header("origin", "http://127.0.0.1:8080")
+            .header("access-control-request-method", "GET")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("http://127.0.0.1:8080"),
+            "127.0.0.1 origin should be allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_rejects_arbitrary_origin() {
+        let state = test_state();
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri("/health")
+            .header("origin", "https://evil.example.com")
+            .header("access-control-request-method", "GET")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "arbitrary origin should NOT receive ACAO header"
+        );
+    }
+
+    #[test]
+    fn is_localhost_origin_checks() {
+        assert!(is_localhost_origin(b"http://localhost:3000"));
+        assert!(is_localhost_origin(b"http://localhost"));
+        assert!(is_localhost_origin(b"http://127.0.0.1:8080"));
+        assert!(is_localhost_origin(b"http://[::1]:8080"));
+        assert!(is_localhost_origin(b"https://localhost:443"));
+        assert!(!is_localhost_origin(b"https://evil.example.com"));
+        assert!(!is_localhost_origin(b"http://localhostevil.com"));
     }
 }
