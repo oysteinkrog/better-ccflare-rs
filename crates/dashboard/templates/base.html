@@ -676,8 +676,11 @@
       return path.startsWith('/api/') || path.startsWith('/v1/') || path.startsWith('/messages/');
     }
 
-    // Add x-api-key to all dashboard HTMX calls to protected API routes.
+    // Add x-api-key and X-Requested-With to all dashboard HTMX calls.
+    // X-Requested-With is required for CSRF protection on /api/* mutation endpoints.
     document.body.addEventListener('htmx:configRequest', function(evt) {
+      // Always add X-Requested-With so the CSRF middleware accepts htmx requests.
+      evt.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
       var path = evt.detail.path || '';
       if (!bccfNeedsAuthHeader(path)) return;
       var key = bccfApiKey();

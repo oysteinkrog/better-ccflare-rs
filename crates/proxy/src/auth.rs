@@ -453,13 +453,57 @@ pub async fn auth_middleware(
         None => false,
     };
 
-    // First-run: no API keys AND no dashboard password → allow all
+    // First-run: no API keys AND no dashboard password.
+    // Only allow GET /dashboard (and sub-paths) through unauthenticated.
+    // All other paths (/api/*, /v1/*, /metrics, etc.) require auth even on first run.
     if !auth_enabled && !has_dashboard_password {
-        req.extensions_mut().insert(AuthInfo {
-            is_authenticated: true,
-            ..Default::default()
-        });
-        return next.run(req).await;
+        let normalized = normalize_path(&path);
+        let is_dashboard_get = method == "GET"
+            && (normalized == "/dashboard"
+                || normalized.starts_with("/dashboard/"));
+        if is_dashboard_get {
+            req.extensions_mut().insert(AuthInfo {
+                is_authenticated: true,
+                ..Default::default()
+            });
+            return next.run(req).await;
+        }
+        // Not a dashboard GET — return 401 even in first-run mode.
+        return auth_failed_response(&path, false);
+    }
+
+    // CSRF protection: POST/PUT/DELETE/PATCH requests to /api/* must include
+    // either X-Requested-With or Content-Type: application/json.
+    // API key bearer requests are exempt (bearer tokens are not sent automatically
+    // by browsers, so CSRF only applies to cookie/session-style auth).
+    {
+        let normalized = normalize_path(&path);
+        let is_mutating_method = matches!(
+            method.as_str(),
+            "POST" | "PUT" | "DELETE" | "PATCH"
+        );
+        let is_api_path = normalized.starts_with("/api/");
+        let has_bearer = extract_api_key(&req).is_some();
+
+        if is_mutating_method && is_api_path && !has_bearer {
+            let has_x_requested_with = req
+                .headers()
+                .get("x-requested-with")
+                .is_some();
+            let has_json_content_type = req
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.starts_with("application/json"))
+                .unwrap_or(false);
+
+            if !has_x_requested_with && !has_json_content_type {
+                return crate::handler::error_response(
+                    StatusCode::FORBIDDEN,
+                    "CSRF check failed: missing X-Requested-With or application/json content type",
+                );
+            }
+        }
     }
 
     // Extract credentials
@@ -594,6 +638,121 @@ mod tests {
     fn proxy_requires_auth() {
         assert!(!is_path_exempt("/v1/messages", "POST"));
         assert!(!is_path_exempt("/v1/models", "GET"));
+    }
+
+    // -- First-run bypass narrowing tests --
+
+    /// Helper: returns true if the request would pass the first-run bypass check
+    /// (GET /dashboard or /dashboard/* only).
+    fn first_run_bypass_allowed(path: &str, method: &str) -> bool {
+        let normalized = normalize_path(path);
+        method == "GET"
+            && (normalized == "/dashboard" || normalized.starts_with("/dashboard/"))
+    }
+
+    #[test]
+    fn first_run_allows_get_dashboard() {
+        assert!(first_run_bypass_allowed("/dashboard", "GET"));
+        assert!(first_run_bypass_allowed("/dashboard/overview", "GET"));
+        assert!(first_run_bypass_allowed("/dashboard/accounts", "GET"));
+    }
+
+    #[test]
+    fn first_run_rejects_post_api_accounts() {
+        assert!(!first_run_bypass_allowed("/api/accounts", "POST"));
+    }
+
+    #[test]
+    fn first_run_rejects_get_api_stats() {
+        assert!(!first_run_bypass_allowed("/api/stats", "GET"));
+    }
+
+    // -- CSRF check tests --
+
+    /// Returns true if the CSRF check passes (i.e. the request is allowed through).
+    fn csrf_check_passes(path: &str, method: &str, headers: &[(&str, &str)]) -> bool {
+        let normalized = normalize_path(path);
+        let is_mutating = matches!(method, "POST" | "PUT" | "DELETE" | "PATCH");
+        let is_api = normalized.starts_with("/api/");
+
+        // Build a simple request to test header extraction
+        let mut builder = Request::builder().method(method).uri(path);
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+
+        let has_bearer = extract_api_key(&req).is_some();
+
+        if !is_mutating || !is_api || has_bearer {
+            // CSRF check doesn't apply
+            return true;
+        }
+
+        let has_x_requested_with = req.headers().get("x-requested-with").is_some();
+        let has_json_content_type = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.starts_with("application/json"))
+            .unwrap_or(false);
+
+        has_x_requested_with || has_json_content_type
+    }
+
+    #[test]
+    fn csrf_post_api_without_headers_fails() {
+        assert!(!csrf_check_passes("/api/accounts/123/pause", "POST", &[]));
+    }
+
+    #[test]
+    fn csrf_post_api_with_x_requested_with_passes() {
+        assert!(csrf_check_passes(
+            "/api/accounts/123/pause",
+            "POST",
+            &[("x-requested-with", "XMLHttpRequest")]
+        ));
+    }
+
+    #[test]
+    fn csrf_post_api_with_json_content_type_passes() {
+        assert!(csrf_check_passes(
+            "/api/accounts/123/pause",
+            "POST",
+            &[("content-type", "application/json")]
+        ));
+    }
+
+    #[test]
+    fn csrf_api_key_bearer_exempt_from_csrf() {
+        // Bearer token requests bypass CSRF check
+        assert!(csrf_check_passes(
+            "/api/accounts/123/pause",
+            "POST",
+            &[("authorization", "Bearer sk-test-key")]
+        ));
+    }
+
+    #[test]
+    fn csrf_x_api_key_header_exempt_from_csrf() {
+        // x-api-key requests bypass CSRF check
+        assert!(csrf_check_passes(
+            "/api/accounts/123/pause",
+            "POST",
+            &[("x-api-key", "sk-test-key")]
+        ));
+    }
+
+    #[test]
+    fn csrf_get_requests_not_checked() {
+        // GET is not a mutating method — CSRF check does not apply
+        assert!(csrf_check_passes("/api/stats", "GET", &[]));
+    }
+
+    #[test]
+    fn csrf_v1_proxy_not_checked() {
+        // /v1/* paths are excluded from CSRF check (different threat model)
+        assert!(csrf_check_passes("/v1/messages", "POST", &[]));
     }
 
     // -- API key extraction tests --
