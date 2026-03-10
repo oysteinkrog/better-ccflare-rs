@@ -130,9 +130,112 @@ fn get_default_allowed_paths(additional: &[PathBuf]) -> Vec<PathBuf> {
     paths
 }
 
+// ---------------------------------------------------------------------------
+// URL request path validation (for proxy/API paths)
+// ---------------------------------------------------------------------------
+
+/// Validate a URL request path for path traversal attacks.
+///
+/// Percent-decodes the path first, then rejects any path containing `..`
+/// or null bytes. Returns `true` if the path is safe.
+pub fn is_safe_request_path(path: &str) -> bool {
+    // Fast path: check raw path first
+    if path.contains("..") || path.contains('\0') {
+        return false;
+    }
+
+    // Decode percent-encoded characters and re-check
+    let decoded = simple_percent_decode(path);
+    !decoded.contains("..") && !decoded.contains('\0')
+}
+
+/// Minimal percent-decoder: converts `%XX` sequences to their byte values.
+///
+/// Only used for security checks — does not need to handle every edge case
+/// of full URL parsing, just enough to catch encoded traversal sequences.
+fn simple_percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- URL request path validation tests --
+
+    #[test]
+    fn safe_path_normal_routes() {
+        assert!(is_safe_request_path("/v1/messages"));
+        assert!(is_safe_request_path("/v1/models"));
+        assert!(is_safe_request_path("/api/accounts"));
+        assert!(is_safe_request_path("/health"));
+        assert!(is_safe_request_path("/"));
+    }
+
+    #[test]
+    fn rejects_raw_dot_dot() {
+        assert!(!is_safe_request_path("/v1/../../admin"));
+        assert!(!is_safe_request_path("/../etc/passwd"));
+        assert!(!is_safe_request_path("/v1/messages/.."));
+    }
+
+    #[test]
+    fn rejects_encoded_dot_dot() {
+        // %2e = '.'
+        assert!(!is_safe_request_path("/v1/%2e%2e/admin"));
+        assert!(!is_safe_request_path("/v1/%2e./admin"));
+        assert!(!is_safe_request_path("/v1/.%2e/admin"));
+    }
+
+    #[test]
+    fn rejects_uppercase_encoded_dot_dot() {
+        assert!(!is_safe_request_path("/v1/%2E%2E/admin"));
+        assert!(!is_safe_request_path("/v1/%2E./admin"));
+        assert!(!is_safe_request_path("/v1/.%2E/admin"));
+    }
+
+    #[test]
+    fn rejects_mixed_case_encoded_dot_dot() {
+        assert!(!is_safe_request_path("/v1/%2e%2E/admin"));
+        assert!(!is_safe_request_path("/v1/%2E%2e/admin"));
+    }
+
+    #[test]
+    fn rejects_null_byte_in_url() {
+        assert!(!is_safe_request_path("/v1/messages%00"));
+        assert!(!is_safe_request_path("/v1/messages\0"));
+    }
+
+    #[test]
+    fn allows_single_dot_in_path() {
+        assert!(is_safe_request_path("/v1/./messages"));
+        assert!(is_safe_request_path("/v1/file.json"));
+    }
+
+    // -- Filesystem path validation tests --
 
     #[test]
     fn rejects_null_byte() {
