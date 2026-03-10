@@ -416,6 +416,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "base64",
  "bccf-core",
  "bccf-dashboard",
  "bccf-database",

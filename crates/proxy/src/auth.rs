@@ -124,6 +124,70 @@ fn extract_api_key(req: &Request<Body>) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Dashboard password
+// ---------------------------------------------------------------------------
+
+/// Get the `DASHBOARD_PASSWORD` env var if set and non-empty.
+fn get_dashboard_password() -> Option<String> {
+    std::env::var("DASHBOARD_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract password from HTTP Basic auth header.
+///
+/// Decodes `Authorization: Basic base64(user:password)` and returns the password.
+/// The username is ignored — only the password is checked against `DASHBOARD_PASSWORD`.
+fn extract_basic_auth_password(req: &Request<Body>) -> Option<String> {
+    use base64::Engine;
+
+    let val = req.headers().get("authorization")?;
+    let s = val.to_str().ok()?;
+    let encoded = s.strip_prefix("Basic ")?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let decoded_str = String::from_utf8(decoded).ok()?;
+    // Format: "username:password" — we only care about the password
+    let password = decoded_str.splitn(2, ':').nth(1)?;
+    if password.is_empty() {
+        return None;
+    }
+    Some(password.to_string())
+}
+
+/// Constant-time password comparison to prevent timing attacks.
+fn verify_password_constant_time(provided: &str, expected: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+/// Build a 401 response. For dashboard/browser paths, includes
+/// `WWW-Authenticate: Basic` so the browser shows a native login dialog.
+fn auth_failed_response(path: &str, has_dashboard_password: bool) -> Response {
+    let normalized = normalize_path(path);
+    let is_browser_path = !normalized.starts_with("/api/")
+        && !normalized.starts_with("/v1/")
+        && !normalized.starts_with("/messages/");
+
+    let mut resp = crate::handler::error_response(
+        StatusCode::UNAUTHORIZED,
+        "API key required. Include it in the 'x-api-key' header or Authorization: Bearer <key>",
+    );
+
+    // Add WWW-Authenticate: Basic for dashboard/browser paths when a dashboard
+    // password is configured, so the browser shows a login dialog.
+    if is_browser_path && has_dashboard_password {
+        resp.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            "Basic realm=\"dashboard\"".parse().unwrap(),
+        );
+    }
+
+    resp
+}
+
+// ---------------------------------------------------------------------------
 // Path exemptions
 // ---------------------------------------------------------------------------
 
@@ -139,10 +203,18 @@ fn normalize_path(path: &str) -> String {
 /// Check if a path is exempt from authentication.
 ///
 /// Exempt paths:
-/// - `/health` — always exempt
-/// - `/api/oauth/*` — exempt (needed for account setup)
-/// - Non-API paths — exempt (dashboard static assets)
-/// - `/api/accounts/:id/reload` — exempt (server-to-server)
+/// - `/health` — always exempt (monitoring probes)
+/// - `/api/oauth/*` — exempt (needed for OAuth account setup)
+/// - `/api/accounts/:id/reload` — exempt (server-to-server reauth)
+/// - `/dashboard/assets/*` — exempt (CSS/JS/favicon needed before login)
+///
+/// All other paths require authentication, including:
+/// - `/api/*` — admin/management API
+/// - `/v1/*` — proxy endpoints
+/// - `/dashboard` and `/dashboard/{tab}` — dashboard UI
+/// - `/dashboard/partials/*` — HTMX partials
+/// - `/metrics` — Prometheus metrics
+/// - `/` — root redirect
 fn is_path_exempt(path: &str, _method: &str) -> bool {
     // M1: normalize path before checks to prevent `//api/config` bypass.
     let path = normalize_path(path);
@@ -163,8 +235,8 @@ fn is_path_exempt(path: &str, _method: &str) -> bool {
         return true;
     }
 
-    // Non-API, non-proxy paths are exempt (dashboard, static assets)
-    if !path.starts_with("/api/") && !path.starts_with("/v1/") && !path.starts_with("/messages/") {
+    // Dashboard static assets (CSS, JS, favicon) — needed to render login page
+    if path.starts_with("/dashboard/assets/") {
         return true;
     }
 
@@ -333,8 +405,15 @@ async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, 
 
 /// Authentication middleware for axum.
 ///
-/// Checks API key auth, applies path exemptions, and injects `AuthInfo`
-/// into request extensions for downstream handlers.
+/// Checks path exemptions, then tries (in order):
+/// 1. `DASHBOARD_PASSWORD` match (cheap constant-time comparison)
+/// 2. API key verification against DB (expensive scrypt)
+///
+/// If no API keys exist AND no `DASHBOARD_PASSWORD` is set, all requests
+/// are allowed (first-run experience).
+///
+/// For dashboard/browser paths, a 401 includes `WWW-Authenticate: Basic`
+/// so the browser shows a native login dialog.
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     mut req: Request<Body>,
@@ -352,24 +431,30 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
-    // Check if authentication is enabled (any active API keys exist)
+    // Check what auth mechanisms are available
+    let dashboard_password = get_dashboard_password();
+    let has_dashboard_password = dashboard_password.is_some();
+
     let pool = state.db_pool::<DbPool>();
     let auth_enabled = match pool {
         Some(p) => match is_auth_enabled(p).await {
             Ok(enabled) => enabled,
             Err(()) => {
-                // DB error — fail closed: return 500 rather than bypassing auth.
-                return crate::handler::error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Authentication check failed due to a database error",
-                );
+                // DB error — fail closed unless dashboard password provides a fallback
+                if !has_dashboard_password {
+                    return crate::handler::error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Authentication check failed due to a database error",
+                    );
+                }
+                false
             }
         },
         None => false,
     };
 
-    if !auth_enabled {
-        // No API keys configured — allow all requests (first-run experience)
+    // First-run: no API keys AND no dashboard password → allow all
+    if !auth_enabled && !has_dashboard_password {
         req.extensions_mut().insert(AuthInfo {
             is_authenticated: true,
             ..Default::default()
@@ -377,43 +462,56 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
-    // Extract API key from request
-    let api_key = match extract_api_key(&req) {
-        Some(key) => key,
-        None => {
-            debug!("Auth failed: no API key in request to {path}");
-            return crate::handler::error_response(
-                StatusCode::UNAUTHORIZED,
-                "API key required. Include it in the 'x-api-key' header or Authorization: Bearer <key>",
-            );
-        }
-    };
+    // Extract credentials
+    let api_key = extract_api_key(&req);
+    let basic_password = extract_basic_auth_password(&req);
 
-    // Verify API key (cached + spawn_blocking for scrypt)
-    let Some(pool) = pool else {
-        // No database — can't verify
-        req.extensions_mut().insert(AuthInfo {
-            is_authenticated: true,
-            ..Default::default()
-        });
-        return next.run(req).await;
-    };
-
-    match verify_api_key_cached(pool, &api_key).await {
-        Some((id, name)) => {
-            debug!("Auth success: key={name} path={path}");
-            req.extensions_mut().insert(AuthInfo {
-                is_authenticated: true,
-                api_key_id: Some(id),
-                api_key_name: Some(name),
-            });
-            next.run(req).await
+    // 1. Check DASHBOARD_PASSWORD (cheap — constant-time string comparison)
+    if let Some(ref expected) = dashboard_password {
+        // Check Basic auth password
+        if let Some(ref pwd) = basic_password {
+            if verify_password_constant_time(pwd, expected) {
+                debug!("Auth success: dashboard password (Basic) for {path}");
+                req.extensions_mut().insert(AuthInfo {
+                    is_authenticated: true,
+                    ..Default::default()
+                });
+                return next.run(req).await;
+            }
         }
-        None => {
-            debug!("Auth failed: invalid API key for {path}");
-            crate::handler::error_response(StatusCode::UNAUTHORIZED, "Invalid API key")
+        // Check API key / Bearer token against dashboard password
+        if let Some(ref key) = api_key {
+            if verify_password_constant_time(key, expected) {
+                debug!("Auth success: dashboard password (Bearer) for {path}");
+                req.extensions_mut().insert(AuthInfo {
+                    is_authenticated: true,
+                    ..Default::default()
+                });
+                return next.run(req).await;
+            }
         }
     }
+
+    // 2. Check API key against DB (expensive — scrypt, only if keys exist)
+    if auth_enabled {
+        if let Some(ref key) = api_key {
+            if let Some(pool) = pool {
+                if let Some((id, name)) = verify_api_key_cached(pool, key).await {
+                    debug!("Auth success: key={name} path={path}");
+                    req.extensions_mut().insert(AuthInfo {
+                        is_authenticated: true,
+                        api_key_id: Some(id),
+                        api_key_name: Some(name),
+                    });
+                    return next.run(req).await;
+                }
+            }
+        }
+    }
+
+    // 3. Auth failed
+    debug!("Auth failed: no valid credential for {path}");
+    auth_failed_response(&path, has_dashboard_password)
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +521,8 @@ pub async fn auth_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Path exemption tests --
 
     #[test]
     fn health_is_exempt() {
@@ -441,10 +541,28 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_is_exempt() {
-        assert!(is_path_exempt("/", "GET"));
-        assert!(is_path_exempt("/dashboard", "GET"));
-        assert!(is_path_exempt("/assets/app.js", "GET"));
+    fn dashboard_assets_are_exempt() {
+        assert!(is_path_exempt("/dashboard/assets/pico.min.css", "GET"));
+        assert!(is_path_exempt("/dashboard/assets/htmx.min.js", "GET"));
+        assert!(is_path_exempt("/dashboard/assets/favicon.svg", "GET"));
+    }
+
+    #[test]
+    fn dashboard_pages_require_auth() {
+        assert!(!is_path_exempt("/dashboard", "GET"));
+        assert!(!is_path_exempt("/dashboard/overview", "GET"));
+        assert!(!is_path_exempt("/dashboard/accounts", "GET"));
+        assert!(!is_path_exempt("/dashboard/partials/overview", "GET"));
+    }
+
+    #[test]
+    fn metrics_requires_auth() {
+        assert!(!is_path_exempt("/metrics", "GET"));
+    }
+
+    #[test]
+    fn root_requires_auth() {
+        assert!(!is_path_exempt("/", "GET"));
     }
 
     #[test]
@@ -456,10 +574,12 @@ mod tests {
 
     #[test]
     fn double_slash_path_not_exempt() {
-        // M1: double-slash bypass must not allow /api/* paths to be exempt
+        // M1: double-slash bypass must not allow protected paths to be exempt
         assert!(!is_path_exempt("//api/config", "GET"));
         assert!(!is_path_exempt("//api/stats", "GET"));
         assert!(!is_path_exempt("//v1/messages", "POST"));
+        assert!(!is_path_exempt("//dashboard", "GET"));
+        assert!(!is_path_exempt("//metrics", "GET"));
     }
 
     #[test]
@@ -467,7 +587,7 @@ mod tests {
         // Normalized exempt paths should still be exempt
         assert!(is_path_exempt("//health", "GET"));
         assert!(is_path_exempt("//api/oauth/init", "POST"));
-        assert!(is_path_exempt("//dashboard", "GET"));
+        assert!(is_path_exempt("//dashboard/assets/pico.min.css", "GET"));
     }
 
     #[test]
@@ -475,6 +595,8 @@ mod tests {
         assert!(!is_path_exempt("/v1/messages", "POST"));
         assert!(!is_path_exempt("/v1/models", "GET"));
     }
+
+    // -- API key extraction tests --
 
     #[test]
     fn extract_api_key_from_x_api_key() {
@@ -517,5 +639,69 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(extract_api_key(&req), None);
+    }
+
+    // -- Basic auth extraction tests --
+
+    #[test]
+    fn extract_basic_auth_valid() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:secret123");
+        let req = Request::builder()
+            .header("authorization", format!("Basic {encoded}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            extract_basic_auth_password(&req),
+            Some("secret123".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_basic_auth_empty_password() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:");
+        let req = Request::builder()
+            .header("authorization", format!("Basic {encoded}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_basic_auth_password(&req), None);
+    }
+
+    #[test]
+    fn extract_basic_auth_no_colon() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let req = Request::builder()
+            .header("authorization", format!("Basic {encoded}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_basic_auth_password(&req), None);
+    }
+
+    #[test]
+    fn extract_basic_auth_bearer_not_matched() {
+        let req = Request::builder()
+            .header("authorization", "Bearer some-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_basic_auth_password(&req), None);
+    }
+
+    // -- Password verification tests --
+
+    #[test]
+    fn verify_password_matching() {
+        assert!(verify_password_constant_time("secret", "secret"));
+    }
+
+    #[test]
+    fn verify_password_not_matching() {
+        assert!(!verify_password_constant_time("secret", "wrong"));
+    }
+
+    #[test]
+    fn verify_password_different_lengths() {
+        assert!(!verify_password_constant_time("short", "muchlongerpassword"));
     }
 }

@@ -257,21 +257,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/messages", post(crate::proxy::proxy_handler))
         .route("/v1/{*rest}", any(crate::proxy::proxy_handler));
 
-    // Dashboard routes (exempt from API auth — served under /dashboard)
+    // Dashboard routes (require auth — see auth::is_path_exempt for exemptions)
     let dashboard_routes = bccf_dashboard::routes::router();
 
     // Combine all routes
     Router::new()
-        // Root redirect to dashboard
+        // Root redirect to dashboard (requires auth)
         .route(
             "/",
             get(|| async { axum::response::Redirect::temporary("/dashboard") }),
         )
         // Health endpoint (exempt from auth)
         .route("/health", get(api::health))
-        // Prometheus metrics (exempt from auth, optional — returns 503 if not enabled)
+        // Prometheus metrics (requires auth)
         .route("/metrics", get(crate::prometheus::metrics_handler))
-        // Dashboard (exempt from auth, not under /api/)
+        // Dashboard (requires auth; static assets exempt — see auth::is_path_exempt)
         .merge(dashboard_routes)
         // API routes (with auth middleware)
         .merge(api_routes)
