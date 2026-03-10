@@ -153,10 +153,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/accounts/{id}/reserve-hard",
             post(accounts::set_reserve_hard),
         )
-        .route(
-            "/api/accounts/{id}/shared",
-            post(accounts::set_is_shared),
-        )
+        .route("/api/accounts/{id}/shared", post(accounts::set_is_shared))
         .route(
             "/api/accounts/{id}/overage-protection",
             post(accounts::set_overage_protection),
@@ -178,10 +175,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/stats/reset", post(api::stats_reset))
         .route("/api/analytics", get(handlers::analytics::get_analytics))
         // X-factor capacity & value analytics
-        .route("/api/analytics/pool-capacity", get(handlers::xfactor::get_pool_capacity))
-        .route("/api/analytics/xfactor", get(handlers::xfactor::get_xfactor))
+        .route(
+            "/api/analytics/pool-capacity",
+            get(handlers::xfactor::get_pool_capacity),
+        )
+        .route(
+            "/api/analytics/xfactor",
+            get(handlers::xfactor::get_xfactor),
+        )
         .route("/api/analytics/value", get(handlers::xfactor::get_value))
-        .route("/api/accounts/{id}/xfactor", get(handlers::xfactor::get_account_xfactor))
+        .route(
+            "/api/accounts/{id}/xfactor",
+            get(handlers::xfactor::get_account_xfactor),
+        )
         // Logs history
         .route("/api/logs", get(handlers::logs::logs_history))
         // Token health
@@ -218,10 +224,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(handlers::api_keys::list_keys).post(handlers::api_keys::generate_key),
         )
         .route("/api/api-keys/stats", get(handlers::api_keys::key_stats))
-        .route(
-            "/api/api-keys/{id}",
-            delete(handlers::api_keys::delete_key),
-        )
+        .route("/api/api-keys/{id}", delete(handlers::api_keys::delete_key))
         .route(
             "/api/api-keys/{id}/enable",
             post(handlers::api_keys::enable_key),
@@ -231,14 +234,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(handlers::api_keys::disable_key),
         )
         // Maintenance
-        .route(
-            "/api/maintenance/cleanup",
-            post(api::maintenance_cleanup),
-        )
-        .route(
-            "/api/maintenance/compact",
-            post(api::maintenance_compact),
-        )
+        .route("/api/maintenance/cleanup", post(api::maintenance_cleanup))
+        .route("/api/maintenance/compact", post(api::maintenance_compact))
         // Projects & workspaces
         .route("/api/projects", get(api::get_projects))
         .route("/api/workspaces", get(api::get_workspaces))
@@ -266,9 +263,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Combine all routes
     Router::new()
         // Root redirect to dashboard
-        .route("/", get(|| async {
-            axum::response::Redirect::temporary("/dashboard")
-        }))
+        .route(
+            "/",
+            get(|| async { axum::response::Redirect::temporary("/dashboard") }),
+        )
         // Health endpoint (exempt from auth)
         .route("/health", get(api::health))
         // Prometheus metrics (exempt from auth, optional — returns 503 if not enabled)
@@ -294,6 +292,48 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// Check if any API keys exist; if not and `ALLOW_UNAUTHENTICATED` is not set,
+/// downgrade the bind host to `127.0.0.1` so the proxy is only reachable locally.
+fn enforce_loopback_if_no_keys(state: &AppState, config: &ServerConfig) -> String {
+    // If already binding to loopback, nothing to do
+    if config.host == "127.0.0.1" || config.host == "::1" || config.host == "localhost" {
+        return config.host.clone();
+    }
+
+    // If explicitly allowed, honour the configured host
+    if state.config().is_allow_unauthenticated() {
+        return config.host.clone();
+    }
+
+    // Check if any API keys exist in the database
+    let has_keys = state
+        .db_pool::<DbPool>()
+        .and_then(|pool| {
+            let conn = pool.get().ok()?;
+            conn.query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE is_active = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+        })
+        .unwrap_or(0)
+        > 0;
+
+    if has_keys {
+        return config.host.clone();
+    }
+
+    // No API keys — force loopback-only binding
+    warn!("========================================================");
+    warn!("  NO API KEYS CONFIGURED — binding to 127.0.0.1 only");
+    warn!("  The proxy is NOT accessible from the network.");
+    warn!("  To fix: create an API key via the dashboard, or set");
+    warn!("  ALLOW_UNAUTHENTICATED=true for development use.");
+    warn!("========================================================");
+    "127.0.0.1".to_string()
+}
+
 /// Start the HTTP server.
 ///
 /// Binds to the configured address, runs startup maintenance in the background,
@@ -309,13 +349,18 @@ pub async fn start(
     server_config: ServerConfig,
     coordinator: crate::shutdown::ShutdownCoordinator,
 ) -> Result<(), ServerError> {
-    let proxy_addr: SocketAddr = format!("{}:{}", server_config.host, server_config.port)
+    // Security: if no API keys are configured and ALLOW_UNAUTHENTICATED is not
+    // set, force binding to 127.0.0.1 only. This prevents unauthenticated
+    // access from the network on first run.
+    let effective_host = enforce_loopback_if_no_keys(&state, &server_config);
+
+    let proxy_addr: SocketAddr = format!("{}:{}", effective_host, server_config.port)
         .parse()
         .map_err(|e| ServerError::Bind(format!("Invalid address: {e}")))?;
     let dashboard_addr = server_config
         .dashboard_port
         .filter(|p| *p != server_config.port)
-        .map(|p| format!("{}:{p}", server_config.host))
+        .map(|p| format!("{}:{p}", effective_host))
         .map(|s| {
             s.parse::<SocketAddr>()
                 .map_err(|e| ServerError::Bind(format!("Invalid dashboard address: {e}")))
@@ -495,7 +540,10 @@ async fn refresh_expired_tokens(state: &AppState, pool: &DbPool, now: i64) {
         if account.refresh_token.is_empty() {
             continue;
         }
-        if account.provider != "anthropic" && account.provider != "claude-oauth" && account.provider != "console" {
+        if account.provider != "anthropic"
+            && account.provider != "claude-oauth"
+            && account.provider != "console"
+        {
             continue;
         }
         // Skip if token is still valid
@@ -519,7 +567,10 @@ async fn refresh_expired_tokens(state: &AppState, pool: &DbPool, now: i64) {
         let refresher = StartupRefresher { provider };
         let persister = StartupPersister { pool };
         let mut account = account;
-        match tm.get_valid_access_token(&mut account, &refresher, &persister, now).await {
+        match tm
+            .get_valid_access_token(&mut account, &refresher, &persister, now)
+            .await
+        {
             Ok(_) => {
                 info!(account = %account.name, "Refreshed token on startup");
                 refreshed += 1;
@@ -695,7 +746,8 @@ impl TokenRefresher for StartupRefresher {
         &self,
         account: &bccf_core::types::Account,
         client_id: &str,
-    ) -> Result<bccf_providers::types::TokenRefreshResult, bccf_providers::error::ProviderError> {
+    ) -> Result<bccf_providers::types::TokenRefreshResult, bccf_providers::error::ProviderError>
+    {
         self.provider.refresh_token(account, client_id).await
     }
 }
@@ -918,6 +970,29 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn enforce_loopback_no_db_no_keys() {
+        // No DB pool → 0 keys → should force loopback (unless allow_unauthenticated)
+        let state = test_state();
+        let config = ServerConfig {
+            host: "0.0.0.0".to_string(),
+            ..Default::default()
+        };
+        let host = enforce_loopback_if_no_keys(&state, &config);
+        assert_eq!(host, "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn enforce_loopback_already_loopback() {
+        let state = test_state();
+        let config = ServerConfig {
+            host: "127.0.0.1".to_string(),
+            ..Default::default()
+        };
+        let host = enforce_loopback_if_no_keys(&state, &config);
+        assert_eq!(host, "127.0.0.1");
     }
 
     #[tokio::test]

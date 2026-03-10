@@ -372,6 +372,7 @@ mod tests {
             db_retry_backoff: Some(3.0),
             db_retry_max_delay_ms: Some(10000),
             metrics_enabled: Some(true),
+            allow_unauthenticated: Some(true),
         };
 
         let changed = diff_config_fields(&old, &new);

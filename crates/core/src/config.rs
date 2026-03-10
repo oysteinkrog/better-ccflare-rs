@@ -50,6 +50,13 @@ pub struct ConfigData {
     // Monitoring
     #[serde(default)]
     pub metrics_enabled: Option<bool>,
+    // Security
+    /// Allow unauthenticated access when no API keys are configured.
+    /// When false (default), the server binds to 127.0.0.1 only if no keys exist.
+    /// Set `ALLOW_UNAUTHENTICATED=true` env var or `"allow_unauthenticated": true`
+    /// in config.json to allow binding to all interfaces without API keys.
+    #[serde(default)]
+    pub allow_unauthenticated: Option<bool>,
 }
 
 /// Runtime configuration with resolved defaults.
@@ -218,6 +225,17 @@ impl Config {
             return v == "1" || v.eq_ignore_ascii_case("true");
         }
         self.data.metrics_enabled.unwrap_or(false)
+    }
+
+    /// Whether unauthenticated access is explicitly allowed.
+    /// When false (default), the server forces loopback-only binding if no API
+    /// keys are configured. Set `ALLOW_UNAUTHENTICATED=true` or
+    /// `"allow_unauthenticated": true` in config.json for dev use.
+    pub fn is_allow_unauthenticated(&self) -> bool {
+        if let Ok(v) = std::env::var("ALLOW_UNAUTHENTICATED") {
+            return v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        self.data.allow_unauthenticated.unwrap_or(false)
     }
 
     pub fn get_request_retention_days(&self) -> u32 {
@@ -443,6 +461,21 @@ mod tests {
         // Should not panic, just use defaults
         let config = Config::load(Some(path));
         assert!(config.is_ok());
+    }
+
+    #[test]
+    fn allow_unauthenticated_default_false() {
+        let config = Config::load(Some(PathBuf::from(
+            "/tmp/bccf-test-unauth-nonexistent/config.json",
+        )))
+        .unwrap();
+        assert!(!config.is_allow_unauthenticated());
+    }
+
+    #[test]
+    fn allow_unauthenticated_from_config() {
+        let data: ConfigData = serde_json::from_str(r#"{"allow_unauthenticated": true}"#).unwrap();
+        assert_eq!(data.allow_unauthenticated, Some(true));
     }
 
     #[test]
