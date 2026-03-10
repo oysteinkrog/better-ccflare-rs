@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bccf_core::constants::time;
 use bccf_core::providers::Provider;
 use bccf_core::types::{Account, RoutingUsageInfo};
+use tracing::warn;
 
 /// Debounce for rate-limit-reset detection: a window must have reset at least
 /// this many ms ago before we act on the reset timestamp.
@@ -289,7 +290,8 @@ pub fn is_account_available(
     if account.rate_limited_until.is_some_and(|until| until >= now) {
         return false;
     }
-    // Overage protection: hard-stop at 100% to prevent overage billing
+    // Overage protection: hard-stop at 100% to prevent overage billing.
+    // Fail-closed: if usage data is missing/stale, treat as exhausted.
     if account.overage_protection {
         if let Some(info) = usage.get(&account.id) {
             let at_overage = if info.windows.is_empty() {
@@ -300,10 +302,26 @@ pub fn is_account_available(
             if at_overage {
                 return false;
             }
+        } else {
+            warn!(
+                account = %account.name,
+                "Usage data unavailable, treating as exhausted (fail-closed overage protection)"
+            );
+            return false;
         }
     }
-    // Hard reserve: exclude account when any window hits its reserve threshold
+    // Hard reserve: exclude account when any window hits its reserve threshold.
+    // Fail-closed: if usage data is missing/stale and reserves are configured, skip.
     if account.reserve_hard {
+        if (account.reserve_5h > 0 || account.reserve_weekly > 0)
+            && !usage.contains_key(&account.id)
+        {
+            warn!(
+                account = %account.name,
+                "Usage data unavailable, treating as at hard reserve (fail-closed)"
+            );
+            return false;
+        }
         if is_at_reserve(account, usage) {
             return false;
         }
@@ -932,9 +950,9 @@ mod tests {
         usage.insert("a".to_string(), make_usage(70.0, None));
         assert!(is_account_available(&a, &usage, NOW));
 
-        // No usage data → available (assume under reserve)
+        // No usage data → fail-closed when reserve_hard + reserves configured
         let empty = no_usage();
-        assert!(is_account_available(&a, &empty, NOW));
+        assert!(!is_account_available(&a, &empty, NOW));
     }
 
     // -----------------------------------------------------------------------
@@ -1131,10 +1149,18 @@ mod tests {
     }
 
     #[test]
-    fn overage_protection_no_usage_data_allows() {
+    fn overage_protection_no_usage_data_fails_closed() {
         let mut a = make_account("a", "anthropic", 1);
         a.overage_protection = true;
 
+        // Fail-closed: missing usage data with overage_protection → unavailable
+        assert!(!is_account_available(&a, &no_usage(), NOW));
+    }
+
+    #[test]
+    fn no_overage_protection_no_usage_data_allows() {
+        let a = make_account("a", "anthropic", 1);
+        // overage_protection = false (default in make_account)
         assert!(is_account_available(&a, &no_usage(), NOW));
     }
 
@@ -1163,5 +1189,44 @@ mod tests {
         );
 
         assert!(!is_account_available(&a, &usage, NOW));
+    }
+
+    // -----------------------------------------------------------------------
+    // Fail-closed tests (bd-1sk)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hard_reserve_no_usage_data_fails_closed() {
+        let mut a = make_account("a", "zai", 1);
+        a.reserve_5h = 20;
+        a.reserve_hard = true;
+
+        // Fail-closed: reserve_hard + reserves configured + no usage data → unavailable
+        assert!(!is_account_available(&a, &no_usage(), NOW));
+    }
+
+    #[test]
+    fn hard_reserve_no_reserves_configured_allows_without_data() {
+        let mut a = make_account("a", "zai", 1);
+        a.reserve_hard = true;
+        a.reserve_5h = 0;
+        a.reserve_weekly = 0;
+
+        // reserve_hard but no reserve thresholds → nothing to protect, allow
+        assert!(is_account_available(&a, &no_usage(), NOW));
+    }
+
+    #[test]
+    fn overage_protection_skipped_in_select_when_no_usage() {
+        let strategy = SessionStrategy::default();
+        let mut a = make_account("a", "anthropic", 1);
+        a.overage_protection = true;
+
+        let b = make_account("b", "zai", 2);
+
+        // a has overage_protection but no usage data → fail-closed, only b returned
+        let (result, _) = strategy.select(&[a, b], &no_usage(), &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "b");
     }
 }
