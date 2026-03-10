@@ -136,17 +136,35 @@ fn get_default_allowed_paths(additional: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Validate a URL request path for path traversal attacks.
 ///
-/// Percent-decodes the path first, then rejects any path containing `..`
-/// or null bytes. Returns `true` if the path is safe.
+/// Iteratively percent-decodes the path until stable, then rejects any path
+/// containing `..` or null bytes. Iterative decoding catches double- and
+/// triple-encoded traversal sequences such as `%252e%252e` (which decodes
+/// one round to `%2e%2e` and a second round to `..`).
+///
+/// Iteration is capped at 8 rounds to prevent DoS on adversarial input.
+/// Returns `true` if the path is safe.
 pub fn is_safe_request_path(path: &str) -> bool {
     // Fast path: check raw path first
     if path.contains("..") || path.contains('\0') {
         return false;
     }
 
-    // Decode percent-encoded characters and re-check
-    let decoded = simple_percent_decode(path);
-    !decoded.contains("..") && !decoded.contains('\0')
+    // Iteratively decode to catch double/triple/N-layer percent-encoding.
+    // Cap at 8 rounds — real paths have at most 1-2 encoding layers; this
+    // bounds worst-case O(n * 8) work regardless of attacker input depth.
+    let mut current = path.to_string();
+    for _ in 0..8 {
+        let decoded = simple_percent_decode(&current);
+        if decoded.contains("..") || decoded.contains('\0') {
+            return false;
+        }
+        if decoded == current {
+            // Stable — no further encoding layers present.
+            break;
+        }
+        current = decoded;
+    }
+    true
 }
 
 /// Minimal percent-decoder: converts `%XX` sequences to their byte values.
@@ -233,6 +251,45 @@ mod tests {
     fn allows_single_dot_in_path() {
         assert!(is_safe_request_path("/v1/./messages"));
         assert!(is_safe_request_path("/v1/file.json"));
+    }
+
+    #[test]
+    fn rejects_double_encoded_dot_dot() {
+        // %252e%252e → (decode once) → %2e%2e → (decode again) → ..
+        assert!(!is_safe_request_path("/v1/%252e%252e/admin"));
+        assert!(!is_safe_request_path("/%252e%252e/etc/passwd"));
+        assert!(!is_safe_request_path("/v1/%252E%252E/admin")); // uppercase
+    }
+
+    #[test]
+    fn rejects_triple_encoded_dot_dot() {
+        // %25252e → %252e → %2e → '.'
+        assert!(!is_safe_request_path("/v1/%25252e%25252e/admin"));
+    }
+
+    #[test]
+    fn rejects_double_encoded_slash_traversal() {
+        // %252F%252e%252e%252F → %2F%2e%2e%2F → /../
+        assert!(!is_safe_request_path("/v1/%252F%252e%252e%252F"));
+    }
+
+    #[test]
+    fn rejects_mixed_double_and_single_encoding() {
+        // One dot literal, one double-encoded
+        assert!(!is_safe_request_path("/v1/%252e./admin"));
+        assert!(!is_safe_request_path("/v1/.%252e/admin"));
+    }
+
+    #[test]
+    fn rejects_double_encoded_null_byte() {
+        // %2500 → '\0' after second decode
+        assert!(!is_safe_request_path("/v1/messages%2500"));
+    }
+
+    #[test]
+    fn allows_double_encoded_percent_in_path() {
+        // %2525 → %25 → % (just a literal percent sign, no traversal)
+        assert!(is_safe_request_path("/v1/name%2525with%2525percent"));
     }
 
     // -- Filesystem path validation tests --
