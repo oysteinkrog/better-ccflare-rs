@@ -6,7 +6,7 @@ use std::fmt;
 /// ```
 /// use bccf_core::Redacted;
 /// let token = Redacted::new("sk-ant-secret-key");
-/// assert_eq!(format!("{token}"), "***");
+/// assert_eq!(format!("{token}"), "[REDACTED]");
 /// ```
 #[derive(Clone)]
 pub struct Redacted<T> {
@@ -29,13 +29,13 @@ impl<T> Redacted<T> {
 
 impl<T> fmt::Display for Redacted<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "***")
+        write!(f, "[REDACTED]")
     }
 }
 
 impl<T> fmt::Debug for Redacted<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Redacted(***)")
+        write!(f, "[REDACTED]")
     }
 }
 
@@ -46,13 +46,13 @@ mod tests {
     #[test]
     fn display_is_redacted() {
         let secret = Redacted::new("sk-ant-api03-secret-key");
-        assert_eq!(format!("{secret}"), "***");
+        assert_eq!(format!("{secret}"), "[REDACTED]");
     }
 
     #[test]
     fn debug_is_redacted() {
         let secret = Redacted::new("my-secret");
-        assert_eq!(format!("{secret:?}"), "Redacted(***)");
+        assert_eq!(format!("{secret:?}"), "[REDACTED]");
     }
 
     #[test]

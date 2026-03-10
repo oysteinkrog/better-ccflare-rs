@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -5,7 +7,10 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Domain model for an account — used throughout the application.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Implements a custom `Debug` that masks `api_key`, `access_token`, and
+/// `refresh_token` to prevent credential leakage in logs.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
     pub name: String,
@@ -48,6 +53,44 @@ pub struct Account {
     /// When true (default), the load balancer skips this account when any usage
     /// window reaches 100%, preventing overage billing on team/org plans.
     pub overage_protection: bool,
+}
+
+impl fmt::Debug for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Account")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("refresh_token", &"[REDACTED]")
+            .field("access_token", &self.access_token.as_ref().map(|_| "[REDACTED]"))
+            .field("expires_at", &self.expires_at)
+            .field("request_count", &self.request_count)
+            .field("total_requests", &self.total_requests)
+            .field("last_used", &self.last_used)
+            .field("created_at", &self.created_at)
+            .field("rate_limited_until", &self.rate_limited_until)
+            .field("session_start", &self.session_start)
+            .field("session_request_count", &self.session_request_count)
+            .field("paused", &self.paused)
+            .field("rate_limit_reset", &self.rate_limit_reset)
+            .field("rate_limit_status", &self.rate_limit_status)
+            .field("rate_limit_remaining", &self.rate_limit_remaining)
+            .field("priority", &self.priority)
+            .field("auto_fallback_enabled", &self.auto_fallback_enabled)
+            .field("auto_refresh_enabled", &self.auto_refresh_enabled)
+            .field("custom_endpoint", &self.custom_endpoint)
+            .field("model_mappings", &self.model_mappings)
+            .field("reserve_5h", &self.reserve_5h)
+            .field("reserve_weekly", &self.reserve_weekly)
+            .field("reserve_hard", &self.reserve_hard)
+            .field("subscription_tier", &self.subscription_tier)
+            .field("email", &self.email)
+            .field("refresh_token_updated_at", &self.refresh_token_updated_at)
+            .field("is_shared", &self.is_shared)
+            .field("overage_protection", &self.overage_protection)
+            .finish()
+    }
 }
 
 /// API response for an account — what clients receive.
@@ -298,6 +341,51 @@ mod tests {
     fn is_valid_strategy_works() {
         assert!(is_valid_strategy("session"));
         assert!(!is_valid_strategy("round-robin"));
+    }
+
+    #[test]
+    fn account_debug_redacts_tokens() {
+        let account = Account {
+            id: "test-id".to_string(),
+            name: "test-account".to_string(),
+            provider: "anthropic".to_string(),
+            api_key: Some("sk-ant-secret-api-key".to_string()),
+            refresh_token: "rt-secret-refresh-token".to_string(),
+            access_token: Some("at-secret-access-token".to_string()),
+            expires_at: Some(9999999999999),
+            request_count: 0,
+            total_requests: 0,
+            last_used: None,
+            created_at: 0,
+            rate_limited_until: None,
+            session_start: None,
+            session_request_count: 0,
+            paused: false,
+            rate_limit_reset: None,
+            rate_limit_status: None,
+            rate_limit_remaining: None,
+            priority: 0,
+            auto_fallback_enabled: false,
+            auto_refresh_enabled: false,
+            custom_endpoint: None,
+            model_mappings: None,
+            reserve_5h: 0,
+            reserve_weekly: 0,
+            reserve_hard: false,
+            subscription_tier: None,
+            email: None,
+            refresh_token_updated_at: None,
+            is_shared: false,
+            overage_protection: true,
+        };
+        let debug_output = format!("{:?}", account);
+        assert!(!debug_output.contains("sk-ant-secret-api-key"), "api_key leaked in Debug output");
+        assert!(!debug_output.contains("rt-secret-refresh-token"), "refresh_token leaked in Debug output");
+        assert!(!debug_output.contains("at-secret-access-token"), "access_token leaked in Debug output");
+        assert!(debug_output.contains("[REDACTED]"), "Debug output should contain [REDACTED]");
+        // Non-sensitive fields should still appear
+        assert!(debug_output.contains("test-account"));
+        assert!(debug_output.contains("anthropic"));
     }
 
     #[test]
