@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::http::HeaderValue;
 use axum::middleware;
 use axum::routing::{any, delete, get, post};
 use axum::Router;
@@ -278,6 +279,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Fallback for unmatched routes
         .fallback(api::not_found)
         // Middleware layers (applied bottom-up)
+        .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -285,6 +287,32 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(build_cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Axum middleware that injects security response headers on every response.
+///
+/// Headers applied:
+/// - `X-Frame-Options: DENY` — prevents clickjacking
+/// - `X-Content-Type-Options: nosniff` — disables MIME-sniffing
+/// - `Referrer-Policy: no-referrer` — suppresses Referer header
+/// - `Strict-Transport-Security` — only when TLS is detected via `SSL_CERT_PATH`/`SSL_KEY_PATH`
+async fn security_headers_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
+    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert("Referrer-Policy", HeaderValue::from_static("no-referrer"));
+    // Only send HSTS when TLS is configured, to avoid downgrade confusion on plain HTTP.
+    if std::env::var("SSL_CERT_PATH").is_ok() && std::env::var("SSL_KEY_PATH").is_ok() {
+        headers.insert(
+            "Strict-Transport-Security",
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
+    response
 }
 
 /// Build a restrictive CORS layer.
