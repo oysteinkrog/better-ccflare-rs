@@ -27,6 +27,8 @@ pub struct RetentionConfig {
     pub data_retention_days: u32,
     /// Days to keep request metadata (default 365).
     pub request_retention_days: u32,
+    /// Days to keep xfactor observations (default 30).
+    pub xfactor_retention_days: u32,
 }
 
 impl Default for RetentionConfig {
@@ -34,6 +36,7 @@ impl Default for RetentionConfig {
         Self {
             data_retention_days: 7,
             request_retention_days: 365,
+            xfactor_retention_days: 30,
         }
     }
 }
@@ -97,10 +100,15 @@ fn run_cleanup(pool: &DbPool, config: &RetentionConfig) {
     // Clean orphaned payloads
     let orphans_deleted = delete_orphaned_payloads_batched(&conn);
 
-    if payloads_deleted > 0 || requests_deleted > 0 || orphans_deleted > 0 {
+    // Clean old xfactor observations
+    let xfactor_cutoff = now_ms - (config.xfactor_retention_days as i64) * MS_PER_DAY;
+    let xfactor_deleted = batched_delete_xfactor_observations(&conn, xfactor_cutoff);
+
+    if payloads_deleted > 0 || requests_deleted > 0 || orphans_deleted > 0 || xfactor_deleted > 0 {
         info!(
             "Retention cleanup: deleted {payloads_deleted} payloads, \
-             {requests_deleted} requests, {orphans_deleted} orphans"
+             {requests_deleted} requests, {orphans_deleted} orphans, \
+             {xfactor_deleted} xfactor observations"
         );
     } else {
         debug!("Retention cleanup: nothing to delete");
@@ -150,6 +158,30 @@ fn batched_delete_requests(conn: &Connection, cutoff_ts: i64) -> usize {
             }
             Err(e) => {
                 warn!("Retention: error deleting requests: {e}");
+                break;
+            }
+        }
+    }
+    total
+}
+
+/// Delete xfactor_observations older than cutoff in batches.
+fn batched_delete_xfactor_observations(conn: &Connection, cutoff_ts: i64) -> usize {
+    let mut total = 0;
+    loop {
+        match conn.execute(
+            "DELETE FROM xfactor_observations WHERE id IN (
+                SELECT id FROM xfactor_observations WHERE timestamp_ms < ?1 LIMIT ?2
+            )",
+            params![cutoff_ts, BATCH_SIZE],
+        ) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                debug!("Retention: deleted batch of {n} xfactor observations (total so far: {total})");
+            }
+            Err(e) => {
+                warn!("Retention: error deleting xfactor observations: {e}");
                 break;
             }
         }

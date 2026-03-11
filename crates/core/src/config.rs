@@ -28,6 +28,8 @@ pub struct ConfigData {
     pub data_retention_days: Option<u32>,
     #[serde(default)]
     pub request_retention_days: Option<u32>,
+    #[serde(default)]
+    pub xfactor_retention_days: Option<u32>,
     // Database configuration
     #[serde(default)]
     pub db_wal_mode: Option<bool>,
@@ -248,6 +250,18 @@ impl Config {
             .request_retention_days
             .unwrap_or(365)
             .clamp(1, 3650)
+    }
+
+    pub fn get_xfactor_retention_days(&self) -> u32 {
+        if let Ok(env_val) = std::env::var("XFACTOR_RETENTION_DAYS") {
+            if let Ok(n) = env_val.parse::<u32>() {
+                return n.clamp(1, 365);
+            }
+        }
+        self.data
+            .xfactor_retention_days
+            .unwrap_or(30)
+            .clamp(1, 365)
     }
 
     /// Resolve all settings into a `RuntimeConfig`, applying env > config > defaults precedence.

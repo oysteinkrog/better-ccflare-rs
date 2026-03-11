@@ -284,10 +284,12 @@ pub async fn maintenance_cleanup(State(state): State<Arc<AppState>>) -> Response
     let config = state.config();
     let payload_days = config.get_data_retention_days();
     let request_days = config.get_request_retention_days();
+    let xfactor_days = config.get_xfactor_retention_days();
     let now = chrono::Utc::now().timestamp_millis();
 
     let payload_cutoff = now - (payload_days as i64 * 24 * 60 * 60 * 1000);
     let request_cutoff = now - (request_days as i64 * 24 * 60 * 60 * 1000);
+    let xfactor_cutoff = now - (xfactor_days as i64 * 24 * 60 * 60 * 1000);
 
     let payloads_deleted = conn
         .execute(
@@ -303,12 +305,21 @@ pub async fn maintenance_cleanup(State(state): State<Arc<AppState>>) -> Response
         )
         .unwrap_or(0);
 
+    let xfactor_deleted = conn
+        .execute(
+            "DELETE FROM xfactor_observations WHERE timestamp_ms < ?1",
+            [xfactor_cutoff],
+        )
+        .unwrap_or(0);
+
     Json(json!({
         "success": true,
         "payloadsDeleted": payloads_deleted,
         "requestsDeleted": requests_deleted,
+        "xfactorDeleted": xfactor_deleted,
         "payloadRetentionDays": payload_days,
-        "requestRetentionDays": request_days
+        "requestRetentionDays": request_days,
+        "xfactorRetentionDays": xfactor_days
     }))
     .into_response()
 }

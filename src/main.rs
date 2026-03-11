@@ -12,6 +12,7 @@ use bccf_core::init_logging;
 use bccf_core::state::AppStateBuilder;
 use bccf_database::paths::{ensure_db_dir, resolve_db_path};
 use bccf_database::pool::{create_pool, PoolConfig};
+use bccf_database::retention::{self as retention_svc, RetentionConfig};
 use bccf_database::schema;
 use bccf_providers::usage_polling::{
     AccountSource, PollableAccount, RefreshedToken, UsageCache, UsagePollingService,
@@ -122,6 +123,14 @@ async fn run(cli: Cli) -> Result<()> {
     // Start X-factor background service (restores state, runs 95s update loop)
     bccf_proxy::xfactor::start(xfactor_cache.clone(), usage_cache.clone(), pool.clone());
 
+    // Start data retention service (runs immediately, then every 24h)
+    let retention_config = RetentionConfig {
+        data_retention_days: config.get_data_retention_days(),
+        request_retention_days: config.get_request_retention_days(),
+        xfactor_retention_days: config.get_xfactor_retention_days(),
+    };
+    let retention_task = retention_svc::spawn(bg_pool.clone(), retention_config);
+
     let state = Arc::new(
         AppStateBuilder::new(config)
             .db_pool(pool)
@@ -178,6 +187,9 @@ async fn run(cli: Cli) -> Result<()> {
     });
     coordinator.register("token health service", move || async move {
         token_health_svc.stop();
+    });
+    coordinator.register("retention service", move || async move {
+        retention_task.shutdown().await;
     });
 
     bccf_proxy::server::start(state, server_config, coordinator).await?;
