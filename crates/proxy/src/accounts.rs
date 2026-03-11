@@ -565,24 +565,25 @@ pub async fn set_custom_endpoint(
 ) -> Response {
     let conn = get_conn!(state);
 
-    let endpoint = body
+    let raw_endpoint = body
         .get("endpoint")
         .and_then(|v| v.as_str())
         .map(|s| s.trim());
 
-    // Empty string clears the endpoint
-    let endpoint = match endpoint {
+    // Empty string clears the endpoint; non-empty string is validated for SSRF.
+    let endpoint: Option<String> = match raw_endpoint {
         Some(e) if e.is_empty() => None,
         Some(e) => {
-            // Basic URL validation
-            if !e.starts_with("http://") && !e.starts_with("https://") {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "Endpoint must start with http:// or https://"})),
-                )
-                    .into_response();
+            match bccf_core::validation::validate_custom_endpoint(e) {
+                Ok(validated) => Some(validated),
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": err.to_string()})),
+                    )
+                        .into_response();
+                }
             }
-            Some(e)
         }
         None => None,
     };
@@ -606,7 +607,7 @@ pub async fn set_custom_endpoint(
         }
     }
 
-    if let Err(e) = account_repo::set_custom_endpoint(&conn, &account_id, endpoint) {
+    if let Err(e) = account_repo::set_custom_endpoint(&conn, &account_id, endpoint.as_deref()) {
         warn!("Failed to set custom_endpoint for {account_id}: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,

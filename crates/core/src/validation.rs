@@ -149,6 +149,128 @@ pub fn validate_endpoint_url(url: &str, field: &str) -> Result<String, AppError>
     Ok(trimmed.to_string())
 }
 
+/// Validate a custom provider endpoint URL with SSRF protection.
+///
+/// Rules:
+/// - Must use HTTPS (HTTP rejected to prevent credential leakage over plaintext)
+/// - Must not target localhost, loopback, or RFC1918 private ranges
+/// - Must have a non-empty hostname
+///
+/// Returns the trimmed URL on success.
+pub fn validate_custom_endpoint(url: &str) -> Result<String, AppError> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(AppError::validation_field(
+            "custom_endpoint is required",
+            "custom_endpoint",
+        ));
+    }
+
+    // Require HTTPS — reject plain HTTP to prevent credential exposure.
+    if !trimmed.starts_with("https://") {
+        return Err(AppError::validation_field(
+            "custom_endpoint must use HTTPS",
+            "custom_endpoint",
+        ));
+    }
+
+    // Extract the authority (host[:port]) from the URL.
+    let after_scheme = trimmed.strip_prefix("https://").unwrap_or_default();
+    // Authority ends at '/', '?', or '#'.
+    let authority = after_scheme
+        .split(|c| c == '/' || c == '?' || c == '#')
+        .next()
+        .unwrap_or(after_scheme);
+    // Strip optional user-info (user:pass@host).
+    let host_port = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority);
+    // Strip port suffix.
+    let host = if host_port.starts_with('[') {
+        // IPv6 literal: [::1]:port or [::1]
+        host_port
+            .split(']')
+            .next()
+            .and_then(|s| s.strip_prefix('['))
+            .unwrap_or(host_port)
+    } else {
+        host_port
+            .rsplitn(2, ':')
+            .last()
+            .unwrap_or(host_port)
+    };
+
+    if host.is_empty() {
+        return Err(AppError::validation_field(
+            "custom_endpoint must have a valid hostname",
+            "custom_endpoint",
+        ));
+    }
+
+    // Reject SSRF targets: localhost, loopback, and RFC1918 private ranges.
+    if is_ssrf_target(host) {
+        return Err(AppError::validation_field(
+            "custom_endpoint must not target private or loopback addresses",
+            "custom_endpoint",
+        ));
+    }
+
+    Ok(trimmed.to_string())
+}
+
+/// Returns true if the hostname/IP would be an SSRF target.
+fn is_ssrf_target(host: &str) -> bool {
+    let lower = host.to_ascii_lowercase();
+
+    // Localhost names
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return true;
+    }
+
+    // Try parsing as an IPv4 address
+    if let Ok(addr) = lower.parse::<std::net::Ipv4Addr>() {
+        return is_private_ipv4(addr);
+    }
+
+    // Try parsing as an IPv6 address
+    if let Ok(addr) = lower.parse::<std::net::Ipv6Addr>() {
+        return addr.is_loopback() || addr.is_unspecified();
+    }
+
+    false
+}
+
+/// Returns true for IPv4 loopback and RFC1918 private ranges.
+fn is_private_ipv4(addr: std::net::Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    // 127.x.x.x — loopback
+    if octets[0] == 127 {
+        return true;
+    }
+    // 0.0.0.0 — unspecified
+    if octets == [0, 0, 0, 0] {
+        return true;
+    }
+    // 10.x.x.x
+    if octets[0] == 10 {
+        return true;
+    }
+    // 172.16.x.x – 172.31.x.x
+    if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+        return true;
+    }
+    // 192.168.x.x
+    if octets[0] == 192 && octets[1] == 168 {
+        return true;
+    }
+    // 169.254.x.x — link-local
+    if octets[0] == 169 && octets[1] == 254 {
+        return true;
+    }
+    false
+}
+
 /// Validate an API key format (basic length check).
 pub fn validate_api_key(api_key: &str, field: &str) -> Result<String, AppError> {
     let trimmed = api_key.trim();
@@ -277,6 +399,57 @@ mod tests {
         assert!(validate_priority(100).is_ok());
         assert!(validate_priority(-1).is_err());
         assert!(validate_priority(101).is_err());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_valid() {
+        assert_eq!(
+            validate_custom_endpoint("https://api.anthropic.com/").unwrap(),
+            "https://api.anthropic.com"
+        );
+        assert_eq!(
+            validate_custom_endpoint("https://my-proxy.example.com/v1").unwrap(),
+            "https://my-proxy.example.com/v1"
+        );
+        // Explicit public IP is fine
+        assert!(validate_custom_endpoint("https://1.2.3.4").is_ok());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_rejects_http() {
+        assert!(validate_custom_endpoint("http://api.example.com").is_err());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_rejects_localhost() {
+        assert!(validate_custom_endpoint("https://localhost/v1").is_err());
+        assert!(validate_custom_endpoint("https://localhost:8080/v1").is_err());
+        assert!(validate_custom_endpoint("https://sub.localhost").is_err());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_rejects_loopback_ip() {
+        assert!(validate_custom_endpoint("https://127.0.0.1").is_err());
+        assert!(validate_custom_endpoint("https://127.1.2.3").is_err());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_rejects_rfc1918() {
+        assert!(validate_custom_endpoint("https://10.0.0.1").is_err());
+        assert!(validate_custom_endpoint("https://172.16.0.1").is_err());
+        assert!(validate_custom_endpoint("https://172.31.255.255").is_err());
+        assert!(validate_custom_endpoint("https://192.168.1.1").is_err());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_rejects_link_local() {
+        assert!(validate_custom_endpoint("https://169.254.0.1").is_err());
+    }
+
+    #[test]
+    fn validate_custom_endpoint_rejects_empty() {
+        assert!(validate_custom_endpoint("").is_err());
+        assert!(validate_custom_endpoint("   ").is_err());
     }
 
     #[test]
