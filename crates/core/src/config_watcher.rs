@@ -51,6 +51,8 @@ fn diff_config_fields(
     check_field!(db_retry_backoff);
     check_field!(db_retry_max_delay_ms);
     check_field!(metrics_enabled);
+    check_field!(allow_unauthenticated);
+    check_field!(xfactor_retention_days);
 
     changed
 }
@@ -373,10 +375,11 @@ mod tests {
             db_retry_max_delay_ms: Some(10000),
             metrics_enabled: Some(true),
             allow_unauthenticated: Some(true),
+            xfactor_retention_days: Some(90),
         };
 
         let changed = diff_config_fields(&old, &new);
-        assert_eq!(changed.len(), 20, "All 20 fields should differ");
+        assert_eq!(changed.len(), 22, "All 22 fields should differ");
     }
 
     #[tokio::test]

@@ -194,6 +194,36 @@ pub struct AddAccountOptions {
 // API key types
 // ---------------------------------------------------------------------------
 
+/// Scope of an API key — determines which endpoints it can access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyScope {
+    /// Full access — management API (`/api/*`) plus proxy endpoints (`/v1/*`).
+    #[default]
+    Admin,
+    /// Restricted access — proxy endpoints only (`/v1/*`).
+    /// Cannot access `/api/*` management endpoints.
+    Proxy,
+}
+
+impl KeyScope {
+    /// Parse from DB string (unknown values default to `Admin`).
+    pub fn from_db(s: &str) -> Self {
+        match s {
+            "proxy" => Self::Proxy,
+            _ => Self::Admin,
+        }
+    }
+
+    /// Serialize to DB string.
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Proxy => "proxy",
+        }
+    }
+}
+
 /// Domain model for API keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -205,6 +235,7 @@ pub struct ApiKey {
     pub last_used: Option<i64>,
     pub usage_count: i64,
     pub is_active: bool,
+    pub scope: KeyScope,
 }
 
 /// API response for API keys (sensitive data excluded).
@@ -218,6 +249,7 @@ pub struct ApiKeyResponse {
     pub last_used: Option<String>,
     pub usage_count: i64,
     pub is_active: bool,
+    pub scope: KeyScope,
 }
 
 // ---------------------------------------------------------------------------

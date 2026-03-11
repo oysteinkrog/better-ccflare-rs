@@ -6,9 +6,7 @@
 //! back to clients, and sends analytics to the post-processor.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
-
-use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Body;
@@ -39,35 +37,27 @@ use crate::token_manager::TokenManager;
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// TTL for cached accounts list (seconds).
-/// Disabled during integration tests to avoid cross-test interference.
-#[cfg(not(feature = "integration"))]
 const ACCOUNTS_CACHE_TTL_SECS: u64 = 5;
-#[cfg(feature = "integration")]
-const ACCOUNTS_CACHE_TTL_SECS: u64 = 0;
 
 // ---------------------------------------------------------------------------
-// Accounts cache — avoids DB query per request
+// Accounts cache — per-AppState to avoid cross-test interference
 // ---------------------------------------------------------------------------
 
-struct CachedAccounts {
-    accounts: Arc<Vec<bccf_core::types::Account>>,
-    fetched_at: Instant,
-}
+/// The cache type stored inside `AppState::accounts_cache`.
+type AccountsCacheSlot = Option<(Arc<Vec<bccf_core::types::Account>>, Instant)>;
 
-fn accounts_cache() -> &'static RwLock<Option<CachedAccounts>> {
-    static CACHE: OnceLock<RwLock<Option<CachedAccounts>>> = OnceLock::new();
-    CACHE.get_or_init(|| RwLock::new(None))
-}
-
-/// Get accounts, using cache if fresh enough, otherwise query DB.
+/// Get accounts, using the per-state cache if fresh enough, otherwise query DB.
 /// Returns Arc to avoid cloning 10+ Account structs on every cache hit.
-async fn get_accounts_cached(pool: &DbPool) -> Result<Arc<Vec<bccf_core::types::Account>>, String> {
-    // Check cache (read lock) — Arc::clone is a single atomic op
+async fn get_accounts_cached(
+    pool: &DbPool,
+    state: &AppState,
+) -> Result<Arc<Vec<bccf_core::types::Account>>, String> {
+    // Check cache (std::sync::Mutex — never held across await points)
     {
-        let cache = accounts_cache().read();
-        if let Some(ref entry) = *cache {
-            if entry.fetched_at.elapsed().as_secs() < ACCOUNTS_CACHE_TTL_SECS {
-                return Ok(Arc::clone(&entry.accounts));
+        let cache = state.accounts_cache.lock().unwrap();
+        if let Some((ref accounts, fetched_at)) = *cache {
+            if fetched_at.elapsed().as_secs() < ACCOUNTS_CACHE_TTL_SECS {
+                return Ok(Arc::clone(accounts));
             }
         }
     }
@@ -83,12 +73,8 @@ async fn get_accounts_cached(pool: &DbPool) -> Result<Arc<Vec<bccf_core::types::
     match result {
         Ok(Ok(accounts)) => {
             let accounts = Arc::new(accounts);
-            // Update cache
-            let mut cache = accounts_cache().write();
-            *cache = Some(CachedAccounts {
-                accounts: Arc::clone(&accounts),
-                fetched_at: Instant::now(),
-            });
+            let mut cache = state.accounts_cache.lock().unwrap();
+            *cache = Some((Arc::clone(&accounts), Instant::now()));
             Ok(accounts)
         }
         Ok(Err(e)) => Err(format!("Failed to load accounts: {e}")),
@@ -165,8 +151,8 @@ pub async fn proxy_handler(
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "Database not available");
     };
 
-    // Load accounts (cached — avoids DB query per request)
-    let accounts = match get_accounts_cached(pool).await {
+    // Load accounts (per-state cache — avoids DB query per request)
+    let accounts = match get_accounts_cached(pool, &state).await {
         Ok(accs) => accs,
         Err(e) => {
             error!("{e}");
@@ -826,10 +812,11 @@ fn should_forward_response_header(name: &str, _is_streaming: bool) -> bool {
         return true;
     }
 
-    // Anthropic-specific headers: rate limits, request metadata
+    // Anthropic-specific headers and rate limit headers
     // Forward any header starting with "anthropic-" so new API headers pass through.
+    // Forward "x-ratelimit-*" so clients can observe Anthropic's rate limit state.
     let lower = name.to_ascii_lowercase();
-    if lower.starts_with("anthropic-") {
+    if lower.starts_with("anthropic-") || lower.starts_with("x-ratelimit-") {
         return true;
     }
 

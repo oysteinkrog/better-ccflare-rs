@@ -88,6 +88,12 @@ pub fn run_column_migrations(conn: &Connection) -> Result<(), DbError> {
         [],
     );
 
+    // scope — API key scope: 'admin' (full access) or 'proxy' (proxy endpoints only)
+    let _ = conn.execute(
+        "ALTER TABLE api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'admin'",
+        [],
+    );
+
     Ok(())
 }
 
@@ -191,7 +197,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
     last_used INTEGER,
     usage_count INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1
+    is_active INTEGER DEFAULT 1,
+    scope TEXT NOT NULL DEFAULT 'admin'
 );
 
 CREATE TABLE IF NOT EXISTS strategies (

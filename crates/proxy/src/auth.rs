@@ -20,6 +20,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use tracing::debug;
 
+use bccf_core::types::KeyScope;
 use bccf_core::AppState;
 use bccf_database::DbPool;
 
@@ -32,6 +33,8 @@ pub struct AuthInfo {
     pub api_key_id: Option<String>,
     /// Name of the API key used (if any).
     pub api_key_name: Option<String>,
+    /// Scope of the API key used (if any). None for dashboard-password auth.
+    pub key_scope: Option<KeyScope>,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,8 +54,8 @@ const AUTH_ENABLED_CACHE_TTL_SECS: u64 = 10;
 const API_KEY_CACHE_MAX_SIZE: usize = 1000;
 
 struct CachedKeyResult {
-    /// Some((id, name)) for successful verifications; None for failed ones.
-    result: Option<(String, String)>,
+    /// Some((id, name, scope)) for successful verifications; None for failed ones.
+    result: Option<(String, String, KeyScope)>,
     verified_at: Instant,
 }
 
@@ -251,29 +254,32 @@ fn is_path_exempt(path: &str, _method: &str) -> bool {
 ///
 /// Supports both scrypt hashes (salt:hash format) and legacy SHA-256 hashes.
 /// Uses constant-time comparison to prevent timing attacks.
-fn verify_api_key_sync(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
+fn verify_api_key_sync(pool: &DbPool, api_key: &str) -> Option<(String, String, KeyScope)> {
     let conn = pool.get().ok()?;
 
-    // Get all active API keys
+    // Get all active API keys (including scope for access control)
     let mut stmt = conn
-        .prepare("SELECT id, name, hashed_key FROM api_keys WHERE is_active = 1")
+        .prepare("SELECT id, name, hashed_key, scope FROM api_keys WHERE is_active = 1")
         .ok()?;
 
-    let keys: Vec<(String, String, String)> = stmt
+    let keys: Vec<(String, String, String, String)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
             ))
         })
         .ok()?
         .filter_map(|r| r.ok())
         .collect();
 
-    for (id, name, stored_hash) in &keys {
+    for (id, name, stored_hash, scope_str) in &keys {
         match crate::crypto::verify_api_key(api_key, stored_hash) {
-            Ok(true) => return Some((id.clone(), name.clone())),
+            Ok(true) => {
+                return Some((id.clone(), name.clone(), KeyScope::from_db(scope_str)))
+            }
             _ => continue,
         }
     }
@@ -353,7 +359,7 @@ fn hash_for_cache(api_key: &str) -> String {
 /// Both successful and failed verifications are cached to prevent O(N) scrypt DoS
 /// from repeated invalid keys. Successful results are cached for 5 minutes;
 /// failed results are cached for 30 seconds.
-async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, String)> {
+async fn verify_api_key_cached(pool: &DbPool, api_key: &str) -> Option<(String, String, KeyScope)> {
     let cache_key = hash_for_cache(api_key);
 
     // Check cache (read lock — concurrent readers allowed)
@@ -424,6 +430,15 @@ pub async fn auth_middleware(
 
     // Check if path is exempt
     if is_path_exempt(&path, &method) {
+        req.extensions_mut().insert(AuthInfo {
+            is_authenticated: true,
+            ..Default::default()
+        });
+        return next.run(req).await;
+    }
+
+    // Explicit opt-in bypass (dev/testing only — never enable in production)
+    if state.config().is_allow_unauthenticated() {
         req.extensions_mut().insert(AuthInfo {
             is_authenticated: true,
             ..Default::default()
@@ -540,12 +555,22 @@ pub async fn auth_middleware(
     if auth_enabled {
         if let Some(ref key) = api_key {
             if let Some(pool) = pool {
-                if let Some((id, name)) = verify_api_key_cached(pool, key).await {
-                    debug!("Auth success: key={name} path={path}");
+                if let Some((id, name, scope)) = verify_api_key_cached(pool, key).await {
+                    // Enforce scope: proxy-scoped keys cannot access management endpoints.
+                    let normalized = normalize_path(&path);
+                    if scope == KeyScope::Proxy && normalized.starts_with("/api/") {
+                        debug!("Auth denied: proxy-scoped key={name} attempted /api/ access at {path}");
+                        return crate::handler::error_response(
+                            StatusCode::FORBIDDEN,
+                            "This API key does not have permission to access management endpoints",
+                        );
+                    }
+                    debug!("Auth success: key={name} scope={scope:?} path={path}");
                     req.extensions_mut().insert(AuthInfo {
                         is_authenticated: true,
                         api_key_id: Some(id),
                         api_key_name: Some(name),
+                        key_scope: Some(scope),
                     });
                     return next.run(req).await;
                 }

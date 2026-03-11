@@ -90,6 +90,14 @@ pub struct AppState {
     /// Broadcast event bus for real-time updates.
     pub event_bus: Arc<EventBus>,
 
+    /// Per-state accounts list cache for the proxy handler.
+    ///
+    /// Stored here (not as a global static) so each AppState instance — and
+    /// therefore each integration test — has its own independent cache.
+    /// Holds `(accounts_snapshot, fetched_at)`.  The proxy crate populates
+    /// this via `accounts_cache()`.
+    pub accounts_cache: Arc<std::sync::Mutex<Option<(Arc<Vec<crate::types::Account>>, std::time::Instant)>>>,
+
     // -- Fields below are set via builder; Option means "not yet wired" --
     /// Database connection pool (from bccf-database).
     /// Stored as `Box<dyn Any + Send + Sync>` to avoid coupling core to r2d2.
@@ -126,6 +134,7 @@ impl AppState {
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             event_bus: Arc::new(EventBus::default()),
+            accounts_cache: Arc::new(std::sync::Mutex::new(None)),
             db_pool: None,
             async_writer: None,
             provider_registry: None,
@@ -309,6 +318,7 @@ impl std::fmt::Debug for AppState {
         f.debug_struct("AppState")
             .field("config", &"<ArcSwap<Config>>")
             .field("event_bus", &self.event_bus)
+            .field("accounts_cache", &"<cache>")
             .field("db_pool", &self.db_pool.is_some())
             .field("async_writer", &self.async_writer.is_some())
             .field("provider_registry", &self.provider_registry.is_some())

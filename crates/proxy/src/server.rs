@@ -895,8 +895,22 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state() -> Arc<AppState> {
+        // Use a unique file per invocation to avoid parallel-test races.
+        static COUNTER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/bccf-test-server-unauth-{id}.json"
+        ));
+        std::fs::write(&path, r#"{"allow_unauthenticated": true}"#).unwrap();
+        let config = Config::load(Some(path)).unwrap();
+        Arc::new(AppState::new(config))
+    }
+
+    /// State with default config (auth enabled, loopback enforcement active).
+    fn restricted_test_state() -> Arc<AppState> {
         let config = Config::load(Some(std::path::PathBuf::from(
-            "/tmp/bccf-test-server-nonexistent/config.json",
+            "/tmp/bccf-test-server-nonexistent-restricted/config.json",
         )))
         .unwrap();
         Arc::new(AppState::new(config))
@@ -1064,8 +1078,9 @@ mod tests {
 
     #[tokio::test]
     async fn enforce_loopback_no_db_no_keys() {
-        // No DB pool → 0 keys → should force loopback (unless allow_unauthenticated)
-        let state = test_state();
+        // No DB pool → 0 keys → should force loopback.
+        // Uses restricted_test_state (default config, no allow_unauthenticated bypass).
+        let state = restricted_test_state();
         let config = ServerConfig {
             host: "0.0.0.0".to_string(),
             ..Default::default()

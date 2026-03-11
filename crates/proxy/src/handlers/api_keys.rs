@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
-use bccf_core::types::{ApiKey, ApiKeyResponse};
+use bccf_core::types::{ApiKey, ApiKeyResponse, KeyScope};
 use bccf_core::AppState;
 use bccf_database::repositories::api_key as api_key_repo;
 use bccf_database::DbPool;
@@ -63,6 +63,7 @@ fn to_api_key_response(key: &ApiKey) -> ApiKeyResponse {
             .map(|dt| dt.to_rfc3339()),
         usage_count: key.usage_count,
         is_active: key.is_active,
+        scope: key.scope,
     }
 }
 
@@ -73,6 +74,8 @@ fn to_api_key_response(key: &ApiKey) -> ApiKeyResponse {
 #[derive(Deserialize)]
 pub struct GenerateKeyRequest {
     name: Option<String>,
+    #[serde(default)]
+    scope: KeyScope,
 }
 
 /// POST /api/keys — generate a new API key.
@@ -122,6 +125,7 @@ pub async fn generate_key(
         last_used: None,
         usage_count: 0,
         is_active: true,
+        scope: body.scope,
     };
 
     if let Err(e) = api_key_repo::create(&conn, &key) {

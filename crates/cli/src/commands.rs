@@ -640,6 +640,7 @@ pub fn generate_api_key(pool: &DbPool, name: &str) -> Result<()> {
         last_used: None,
         usage_count: 0,
         is_active: true,
+        scope: bccf_core::types::KeyScope::Admin,
     };
 
     api_key::create(&conn, &key)?;

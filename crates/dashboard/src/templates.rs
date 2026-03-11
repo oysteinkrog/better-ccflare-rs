@@ -473,6 +473,7 @@ mod tests {
             tabs: TABS,
             active_tab: "overview",
             tab_content: "<h2>Overview</h2>",
+            dashboard_api_key: None,
         };
         let html = tpl.render().unwrap();
         assert!(html.contains("better-ccflare"));

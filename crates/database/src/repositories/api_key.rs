@@ -4,7 +4,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use bccf_core::types::ApiKey;
+use bccf_core::types::{ApiKey, KeyScope};
 
 use crate::error::DbError;
 
@@ -22,12 +22,16 @@ fn row_to_api_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
         last_used: row.get("last_used")?,
         usage_count: row.get::<_, Option<i64>>("usage_count")?.unwrap_or(0),
         is_active: row.get::<_, i64>("is_active")? != 0,
+        scope: {
+            let s: String = row.get::<_, Option<String>>("scope")?.unwrap_or_default();
+            KeyScope::from_db(&s)
+        },
     })
 }
 
 const API_KEY_SELECT: &str = "
     SELECT id, name, hashed_key, prefix_last_8, created_at,
-           last_used, usage_count, is_active
+           last_used, usage_count, is_active, scope
     FROM api_keys
 ";
 
@@ -119,8 +123,8 @@ pub fn count_all(conn: &Connection) -> Result<i64, DbError> {
 /// Create a new API key.
 pub fn create(conn: &Connection, key: &ApiKey) -> Result<(), DbError> {
     conn.execute(
-        "INSERT INTO api_keys (id, name, hashed_key, prefix_last_8, created_at, last_used, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO api_keys (id, name, hashed_key, prefix_last_8, created_at, last_used, is_active, scope)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             key.id,
             key.name,
@@ -129,6 +133,7 @@ pub fn create(conn: &Connection, key: &ApiKey) -> Result<(), DbError> {
             key.created_at,
             key.last_used,
             key.is_active as i64,
+            key.scope.as_db(),
         ],
     )?;
     Ok(())
@@ -195,6 +200,7 @@ mod tests {
             last_used: None,
             usage_count: 0,
             is_active: true,
+            scope: KeyScope::Admin,
         }
     }
 
