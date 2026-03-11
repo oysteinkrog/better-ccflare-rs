@@ -108,6 +108,25 @@ pub async fn proxy_handler(
         return error_response(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
 
+    // Acquire a global concurrency slot. Non-blocking: returns 429 immediately
+    // when the semaphore is exhausted rather than queuing the request.
+    let _concurrency_permit = if let Some(sem) = state.concurrency_semaphore() {
+        match Arc::clone(sem).try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                let mut resp =
+                    error_response(StatusCode::TOO_MANY_REQUESTS, "Too many concurrent requests");
+                resp.headers_mut().insert(
+                    "retry-after",
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return resp;
+            }
+        }
+    } else {
+        None
+    };
+
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();

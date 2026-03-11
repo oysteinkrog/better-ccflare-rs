@@ -565,6 +565,23 @@ pub async fn auth_middleware(
                             "This API key does not have permission to access management endpoints",
                         );
                     }
+                    // Per-key RPM check (sliding 60-second window).
+                    if let Some(rpm_limit) =
+                        state.config().get_max_requests_per_minute_per_key()
+                    {
+                        if !state.rpm_tracker().check_and_record(&id, rpm_limit) {
+                            debug!("Rate limited: key={name} rpm_limit={rpm_limit}");
+                            let mut resp = crate::handler::error_response(
+                                StatusCode::TOO_MANY_REQUESTS,
+                                "API key rate limit exceeded",
+                            );
+                            resp.headers_mut().insert(
+                                "retry-after",
+                                axum::http::HeaderValue::from_static("60"),
+                            );
+                            return resp;
+                        }
+                    }
                     debug!("Auth success: key={name} scope={scope:?} path={path}");
                     req.extensions_mut().insert(AuthInfo {
                         is_authenticated: true,

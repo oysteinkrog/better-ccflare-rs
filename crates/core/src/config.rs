@@ -59,6 +59,15 @@ pub struct ConfigData {
     /// in config.json to allow binding to all interfaces without API keys.
     #[serde(default)]
     pub allow_unauthenticated: Option<bool>,
+    // Rate limiting
+    /// Maximum number of concurrent in-flight proxy requests. None means no cap.
+    /// Set `MAX_CONCURRENT_REQUESTS` env var or `"max_concurrent_requests"` in config.json.
+    #[serde(default)]
+    pub max_concurrent_requests: Option<usize>,
+    /// Per-API-key requests-per-minute limit. None means no limit.
+    /// Set `MAX_REQUESTS_PER_MINUTE_PER_KEY` env var or `"max_requests_per_minute_per_key"` in config.json.
+    #[serde(default)]
+    pub max_requests_per_minute_per_key: Option<u32>,
 }
 
 /// Runtime configuration with resolved defaults.
@@ -238,6 +247,32 @@ impl Config {
             return v == "1" || v.eq_ignore_ascii_case("true");
         }
         self.data.allow_unauthenticated.unwrap_or(false)
+    }
+
+    /// Maximum concurrent in-flight proxy requests. Returns `None` for no cap.
+    /// Env override: `MAX_CONCURRENT_REQUESTS` (positive integer).
+    pub fn get_max_concurrent_requests(&self) -> Option<usize> {
+        if let Ok(v) = std::env::var("MAX_CONCURRENT_REQUESTS") {
+            if let Ok(n) = v.parse::<usize>() {
+                if n > 0 {
+                    return Some(n);
+                }
+            }
+        }
+        self.data.max_concurrent_requests.filter(|&n| n > 0)
+    }
+
+    /// Per-API-key requests-per-minute limit. Returns `None` for no limit.
+    /// Env override: `MAX_REQUESTS_PER_MINUTE_PER_KEY` (positive integer).
+    pub fn get_max_requests_per_minute_per_key(&self) -> Option<u32> {
+        if let Ok(v) = std::env::var("MAX_REQUESTS_PER_MINUTE_PER_KEY") {
+            if let Ok(n) = v.parse::<u32>() {
+                if n > 0 {
+                    return Some(n);
+                }
+            }
+        }
+        self.data.max_requests_per_minute_per_key.filter(|&n| n > 0)
     }
 
     pub fn get_request_retention_days(&self) -> u32 {

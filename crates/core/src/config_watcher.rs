@@ -53,6 +53,8 @@ fn diff_config_fields(
     check_field!(metrics_enabled);
     check_field!(allow_unauthenticated);
     check_field!(xfactor_retention_days);
+    check_field!(max_concurrent_requests);
+    check_field!(max_requests_per_minute_per_key);
 
     changed
 }
@@ -376,10 +378,12 @@ mod tests {
             metrics_enabled: Some(true),
             allow_unauthenticated: Some(true),
             xfactor_retention_days: Some(90),
+            max_concurrent_requests: Some(50),
+            max_requests_per_minute_per_key: Some(60),
         };
 
         let changed = diff_config_fields(&old, &new);
-        assert_eq!(changed.len(), 22, "All 22 fields should differ");
+        assert_eq!(changed.len(), 24, "All 24 fields should differ");
     }
 
     #[tokio::test]

@@ -126,11 +126,20 @@ pub struct AppState {
 
     /// X-factor capacity estimation cache (per-account Bayesian state).
     xfactor_cache: Option<Box<dyn std::any::Any + Send + Sync>>,
+
+    /// Global concurrency cap semaphore. `None` when no cap is configured.
+    concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+
+    /// Per-API-key sliding-window RPM tracker (always present).
+    rpm_tracker: Arc<crate::rate_limit::RpmTracker>,
 }
 
 impl AppState {
     /// Create a new AppState with the given config.
     pub fn new(config: Config) -> Self {
+        let concurrency_semaphore = config
+            .get_max_concurrent_requests()
+            .map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
         Self {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             event_bus: Arc::new(EventBus::default()),
@@ -144,6 +153,8 @@ impl AppState {
             usage_cache: None,
             http_client: None,
             xfactor_cache: None,
+            concurrency_semaphore,
+            rpm_tracker: Arc::new(crate::rate_limit::RpmTracker::new()),
         }
     }
 
@@ -225,6 +236,16 @@ impl AppState {
             .as_ref()
             .and_then(|b| b.downcast_ref::<T>())
     }
+
+    /// Get the global concurrency semaphore, if a cap is configured.
+    pub fn concurrency_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
+        self.concurrency_semaphore.as_ref()
+    }
+
+    /// Get the per-key sliding-window RPM tracker.
+    pub fn rpm_tracker(&self) -> &Arc<crate::rate_limit::RpmTracker> {
+        &self.rpm_tracker
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +324,16 @@ impl AppStateBuilder {
         self
     }
 
+    /// Override the global concurrency limit. Pass `0` to disable.
+    pub fn concurrency_limit(mut self, limit: usize) -> Self {
+        self.state.concurrency_semaphore = if limit > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(limit)))
+        } else {
+            None
+        };
+        self
+    }
+
     /// Build the final `AppState`.
     pub fn build(self) -> AppState {
         self.state
@@ -328,6 +359,8 @@ impl std::fmt::Debug for AppState {
             .field("usage_cache", &self.usage_cache.is_some())
             .field("http_client", &self.http_client.is_some())
             .field("xfactor_cache", &self.xfactor_cache.is_some())
+            .field("concurrency_semaphore", &self.concurrency_semaphore.is_some())
+            .field("rpm_tracker", &"<RpmTracker>")
             .finish()
     }
 }
