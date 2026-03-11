@@ -170,10 +170,21 @@ pub async fn proxy_handler(
     // Get load balancer
     let load_balancer = state.load_balancer::<SessionStrategy>();
 
-    // Build selection metadata from headers
-    let selection_meta = SelectionMeta {
-        force_account_id: get_force_account_id(&headers),
-        bypass_session: is_session_bypass(&headers),
+    // Build selection metadata from headers.
+    // Proxy-scoped keys must not be able to influence routing decisions:
+    // strip force-account and session-bypass hints so they cannot target
+    // specific accounts or bypass session limits.
+    let is_proxy_key = auth_info.key_scope == Some(bccf_core::types::KeyScope::Proxy);
+    let selection_meta = if is_proxy_key {
+        SelectionMeta {
+            force_account_id: None,
+            bypass_session: false,
+        }
+    } else {
+        SelectionMeta {
+            force_account_id: get_force_account_id(&headers),
+            bypass_session: is_session_bypass(&headers),
+        }
     };
 
     // Build per-account usage map for the load balancer

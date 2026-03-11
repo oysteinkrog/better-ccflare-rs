@@ -17,7 +17,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use bccf_core::config::Config;
 use bccf_core::state::AppStateBuilder;
-use bccf_core::types::Account;
+use bccf_core::types::{Account, KeyScope};
+use bccf_proxy::auth::AuthInfo;
 use bccf_database::pool::{create_memory_pool, PoolConfig};
 use bccf_database::repositories::account as account_repo;
 use bccf_database::DbPool;
@@ -541,5 +542,75 @@ async fn proxy_removes_hop_by_hop_headers() {
     assert!(
         host.as_deref() != Some("should-be-removed.example.com"),
         "Client's host header must not be forwarded verbatim"
+    );
+}
+
+/// Proxy-scoped keys must not be able to use routing-control headers
+/// (`x-better-ccflare-account-id`, `x-better-ccflare-bypass-session`).
+/// Even when these headers are present, the proxy uses normal LB selection.
+#[tokio::test]
+async fn proxy_key_routing_headers_are_ignored() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": "msg-scope",
+                    "type": "message",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let (router, pool) = setup_with_mock(&mock_server.uri());
+    let conn = pool.get().unwrap();
+    account_repo::create(&conn, &make_account("acc-scope", "Scope", "sk-scope", 0)).unwrap();
+    drop(conn);
+
+    // Build request with routing-control headers and proxy-scoped AuthInfo.
+    // x-better-ccflare-account-id points to a non-existent account — if the
+    // proxy honours it and it overrides normal LB selection this would fail.
+    // With the fix, proxy-scoped keys have force_account_id=None so normal LB
+    // selection runs and the request succeeds.
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .header("x-better-ccflare-account-id", "nonexistent-account")
+        .header("x-better-ccflare-bypass-session", "true")
+        .body(Body::from(
+            serde_json::to_vec(&proxy_request_body()).unwrap(),
+        ))
+        .unwrap();
+
+    // Inject proxy-scoped AuthInfo via request extensions (bypasses auth middleware).
+    req.extensions_mut().insert(AuthInfo {
+        is_authenticated: true,
+        api_key_id: Some("key-proxy-test".to_string()),
+        api_key_name: Some("proxy-test".to_string()),
+        key_scope: Some(KeyScope::Proxy),
+    });
+
+    let resp = router.oneshot(req).await.unwrap();
+    // Request must succeed — routing headers were stripped and normal LB used.
+    assert_eq!(resp.status(), 200, "Proxy-scoped key must succeed despite routing headers");
+
+    // Verify the routing-control headers were NOT forwarded to upstream
+    let received = mock_server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let upstream_req = &received[0];
+    assert!(
+        upstream_req.headers.get("x-better-ccflare-account-id").is_none(),
+        "Routing-control header must not be forwarded to upstream"
+    );
+    assert!(
+        upstream_req.headers.get("x-better-ccflare-bypass-session").is_none(),
+        "Routing-control header must not be forwarded to upstream"
     );
 }
