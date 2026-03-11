@@ -88,6 +88,31 @@ pub fn create_pool(db_path: &std::path::Path, config: &PoolConfig) -> Result<DbP
     migrations::run_schema_migrations(&conn)?;
     schema::create_indexes(&conn)?;
 
+    // Enforce tight file permissions on the database file.
+    // New DB: chmod 0600 (owner read/write only).
+    // Existing DB: warn if group/other bits are set but don't change them.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(db_path) {
+            let mode = meta.permissions().mode() & 0o777;
+            if !already_initialized {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                if let Err(e) = std::fs::set_permissions(db_path, perms) {
+                    tracing::warn!(path = %db_path.display(), error = %e, "Failed to set database file permissions to 0600");
+                }
+            } else if mode & 0o044 != 0 {
+                tracing::warn!(
+                    path = %db_path.display(),
+                    current_mode = format!("{mode:04o}"),
+                    "Database file is group/world-readable. Consider: chmod 0600 {}",
+                    db_path.display()
+                );
+            }
+        }
+    }
+
     tracing::info!(
         path = %db_path.display(),
         pool_size = config.max_size,
