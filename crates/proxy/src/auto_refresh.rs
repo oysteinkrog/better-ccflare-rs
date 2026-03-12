@@ -63,6 +63,9 @@ pub trait RefreshAccountSource: Send + Sync + 'static {
 
     /// Get the list of active auto-refresh account IDs (for cleanup).
     fn get_active_refresh_account_ids(&self) -> Vec<String>;
+
+    /// Persist an auth-failure marker for UI/API status (default: no-op).
+    fn mark_auth_failed(&self, _account_id: &str, _http_status: u16) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +179,7 @@ impl AutoRefreshScheduler {
         account_source: Arc<dyn RefreshAccountSource>,
         proxy_port: u16,
         use_tls: bool,
+        internal_api_key: Option<String>,
     ) -> Self {
         let shutdown = Arc::new(Notify::new());
         let shutdown_rx = shutdown.clone();
@@ -205,6 +209,7 @@ impl AutoRefreshScheduler {
                             &client,
                             proxy_port,
                             use_tls,
+                            internal_api_key.as_deref(),
                         ).await;
                     }
                     _ = shutdown_rx.notified() => {
@@ -242,6 +247,7 @@ async fn check_and_refresh(
     client: &reqwest::Client,
     proxy_port: u16,
     use_tls: bool,
+    internal_api_key: Option<&str>,
 ) {
     // Try to acquire mutex — skip if previous check is still running
     let Ok(mut guard) = state.try_lock() else {
@@ -289,7 +295,7 @@ async fn check_and_refresh(
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
 
-        let result = send_dummy_request(client, account, proxy_port, use_tls).await;
+        let result = send_dummy_request(client, account, proxy_port, use_tls, internal_api_key).await;
 
         // Re-acquire the lock briefly just to record the result.
         if let Ok(mut guard) = state.try_lock() {
@@ -315,6 +321,18 @@ async fn check_and_refresh(
                         );
                     }
                 }
+                RefreshResult::AuthFailed(status) => {
+                    source.mark_auth_failed(&account.id, status);
+                    let failures = guard.record_failure(&account.id);
+                    if failures >= FAILURE_THRESHOLD {
+                        error!(
+                            account = %account.name,
+                            status = status,
+                            failures,
+                            "Account has exceeded failure threshold — re-authentication required"
+                        );
+                    }
+                }
             }
         }
     }
@@ -332,6 +350,8 @@ enum RefreshResult {
     RateLimited,
     /// Non-rate-limit failure (auth error, network error, all models failed).
     Failed,
+    /// Upstream auth failed (401/403) and should be surfaced immediately in UI/API.
+    AuthFailed(u16),
 }
 
 /// Send a dummy request through the proxy for a specific account.
@@ -343,6 +363,7 @@ async fn send_dummy_request(
     account: &RefreshableAccount,
     proxy_port: u16,
     use_tls: bool,
+    internal_api_key: Option<&str>,
 ) -> RefreshResult {
     let protocol = if use_tls { "https" } else { "http" };
     let endpoint = format!("{protocol}://localhost:{proxy_port}/v1/messages");
@@ -365,22 +386,23 @@ async fn send_dummy_request(
             "messages": [{"role": "user", "content": message}]
         });
 
-        let result = client
+        let mut req = client
             .post(&endpoint)
             .header("content-type", "application/json")
             .header("accept", "application/json")
             .header("anthropic-version", "2023-06-01")
             .header("x-better-ccflare-account-id", &account.id)
-            .header("x-better-ccflare-bypass-session", "true")
-            .json(&body)
-            .send()
-            .await;
+            .header("x-better-ccflare-force-account-strict", "true")
+            .header("x-better-ccflare-bypass-session", "true");
+        if let Some(key) = internal_api_key {
+            req = req.header("x-api-key", key);
+        }
+        let result = req.json(&body).send().await;
 
         match result {
             Ok(resp) if resp.status() == 429 || resp.status() == 503 => {
-                // The proxy returns 503 (not 429) when a force-pinned account
-                // is rate-limited, because the single-account failover list
-                // is exhausted. Treat both as upstream rate limiting.
+                // Strict force-account mode returns 503 (not 429) when the
+                // pinned account is exhausted. Treat both as rate limiting.
                 warn!(
                     account = %account.name,
                     model,
@@ -414,12 +436,34 @@ async fn send_dummy_request(
                     reset_time.or(Some(chrono::Utc::now().timestamp_millis())),
                 );
             }
-            Ok(resp) if resp.status() == 401 => {
+            Ok(resp) if resp.status() == 401 || resp.status() == 403 => {
+                let status = resp.status();
+                let has_upstream_headers = resp.headers().contains_key("anthropic-organization-id")
+                    || resp.headers().contains_key("request-id");
+                let body_text = resp.text().await.unwrap_or_default();
+                if !has_upstream_headers {
+                    error!(
+                        account = %account.name,
+                        status = %status,
+                        "Auto-refresh request was unauthorized before reaching upstream; not marking account auth-failed"
+                    );
+                    return RefreshResult::Failed;
+                }
+                // 401/403 can come from proxy auth (missing/invalid API key), not upstream account auth.
+                if body_text.contains("API key required") || body_text.contains("Invalid API key") {
+                    error!(
+                        account = %account.name,
+                        status = %status,
+                        "Auto-refresh request was rejected by proxy auth; check internal API key config"
+                    );
+                    return RefreshResult::Failed;
+                }
                 error!(
                     account = %account.name,
+                    status = %status,
                     "Authentication failed — account needs re-authentication"
                 );
-                return RefreshResult::Failed;
+                return RefreshResult::AuthFailed(status.as_u16());
             }
             Ok(resp) if resp.status() == 404 => {
                 debug!(
@@ -631,7 +675,7 @@ mod tests {
     #[tokio::test]
     async fn scheduler_starts_and_stops() {
         let source = Arc::new(MockRefreshSource);
-        let scheduler = AutoRefreshScheduler::start(source, 8080, false);
+        let scheduler = AutoRefreshScheduler::start(source, 8080, false, None);
         scheduler.shutdown().await;
     }
 
@@ -641,7 +685,7 @@ mod tests {
         let state = Arc::new(Mutex::new(SchedulerState::new()));
         let client = reqwest::Client::new();
 
-        check_and_refresh(&source, &state, &client, 8080, false).await;
+        check_and_refresh(&source, &state, &client, 8080, false, None).await;
         // Should not panic
     }
 
@@ -668,6 +712,6 @@ mod tests {
 
         // First call should try to refresh (first-time detection)
         // Will fail because no actual proxy is running, but shouldn't panic
-        check_and_refresh(&source, &state, &client, 19999, false).await;
+        check_and_refresh(&source, &state, &client, 19999, false, None).await;
     }
 }

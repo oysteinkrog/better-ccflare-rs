@@ -24,6 +24,20 @@ fn is_api_key_provider(provider: &str) -> bool {
     Provider::from_str_loose(provider).is_some_and(|p| p.uses_api_key())
 }
 
+/// Check whether a provider status string indicates upstream auth failure.
+fn is_auth_failure_status(status: Option<&str>) -> bool {
+    status.is_some_and(|s| {
+        let lowered = s.trim().to_ascii_lowercase();
+        lowered.starts_with("auth failed")
+            || lowered.starts_with("authentication failed")
+            || lowered.contains("unauthorized")
+            || lowered.contains("forbidden")
+            || lowered.contains("re-authentication")
+            || lowered.contains("reauth")
+            || lowered.contains("refresh token revoked")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -37,10 +51,7 @@ fn account_to_response(
     now: i64,
     usage: Option<&AnyUsageData>,
 ) -> AccountResponse {
-    let auth_failed = account
-        .rate_limit_status
-        .as_deref()
-        .is_some_and(|s| s.starts_with("Auth failed"));
+    let auth_failed = is_auth_failure_status(account.rate_limit_status.as_deref());
     let token_status = if is_api_key_provider(&account.provider) {
         TokenStatus::ApiKey
     } else {
@@ -1535,5 +1546,59 @@ mod tests {
         let resp = account_to_response(&account, now, None);
         assert_eq!(resp.session_info, "Active: 5 reqs");
         assert!(!resp.has_refresh_token); // empty refresh_token
+    }
+
+    #[test]
+    fn auth_failure_status_variants_are_detected() {
+        assert!(is_auth_failure_status(Some("Auth failed (401)")));
+        assert!(is_auth_failure_status(Some(
+            "Authentication failed — account needs re-authentication"
+        )));
+        assert!(is_auth_failure_status(Some("Unauthorized")));
+        assert!(is_auth_failure_status(Some("Forbidden")));
+        assert!(is_auth_failure_status(Some("Refresh token revoked")));
+        assert!(!is_auth_failure_status(Some("OK")));
+        assert!(!is_auth_failure_status(None));
+    }
+
+    #[test]
+    fn account_to_response_marks_auth_failed_as_expired() {
+        let now = 1700000000000_i64;
+        let account = Account {
+            id: "a1".to_string(),
+            name: "Test".to_string(),
+            provider: "anthropic".to_string(),
+            api_key: None,
+            refresh_token: "rt".to_string(),
+            access_token: Some("at".to_string()),
+            expires_at: Some(now + 3600_000),
+            request_count: 0,
+            total_requests: 0,
+            last_used: None,
+            created_at: now,
+            rate_limited_until: None,
+            session_start: None,
+            session_request_count: 0,
+            paused: false,
+            rate_limit_reset: None,
+            rate_limit_status: Some("Authentication failed — account needs re-authentication".to_string()),
+            rate_limit_remaining: None,
+            priority: 0,
+            auto_fallback_enabled: true,
+            auto_refresh_enabled: true,
+            custom_endpoint: None,
+            model_mappings: None,
+            reserve_5h: 0,
+            reserve_weekly: 0,
+            reserve_hard: false,
+            subscription_tier: None,
+            email: None,
+            refresh_token_updated_at: None,
+            is_shared: false,
+            overage_protection: true,
+        };
+
+        let resp = account_to_response(&account, now, None);
+        assert_eq!(resp.token_status, TokenStatus::Expired);
     }
 }

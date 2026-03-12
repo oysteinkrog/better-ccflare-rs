@@ -197,11 +197,17 @@ pub async fn proxy_handler(
     let selection_meta = if is_proxy_key {
         SelectionMeta {
             force_account_id: None,
+            force_account_strict: false,
             bypass_session: false,
         }
     } else {
+        let force_account_strict = headers
+            .get("x-better-ccflare-force-account-strict")
+            .and_then(|v| v.to_str().ok())
+            == Some("true");
         SelectionMeta {
             force_account_id: get_force_account_id(&headers),
+            force_account_strict,
             bypass_session: is_session_bypass(&headers),
         }
     };

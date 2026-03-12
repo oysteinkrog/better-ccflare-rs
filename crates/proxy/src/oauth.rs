@@ -175,7 +175,7 @@ pub async fn oauth_init(
 
 #[derive(Deserialize)]
 pub struct CallbackParams {
-    pub code: String,
+    pub code: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
 }
@@ -185,7 +185,11 @@ pub async fn oauth_callback(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CallbackParams>,
 ) -> Response {
-    match exchange_and_persist(&state, &params.code, params.state.as_deref()).await {
+    let Some(code) = params.code.as_deref() else {
+        return render_callback_page(false, "Invalid callback request");
+    };
+
+    match exchange_and_persist(&state, code, params.state.as_deref()).await {
         Ok(msg) => render_callback_page(true, &msg),
         Err(msg) => render_callback_page(false, &msg),
     }
@@ -339,19 +343,29 @@ async fn exchange_and_persist(
         warn!(error = %e, "Failed to get DB connection for token persistence");
         "Internal server error".to_string()
     })?;
-    conn.execute(
-        "UPDATE accounts SET access_token = ?1, expires_at = ?2, refresh_token = ?3 WHERE id = ?4",
-        rusqlite::params![
-            tokens.access_token,
-            tokens.expires_at,
-            tokens.refresh_token,
-            account_id
-        ],
+    account_repo::update_tokens(
+        &conn,
+        &account_id,
+        &tokens.access_token,
+        tokens.expires_at,
+        Some(tokens.refresh_token.as_str()),
     )
     .map_err(|e| {
         warn!(account_id = %account_id, error = %e, "Failed to persist OAuth tokens");
         "Internal server error".to_string()
     })?;
+
+    // Successful re-auth should immediately clear any stale auth/rate-limit markers
+    // so dashboard/API status reflects the new healthy token.
+    let _ = conn.execute(
+        "UPDATE accounts
+         SET rate_limit_status = NULL,
+             rate_limit_reset = NULL,
+             rate_limit_remaining = NULL,
+             rate_limited_until = NULL
+         WHERE id = ?1",
+        rusqlite::params![account_id],
+    );
 
     // Persist subscription tier if included in token response
     if let Some(ref tier) = tokens.subscription_tier {

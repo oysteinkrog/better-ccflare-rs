@@ -25,6 +25,8 @@ const RESET_DEBOUNCE_MS: i64 = 15_000;
 pub struct SelectionMeta {
     /// If set, force routing to this specific account id.
     pub force_account_id: Option<String>,
+    /// If true, a forced account should be the only routing candidate.
+    pub force_account_strict: bool,
     /// If true, skip session tracking (used for auto-refresh messages).
     pub bypass_session: bool,
 }
@@ -74,10 +76,41 @@ impl SessionStrategy {
     ) -> (Vec<Account>, Vec<SessionReset>) {
         let mut resets = Vec::new();
 
-        // Force-account: if header specifies an account, use only that one
+        // Force-account: prioritize the requested account first, but keep normal
+        // fallbacks enabled so a stale/expired forced account does not turn a
+        // healthy pool into an immediate 503.
         if let Some(ref forced_id) = meta.force_account_id {
             if let Some(account) = accounts.iter().find(|a| &a.id == forced_id) {
-                return (vec![account.clone()], resets);
+                if !is_account_available(account, usage, now) {
+                    if meta.force_account_strict {
+                        return (vec![], resets);
+                    }
+                    // Forced account is currently unavailable (paused/rate-limited/etc.),
+                    // so fall through to normal selection.
+                    // This keeps routing resilient when clients pin stale accounts.
+                } else {
+                    let mut chosen = account.clone();
+                    if !meta.bypass_session {
+                        if let Some(reset) = self.maybe_reset_session(&mut chosen, now) {
+                            resets.push(reset);
+                        }
+                    }
+
+                    if meta.force_account_strict {
+                        return (vec![chosen], resets);
+                    }
+
+                    let mut others: Vec<Account> = accounts
+                        .iter()
+                        .filter(|a| a.id != chosen.id && is_account_available(a, usage, now))
+                        .cloned()
+                        .collect();
+                    sort_accounts_usage_aware(&mut others, usage);
+
+                    let mut result = vec![chosen];
+                    result.extend(others);
+                    return (result, resets);
+                }
             }
             // Account not found — fall through to normal selection
         }
@@ -291,25 +324,18 @@ pub fn is_account_available(
         return false;
     }
     // Overage protection: hard-stop at 100% to prevent overage billing.
-    // Fail-closed: if usage data is missing/stale, treat as exhausted.
+    // Fail-open on missing usage data: avoid turning transient telemetry gaps
+    // into full routing outages. We still enforce overage once usage exists.
     if account.overage_protection {
         if let Some(info) = usage.get(&account.id) {
-            let at_overage = if info.windows.is_empty() {
-                !info.utilization_pct.is_finite() || info.utilization_pct >= 100.0
-            } else {
-                info.windows
-                    .iter()
-                    .any(|w| !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0)
-            };
-            if at_overage {
+            if is_at_overage(account, info) {
                 return false;
             }
         } else {
             warn!(
                 account = %account.name,
-                "Usage data unavailable, treating as exhausted (fail-closed overage protection)"
+                "Usage data unavailable, skipping overage gate for availability"
             );
-            return false;
         }
     }
     // Hard reserve: exclude account when any window hits its reserve threshold.
@@ -329,6 +355,38 @@ pub fn is_account_available(
         }
     }
     true
+}
+
+/// Whether an account should be considered overage-exhausted.
+///
+/// General rule: any window at 100% blocks routing when overage protection is on.
+///
+/// Anthropic nuance: `extra_usage` is represented as `WindowKind::Other`.
+/// That monthly budget should only block routing when the 5-hour window is
+/// also exhausted. This avoids false blocking when short-term capacity exists.
+fn is_at_overage(account: &Account, info: &RoutingUsageInfo) -> bool {
+    use bccf_core::types::WindowKind;
+
+    if info.windows.is_empty() {
+        return !info.utilization_pct.is_finite() || info.utilization_pct >= 100.0;
+    }
+
+    let is_anthropic_family = matches!(account.provider.as_str(), "anthropic" | "claude-oauth");
+    let five_hour_exhausted = info
+        .windows
+        .iter()
+        .any(|w| matches!(w.kind, WindowKind::FiveHour) && (!w.utilization_pct.is_finite() || w.utilization_pct >= 100.0));
+
+    info.windows.iter().any(|w| {
+        let saturated = !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0;
+        if !saturated {
+            return false;
+        }
+        if is_anthropic_family && matches!(w.kind, WindowKind::Other) {
+            return five_hour_exhausted;
+        }
+        true
+    })
 }
 
 /// Sort accounts for routing: primary key is priority, secondary key is
@@ -634,6 +692,25 @@ mod tests {
 
         let meta = SelectionMeta {
             force_account_id: Some("b".to_string()),
+            force_account_strict: false,
+            bypass_session: false,
+        };
+
+        let (result, _) = strategy.select(&[a, b], &no_usage(), &meta, NOW);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "b");
+        assert_eq!(result[1].id, "a");
+    }
+
+    #[test]
+    fn force_account_strict_uses_only_forced_account() {
+        let strategy = SessionStrategy::default();
+        let a = make_account("a", "zai", 1);
+        let b = make_account("b", "zai", 5);
+
+        let meta = SelectionMeta {
+            force_account_id: Some("b".to_string()),
+            force_account_strict: true,
             bypass_session: false,
         };
 
@@ -643,12 +720,31 @@ mod tests {
     }
 
     #[test]
+    fn force_account_unavailable_still_falls_back() {
+        let strategy = SessionStrategy::default();
+        let mut forced = make_account("forced", "zai", 1);
+        forced.rate_limited_until = Some(NOW + 60_000);
+        let fallback = make_account("fallback", "zai", 5);
+
+        let meta = SelectionMeta {
+            force_account_id: Some("forced".to_string()),
+            force_account_strict: false,
+            bypass_session: false,
+        };
+
+        let (result, _) = strategy.select(&[forced, fallback], &no_usage(), &meta, NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "fallback");
+    }
+
+    #[test]
     fn force_account_not_found_falls_through() {
         let strategy = SessionStrategy::default();
         let a = make_account("a", "zai", 1);
 
         let meta = SelectionMeta {
             force_account_id: Some("nonexistent".to_string()),
+            force_account_strict: false,
             bypass_session: false,
         };
 
@@ -723,6 +819,7 @@ mod tests {
 
         let meta = SelectionMeta {
             force_account_id: None,
+            force_account_strict: false,
             bypass_session: true,
         };
 
@@ -1153,12 +1250,12 @@ mod tests {
     }
 
     #[test]
-    fn overage_protection_no_usage_data_fails_closed() {
+    fn overage_protection_no_usage_data_fails_open() {
         let mut a = make_account("a", "anthropic", 1);
         a.overage_protection = true;
 
-        // Fail-closed: missing usage data with overage_protection → unavailable
-        assert!(!is_account_available(&a, &no_usage(), NOW));
+        // Missing usage data should not block routing availability.
+        assert!(is_account_available(&a, &no_usage(), NOW));
     }
 
     #[test]
@@ -1186,6 +1283,61 @@ mod tests {
                 },
                 WindowUsage {
                     kind: WindowKind::Weekly,
+                    utilization_pct: 100.0,
+                    resets_at_ms: None,
+                },
+            ]),
+        );
+
+        assert!(!is_account_available(&a, &usage, NOW));
+    }
+
+    #[test]
+    fn anthropic_other_window_does_not_block_without_five_hour_exhaustion() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "claude-oauth", 1);
+        a.overage_protection = true;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 42.0,
+                    resets_at_ms: None,
+                },
+                // Anthropic `extra_usage` lands in Other.
+                WindowUsage {
+                    kind: WindowKind::Other,
+                    utilization_pct: 100.0,
+                    resets_at_ms: None,
+                },
+            ]),
+        );
+
+        assert!(is_account_available(&a, &usage, NOW));
+    }
+
+    #[test]
+    fn anthropic_other_window_blocks_when_five_hour_is_exhausted() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "claude-oauth", 1);
+        a.overage_protection = true;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 100.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Other,
                     utilization_pct: 100.0,
                     resets_at_ms: None,
                 },
@@ -1228,9 +1380,10 @@ mod tests {
 
         let b = make_account("b", "zai", 2);
 
-        // a has overage_protection but no usage data → fail-closed, only b returned
+        // a has overage_protection but no usage data → fail-open, normal priority applies
         let (result, _) = strategy.select(&[a, b], &no_usage(), &default_meta(), NOW);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "b");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "a");
+        assert_eq!(result[1].id, "b");
     }
 }

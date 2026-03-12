@@ -166,6 +166,7 @@ async fn run(cli: Cli) -> Result<()> {
         refresh_source,
         server_config.port,
         server_config.tls_enabled,
+        std::env::var("DASHBOARD_API_KEY").ok(),
     );
 
     // Start token health monitoring service (periodic health checks every 6h)
@@ -244,6 +245,34 @@ impl RefreshAccountSource for DbRefreshSource {
         stmt.query_map([], |row| row.get::<_, String>(0))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
             .unwrap_or_default()
+    }
+
+    fn mark_auth_failed(&self, account_id: &str, http_status: u16) {
+        let Ok(conn) = self.pool.get() else { return };
+        let status_label = format!("Auth failed ({http_status})");
+        match bccf_database::repositories::account::update_rate_limit_meta(
+            &conn,
+            account_id,
+            &status_label,
+            None,
+            None,
+        ) {
+            Ok(()) => {
+                tracing::warn!(
+                    account_id = account_id,
+                    status = %status_label,
+                    "Persisted auth-failed status from auto-refresh"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    account_id = account_id,
+                    status = %status_label,
+                    error = %e,
+                    "Failed to persist auth-failed status from auto-refresh"
+                );
+            }
+        }
     }
 }
 
