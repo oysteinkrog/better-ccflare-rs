@@ -22,6 +22,20 @@ use bccf_providers::token_health::check_token_health;
 
 use crate::templates::*;
 
+/// Check whether a provider status string indicates upstream auth failure.
+fn is_auth_failure_status(status: Option<&str>) -> bool {
+    status.is_some_and(|s| {
+        let lowered = s.trim().to_ascii_lowercase();
+        lowered.starts_with("auth failed")
+            || lowered.starts_with("authentication failed")
+            || lowered.contains("unauthorized")
+            || lowered.contains("forbidden")
+            || lowered.contains("re-authentication")
+            || lowered.contains("reauth")
+            || lowered.contains("refresh token revoked")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Embedded static assets
 // ---------------------------------------------------------------------------
@@ -320,10 +334,7 @@ async fn accounts_table_partial(
         .map(|a| {
             let token_status_str = {
                 let health = check_token_health(a, now);
-                let auth_failed = a
-                    .rate_limit_status
-                    .as_deref()
-                    .is_some_and(|s| s.starts_with("Auth failed"));
+                let auth_failed = is_auth_failure_status(a.rate_limit_status.as_deref());
                 let token_expired = a.expires_at.is_none_or(|exp| exp <= now);
                 if health.requires_reauth || auth_failed || token_expired {
                     "expired".to_string()
@@ -380,6 +391,11 @@ async fn accounts_table_partial(
             } else {
                 Vec::new()
             };
+            let overage_blocked = overage_blocked_for_row(
+                &a.provider,
+                a.overage_protection,
+                &usage_windows,
+            );
 
             AccountRow {
                 id: a.id.clone(),
@@ -396,6 +412,7 @@ async fn accounts_table_partial(
                 paused: a.paused,
                 auto_fallback_enabled: a.auto_fallback_enabled,
                 token_status_str,
+                auth_failed: is_auth_failure_status(a.rate_limit_status.as_deref()),
                 rate_limit_status,
                 session_info,
                 request_count: a.request_count,
@@ -418,6 +435,7 @@ async fn accounts_table_partial(
                 subscription_tier: a.subscription_tier.clone(),
                 email: a.email.clone(),
                 overage_protection: a.overage_protection,
+                overage_blocked,
             }
         })
         .collect();
@@ -481,8 +499,8 @@ fn sort_account_rows(rows: &mut Vec<AccountRow>, sort: Option<&str>) {
             // Available (not paused, not rate-limited) accounts before unavailable ones.
             // Within each group, preserve priority order.
             rows.sort_by(|a, b| {
-                let a_ok = !a.paused && a.rate_limit_status == "OK";
-                let b_ok = !b.paused && b.rate_limit_status == "OK";
+                let a_ok = !a.paused && a.rate_limit_status == "OK" && !a.overage_blocked;
+                let b_ok = !b.paused && b.rate_limit_status == "OK" && !b.overage_blocked;
                 match (a_ok, b_ok) {
                     (true, false) => std::cmp::Ordering::Less,
                     (false, true) => std::cmp::Ordering::Greater,
@@ -529,7 +547,7 @@ fn lb_group(row: &AccountRow, now: i64) -> u8 {
     const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
     const RESET_DEBOUNCE_MS: i64 = 15_000;
 
-    let is_available = !row.paused && row.rate_limit_status == "OK";
+    let is_available = !row.paused && row.rate_limit_status == "OK" && !row.overage_blocked;
     let at_reserve = row.reserve_hard
         && max_usage_pct(row)
             .map(|p| {
@@ -612,6 +630,33 @@ fn max_usage_pct(row: &AccountRow) -> Option<i64> {
     }
 }
 
+/// Dashboard-side mirror of routing overage protection for status visibility.
+fn overage_blocked_for_row(
+    provider: &str,
+    overage_protection: bool,
+    windows: &[UsageWindowDisplay],
+) -> bool {
+    if !overage_protection {
+        return false;
+    }
+
+    let saturated = |w: &UsageWindowDisplay| w.pct >= 100;
+    let is_anthropic_family = matches!(provider, "anthropic" | "claude-oauth");
+    let five_hour_exhausted = windows
+        .iter()
+        .any(|w| w.label == "5-hour" && saturated(w));
+
+    windows.iter().any(|w| {
+        if !saturated(w) {
+            return false;
+        }
+        if is_anthropic_family && w.label == "Extra (Mo)" {
+            return five_hour_exhausted;
+        }
+        true
+    })
+}
+
 /// Build pool-level aggregate usage summary from all account rows.
 fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
     use std::collections::BTreeMap;
@@ -690,7 +735,7 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
     let total_accounts = rows.iter().filter(|r| !r.paused).count();
     let available_accounts = rows
         .iter()
-        .filter(|r| !r.paused && r.rate_limit_status == "OK")
+        .filter(|r| !r.paused && r.rate_limit_status == "OK" && !r.overage_blocked)
         .count();
 
     Some(PoolUsageSummary {
@@ -914,6 +959,7 @@ fn build_usage_windows(
                 ("seven_day", "Weekly"),
                 ("seven_day_opus", "Opus (Wk)"),
                 ("seven_day_sonnet", "Sonnet (Wk)"),
+                ("extra_usage", "Extra (Mo)"),
             ];
 
             for (key, label) in window_order {

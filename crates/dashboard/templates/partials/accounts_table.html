@@ -742,8 +742,16 @@
           {% if acct.is_next %}<span class="badge badge-primary" title="Load balancer will route the next request here">Next</span>{% endif %}
           {% if acct.paused %}
             <span class="badge badge-warning" title="Account is manually paused and will not receive requests">Paused</span>
+          {% else if acct.auth_failed %}
+            <span class="badge badge-danger" title="Upstream authentication failed (401/403). Re-authenticate this account to restore routing.">
+              Auth failed — re-auth required
+            </span>
           {% else if acct.rate_limit_status != "OK" %}
             <span class="badge badge-danger" title="Provider returned a rate limit error">{{ acct.rate_limit_status }}</span>
+          {% else if acct.overage_blocked %}
+            <span class="badge badge-warning" title="Excluded by overage protection: one or more billing windows are exhausted.">
+              Overage blocked
+            </span>
           {% else if acct.token_status_str == "valid" %}
             <span class="badge badge-success" title="Token is valid and account is ready">Active</span>
           {% else %}
@@ -904,6 +912,14 @@ function toggleMore(el) {
   el.textContent = showing ? 'More ›' : 'Less ‹';
 }
 
+function extractApiErrorMessage(payload, fallback) {
+  if (payload == null) return fallback || 'Unknown error';
+  if (typeof payload === 'string') return payload;
+  if (payload.error) return extractApiErrorMessage(payload.error, fallback);
+  if (payload.message && typeof payload.message === 'string') return payload.message;
+  try { return JSON.stringify(payload); } catch (_) { return fallback || 'Unknown error'; }
+}
+
 function apiPost(url, body) {
   return fetch(url, {
     method: 'POST',
@@ -928,13 +944,22 @@ function toggleOverageProtection(id, checked) {
 }
 
 function startReauth(id, name) {
-  fetch('/api/oauth/init/' + id, { method: 'POST' })
-    .then(function(r) { return r.json(); })
+  fetch('/api/oauth/init/' + id, {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+  })
+    .then(function(r) {
+      return r.json().then(function(data) {
+        if (!r.ok || data.error) {
+          throw new Error(extractApiErrorMessage(data, 'Failed to start re-authentication'));
+        }
+        return data;
+      });
+    })
     .then(function(data) {
-      if (data.error) { alert('Re-auth failed: ' + data.error); return; }
       if (data.url) { showReauthDialog(name, data.url); }
     })
-    .catch(function(e) { alert('Re-auth error: ' + e); });
+    .catch(function(e) { alert('Re-auth failed: ' + (e && e.message ? e.message : String(e))); });
 }
 
 function showReauthDialog(name, authUrl) {
@@ -1053,27 +1078,26 @@ function submitReauthCode() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({code: code})
   })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      return r.json().then(function(result) {
+        if (!r.ok || result.error) {
+          throw new Error(extractApiErrorMessage(result, 'Re-authentication failed'));
+        }
+        return result;
+      });
+    })
     .then(function(result) {
-      if (result.error) {
-        status.textContent = 'Error: ' + result.error;
+      status.textContent = result.message || 'Re-authenticated!';
+      status.style.color = 'var(--bccf-success, #22c55e)';
+      status.style.display = 'block';
+      setTimeout(function() { closeReauthDialog(); refreshAccounts(); }, 1500);
+    })
+    .catch(function(e) {
+      status.textContent = 'Error: ' + (e && e.message ? e.message : String(e));
         status.style.color = 'var(--bccf-danger, #ef4444)';
         status.style.display = 'block';
         btn.disabled = false;
         btn.textContent = 'Submit';
-      } else {
-        status.textContent = result.message || 'Re-authenticated!';
-        status.style.color = 'var(--bccf-success, #22c55e)';
-        status.style.display = 'block';
-        setTimeout(function() { closeReauthDialog(); refreshAccounts(); }, 1500);
-      }
-    })
-    .catch(function(e) {
-      status.textContent = 'Error: ' + e;
-      status.style.color = 'var(--bccf-danger, #ef4444)';
-      status.style.display = 'block';
-      btn.disabled = false;
-      btn.textContent = 'Submit';
     });
 }
 

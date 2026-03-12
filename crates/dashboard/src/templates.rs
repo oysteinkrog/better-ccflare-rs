@@ -209,6 +209,8 @@ pub struct AccountRow {
     pub paused: bool,
     pub auto_fallback_enabled: bool,
     pub token_status_str: String,
+    /// True when the latest provider status indicates auth failure (401/403/re-auth needed).
+    pub auth_failed: bool,
     pub rate_limit_status: String,
     pub session_info: String,
     pub request_count: i64,
@@ -242,6 +244,8 @@ pub struct AccountRow {
     pub email: Option<String>,
     /// Whether overage protection is enabled (skip account at 100% usage).
     pub overage_protection: bool,
+    /// Whether the account is currently excluded by overage protection.
+    pub overage_blocked: bool,
 }
 
 /// Aggregate pool usage summary shown above account cards.
