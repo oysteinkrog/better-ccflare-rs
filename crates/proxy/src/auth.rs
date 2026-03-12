@@ -1,7 +1,7 @@
 //! API key authentication middleware.
 //!
 //! Verifies requests against stored API key hashes using scrypt (with SHA-256 legacy fallback).
-//! Supports path-based exemptions for health, OAuth, and dashboard routes.
+//! Supports path-based exemptions for health, OAuth callback, and dashboard routes.
 //!
 //! Performance: scrypt verification is offloaded to `spawn_blocking` to avoid blocking
 //! the async runtime. Verified keys are cached for 5 minutes to avoid repeated scrypt
@@ -207,8 +207,7 @@ fn normalize_path(path: &str) -> String {
 ///
 /// Exempt paths:
 /// - `/health` — always exempt (monitoring probes)
-/// - `/api/oauth/*` — exempt (needed for OAuth account setup)
-/// - `/api/accounts/:id/reload` — exempt (server-to-server reauth)
+/// - `/api/oauth/callback` — exempt (third-party OAuth redirect target)
 /// - `/dashboard/assets/*` — exempt (CSS/JS/favicon needed before login)
 ///
 /// All other paths require authentication, including:
@@ -228,13 +227,9 @@ fn is_path_exempt(path: &str, _method: &str) -> bool {
         return true;
     }
 
-    // OAuth endpoints
-    if path.starts_with("/api/oauth") {
-        return true;
-    }
-
-    // Account reload (server-to-server reauth notifications)
-    if path.ends_with("/reload") && path.starts_with("/api/accounts/") {
+    // OAuth callback endpoint (must be reachable without API key because
+    // Anthropic redirects the browser here without custom auth headers).
+    if path == "/api/oauth/callback" {
         return true;
     }
 
@@ -617,13 +612,10 @@ mod tests {
 
     #[test]
     fn oauth_is_exempt() {
-        assert!(is_path_exempt("/api/oauth/init", "POST"));
-        assert!(is_path_exempt("/api/oauth/callback", "POST"));
-    }
-
-    #[test]
-    fn reload_is_exempt() {
-        assert!(is_path_exempt("/api/accounts/abc123/reload", "POST"));
+        assert!(is_path_exempt("/api/oauth/callback", "GET"));
+        assert!(!is_path_exempt("/api/oauth/init", "POST"));
+        assert!(!is_path_exempt("/api/oauth/complete", "POST"));
+        assert!(!is_path_exempt("/api/accounts/abc123/reload", "POST"));
     }
 
     #[test]
@@ -672,7 +664,7 @@ mod tests {
     fn double_slash_exempt_paths_still_work() {
         // Normalized exempt paths should still be exempt
         assert!(is_path_exempt("//health", "GET"));
-        assert!(is_path_exempt("//api/oauth/init", "POST"));
+        assert!(is_path_exempt("//api/oauth/callback", "GET"));
         assert!(is_path_exempt("//dashboard/assets/pico.min.css", "GET"));
     }
 

@@ -19,27 +19,9 @@ use bccf_database::DbPool;
 // ---------------------------------------------------------------------------
 
 /// GET /health — returns basic health status.
-pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let account_count = state.db_pool::<DbPool>().map_or(0, |pool| {
-        pool.get()
-            .ok()
-            .and_then(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .ok()
-            })
-            .unwrap_or(0)
-    });
-
-    let config = state.config();
-    let strategy = config.get_strategy().as_str();
-
+pub async fn health(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({
-        "status": "ok",
-        "accounts": account_count,
-        "timestamp": timestamp_iso(),
-        "strategy": strategy
+        "status": "ok"
     }))
 }
 

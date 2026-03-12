@@ -280,7 +280,7 @@ async fn health_returns_200() {
     let (status, body) = get_json(app, "/health").await;
     assert_eq!(status, 200);
     assert_eq!(body["status"], "ok");
-    assert!(body["accounts"].as_i64().unwrap() >= 2);
+    assert_eq!(body.as_object().map(|o| o.len()), Some(1));
 }
 
 #[tokio::test]
