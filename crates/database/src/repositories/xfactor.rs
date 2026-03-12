@@ -142,7 +142,7 @@ pub fn save_all_states(conn: &Connection, states: &[XFactorDbState]) -> Result<(
     }
     let tx = conn.unchecked_transaction()?;
     for state in states {
-        save_state(conn, state)?;
+        save_state(&tx, state)?;
     }
     tx.commit()?;
     Ok(())

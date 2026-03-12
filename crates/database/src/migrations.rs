@@ -8,6 +8,25 @@ use std::path::{Path, PathBuf};
 use crate::error::DbError;
 use crate::paths;
 
+/// Create a consistent standalone copy of a SQLite database using `VACUUM INTO`.
+///
+/// This is safe for WAL-mode databases — it reads the source through SQLite's
+/// pager, producing a self-contained snapshot without needing to copy WAL/SHM
+/// sidecar files.
+pub fn copy_db_consistent(source: &Path, target: &Path) -> Result<(), DbError> {
+    if target.exists() {
+        std::fs::remove_file(target)?;
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        source,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    conn.execute_batch("PRAGMA busy_timeout = 10000;")?;
+    let quoted = sql_quote_path(target);
+    conn.execute_batch(&format!("VACUUM INTO '{quoted}';"))?;
+    Ok(())
+}
+
 /// Copy legacy `~/.config/ccflare/ccflare.db` to the new location if it
 /// exists and the new database does not yet exist.
 pub fn migrate_from_legacy(db_path: &Path) -> Result<bool, DbError> {
@@ -29,21 +48,8 @@ pub fn migrate_from_legacy(db_path: &Path) -> Result<bool, DbError> {
     // Ensure target directory exists
     paths::ensure_db_dir(db_path)?;
 
-    // Copy main DB file
-    std::fs::copy(&legacy_path, db_path)?;
-
-    // Also copy WAL and SHM if present
-    let legacy_wal = legacy_path.with_extension("db-wal");
-    let legacy_shm = legacy_path.with_extension("db-shm");
-    let target_wal = db_path.with_extension("db-wal");
-    let target_shm = db_path.with_extension("db-shm");
-
-    if legacy_wal.exists() {
-        let _ = std::fs::copy(&legacy_wal, &target_wal);
-    }
-    if legacy_shm.exists() {
-        let _ = std::fs::copy(&legacy_shm, &target_shm);
-    }
+    // Create a consistent snapshot (safe with WAL) instead of raw file copy.
+    copy_db_consistent(&legacy_path, db_path)?;
 
     tracing::info!("Legacy database migration complete");
     Ok(true)
@@ -145,21 +151,8 @@ pub fn migrate_from_node_db(db_path: &Path) -> Result<bool, DbError> {
     // Create a timestamped backup of the Node DB (safety net)
     backup_existing_db(&node_path)?;
 
-    // Copy Node DB → RS DB
-    std::fs::copy(&node_path, db_path)?;
-
-    // Also copy WAL and SHM if present
-    let node_wal = node_path.with_extension("db-wal");
-    let node_shm = node_path.with_extension("db-shm");
-    let target_wal = db_path.with_extension("db-wal");
-    let target_shm = db_path.with_extension("db-shm");
-
-    if node_wal.exists() {
-        let _ = std::fs::copy(&node_wal, &target_wal);
-    }
-    if node_shm.exists() {
-        let _ = std::fs::copy(&node_shm, &target_shm);
-    }
+    // Create a consistent snapshot (safe with WAL) instead of raw file copy.
+    copy_db_consistent(&node_path, db_path)?;
 
     tracing::info!("Node database copy complete — RS version will auto-migrate schema");
     Ok(true)
@@ -418,6 +411,10 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
 
         if has_old_schema {
             tracing::info!("Restructuring request_payloads table (old → new schema)");
+            let old_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM request_payloads", [], |row| row.get(0),
+            ).unwrap_or(0);
+
             conn.execute_batch(
                 "
                 CREATE TABLE IF NOT EXISTS request_payloads_new (
@@ -429,7 +426,22 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
 
                 INSERT OR IGNORE INTO request_payloads_new (request_id, request_body, response_body)
                 SELECT id, json, NULL FROM request_payloads;
+                ",
+            )?;
 
+            let new_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM request_payloads_new", [], |row| row.get(0),
+            ).unwrap_or(0);
+            if new_count != old_count {
+                tracing::warn!(
+                    old_count, new_count,
+                    "request_payloads row count mismatch after INSERT OR IGNORE — {} rows silently dropped",
+                    old_count - new_count
+                );
+            }
+
+            conn.execute_batch(
+                "
                 DROP TABLE request_payloads;
                 ALTER TABLE request_payloads_new RENAME TO request_payloads;
                 ",
@@ -450,6 +462,10 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
 
         if has_old_schema {
             tracing::info!("Restructuring agent_preferences table (old → new schema)");
+            let old_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_preferences", [], |row| row.get(0),
+            ).unwrap_or(0);
+
             conn.execute_batch(
                 "
                 CREATE TABLE IF NOT EXISTS agent_preferences_new (
@@ -465,7 +481,22 @@ fn run_schema_migrations_impl(conn: &rusqlite::Connection) -> Result<(), DbError
 
                 INSERT OR IGNORE INTO agent_preferences_new (agent_id, preferred_model, updated_at, created_at)
                 SELECT agent_id, model, updated_at, updated_at FROM agent_preferences;
+                ",
+            )?;
 
+            let new_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_preferences_new", [], |row| row.get(0),
+            ).unwrap_or(0);
+            if new_count != old_count {
+                tracing::warn!(
+                    old_count, new_count,
+                    "agent_preferences row count mismatch after INSERT OR IGNORE — {} rows silently dropped",
+                    old_count - new_count
+                );
+            }
+
+            conn.execute_batch(
+                "
                 DROP TABLE agent_preferences;
                 ALTER TABLE agent_preferences_new RENAME TO agent_preferences;
                 ",
@@ -504,6 +535,43 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::schema::create_tables(&conn).unwrap();
         assert!(is_initialized(&conn));
+    }
+
+    #[test]
+    fn copy_db_consistent_creates_valid_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.db");
+        let target = dir.path().join("target.db");
+
+        // Create source DB with WAL mode and data
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL);
+            INSERT INTO t(v) VALUES ('consistent');
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        copy_db_consistent(&source, &target).unwrap();
+
+        // Target must exist and be a valid, self-contained DB
+        assert!(target.exists());
+        let target_conn = rusqlite::Connection::open(&target).unwrap();
+        let check: String = target_conn
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(check, "ok");
+        let v: String = target_conn
+            .query_row("SELECT v FROM t WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(v, "consistent");
+
+        // No WAL/SHM sidecars should exist for the target (VACUUM INTO creates standalone)
+        assert!(!target.with_extension("db-wal").exists());
+        assert!(!target.with_extension("db-shm").exists());
     }
 
     #[test]

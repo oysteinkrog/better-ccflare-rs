@@ -78,6 +78,9 @@ pub enum WriteOp {
 
     /// Bump API key usage counter + last_used timestamp.
     UpdateApiKeyUsage { api_key_id: String, timestamp: i64 },
+
+    /// Sentinel: tells the flush loop to drain remaining ops and exit.
+    Shutdown,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,26 +147,31 @@ impl AsyncDbWriter {
 
 /// Owns the background flush task. Drop or call [`WriterTask::shutdown`] to
 /// flush remaining ops and stop.
+///
+/// For a clean shutdown, callers should drop their `AsyncDbWriter` handles
+/// before calling `shutdown()` so the channel can close after the sentinel.
 pub struct WriterTask {
     handle: Option<JoinHandle<()>>,
     /// Kept alive so dropping `WriterTask` closes the channel, causing the
-    /// background loop to exit.
-    _tx: mpsc::Sender<WriteOp>,
+    /// background loop to exit. Wrapped in `Option` so `shutdown()` can drop
+    /// it eagerly after sending the sentinel.
+    _tx: Option<mpsc::Sender<WriteOp>>,
 }
 
 impl WriterTask {
-    /// Gracefully shut down: close the channel, flush remaining ops (with a
-    /// 3 s timeout), and join the background task.
+    /// Gracefully shut down: send a Shutdown sentinel, drop our sender clone,
+    /// then await the background task (with a timeout).
     pub async fn shutdown(mut self) {
         if let Some(handle) = self.handle.take() {
-            // Dropping `self` (including `self._tx`) at end of this method
-            // reduces sender count. The background loop exits when the receiver
-            // sees the channel close (all senders dropped). We give it
-            // SHUTDOWN_TIMEOUT to finish flushing.
-            //
-            // Note: the channel won't fully close until external `AsyncDbWriter`
-            // handles are also dropped. But the background task will still
-            // finish its current batch and exit when the JoinHandle completes.
+            // Send shutdown sentinel before dropping sender so the flush loop
+            // can exit deterministically even if other AsyncDbWriter clones
+            // are still alive.
+            if let Some(tx) = &self._tx {
+                let _ = tx.send(WriteOp::Shutdown).await;
+            }
+            // Drop our sender clone to reduce ref count.
+            drop(self._tx.take());
+
             match tokio::time::timeout(SHUTDOWN_TIMEOUT, handle).await {
                 Ok(Ok(())) => tracing::info!("Async DB writer shut down cleanly"),
                 Ok(Err(e)) => tracing::error!("Async DB writer task panicked: {e}"),
@@ -172,12 +180,13 @@ impl WriterTask {
                 }
             }
         }
-        // `self._tx` is dropped here, reducing the sender ref count.
     }
 }
 
 impl Drop for WriterTask {
     fn drop(&mut self) {
+        // Drop sender to close channel (if not already dropped by shutdown).
+        drop(self._tx.take());
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
@@ -203,7 +212,7 @@ pub fn spawn(pool: DbPool) -> (AsyncDbWriter, WriterTask) {
     };
     let task = WriterTask {
         handle: Some(handle),
-        _tx: tx2,
+        _tx: Some(tx2),
     };
     (writer, task)
 }
@@ -237,8 +246,11 @@ async fn flush_loop(mut rx: mpsc::Receiver<WriteOp>, pool: DbPool) {
         }
 
         if should_exit {
-            // Drain any remaining ops after channel close.
+            // Drain any remaining ops after channel close / shutdown sentinel.
             while let Ok(op) = rx.try_recv() {
+                if matches!(op, WriteOp::Shutdown) {
+                    continue; // skip additional sentinels
+                }
                 batch.push(op);
             }
             if !batch.is_empty() {
@@ -255,7 +267,7 @@ async fn flush_loop(mut rx: mpsc::Receiver<WriteOp>, pool: DbPool) {
 }
 
 /// Fill `batch` until it reaches `BATCH_SIZE` or the interval fires.
-/// Returns `true` if the channel is closed (signal to exit).
+/// Returns `true` if the channel is closed or a Shutdown sentinel is received.
 async fn fill_batch(
     rx: &mut mpsc::Receiver<WriteOp>,
     batch: &mut Vec<WriteOp>,
@@ -271,6 +283,7 @@ async fn fill_batch(
 
             maybe_op = rx.recv() => {
                 match maybe_op {
+                    Some(WriteOp::Shutdown) => return true, // sentinel — exit after draining
                     Some(op) => batch.push(op),
                     None => return true, // channel closed
                 }
@@ -288,10 +301,20 @@ async fn fill_batch(
 // ---------------------------------------------------------------------------
 
 fn flush_batch(batch: &[WriteOp], pool: &DbPool) {
-    let conn = match pool.get() {
+    let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Failed to get DB connection for flush: {e}");
+            return;
+        }
+    };
+
+    // RAII transaction — automatically rolls back if not committed.
+    // IMMEDIATE acquires the write lock upfront (avoids SQLITE_BUSY mid-batch).
+    let tx = match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::error!("Failed to begin transaction for flush: {e}");
             return;
         }
     };
@@ -300,12 +323,16 @@ fn flush_batch(batch: &[WriteOp], pool: &DbPool) {
     let mut err = 0usize;
 
     for op in batch {
-        if let Err(e) = execute_op(op, &conn) {
+        if let Err(e) = execute_op(op, &tx) {
             tracing::error!(op = ?std::mem::discriminant(op), error = %e, "DB write failed");
             err += 1;
         } else {
             ok += 1;
         }
+    }
+
+    if let Err(e) = tx.commit() {
+        tracing::error!("Failed to commit batch: {e}");
     }
 
     if err > 0 {
@@ -372,6 +399,8 @@ fn execute_op(op: &WriteOp, conn: &rusqlite::Connection) -> Result<(), crate::er
             api_key_id,
             timestamp,
         } => api_key::update_usage(conn, api_key_id, *timestamp),
+
+        WriteOp::Shutdown => Ok(()), // no-op — handled by flush_loop
     }
 }
 

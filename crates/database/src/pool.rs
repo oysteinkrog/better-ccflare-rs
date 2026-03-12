@@ -83,12 +83,43 @@ pub fn create_pool(db_path: &std::path::Path, config: &PoolConfig) -> Result<DbP
     let already_initialized = migrations::is_initialized(&conn);
 
     if already_initialized {
-        // Backup before potential schema changes
-        let _ = migrations::backup_existing_db(db_path);
+        // Backup before potential schema changes — fail-closed so we never
+        // migrate without a safety net.
+        migrations::backup_existing_db(db_path).map_err(|e| {
+            tracing::error!(error = %e, "Pre-migration backup failed — aborting");
+            e
+        })?;
     }
 
     schema::create_tables(&conn)?;
     migrations::run_schema_migrations(&conn)?;
+
+    // Post-migration FK integrity check — log violations loudly but don't
+    // block startup (the data is already in this state).
+    {
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let violations: Vec<String> = stmt
+            .query_map([], |row| {
+                Ok(format!(
+                    "table={}, rowid={}, parent={}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        if !violations.is_empty() {
+            tracing::error!(
+                count = violations.len(),
+                "Foreign key violations detected after migration"
+            );
+            for v in &violations {
+                tracing::error!("  FK violation: {v}");
+            }
+        }
+    }
+
     schema::create_indexes(&conn)?;
 
     // Enforce tight file permissions on the database file.
