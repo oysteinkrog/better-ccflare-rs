@@ -3,7 +3,7 @@
 //! On first run with an existing DB, creates a timestamped backup before
 //! applying schema. Also handles legacy ccflare.db detection and copy.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::DbError;
 use crate::paths;
@@ -49,10 +49,15 @@ pub fn migrate_from_legacy(db_path: &Path) -> Result<bool, DbError> {
     Ok(true)
 }
 
-/// Create a timestamped backup of an existing database file.
+fn sql_quote_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
+}
+
+/// Create a timestamped backup of an existing database file using a
+/// SQLite-consistent snapshot (`VACUUM INTO`), not a raw file copy.
 ///
 /// Returns the backup path if a backup was created.
-pub fn backup_existing_db(db_path: &Path) -> Result<Option<std::path::PathBuf>, DbError> {
+pub fn backup_existing_db(db_path: &Path) -> Result<Option<PathBuf>, DbError> {
     if !db_path.exists() {
         return Ok(None);
     }
@@ -70,8 +75,43 @@ pub fn backup_existing_db(db_path: &Path) -> Result<Option<std::path::PathBuf>, 
         "Creating database backup"
     );
 
-    std::fs::copy(db_path, &backup_path)?;
+    // Remove stale target if present (VACUUM INTO requires destination absent).
+    if backup_path.exists() {
+        std::fs::remove_file(&backup_path)?;
+    }
+
+    // Create a consistent snapshot (safe with WAL) instead of copying bytes.
+    let conn = rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.execute_batch("PRAGMA busy_timeout = 10000;")?;
+    let quoted = sql_quote_path(&backup_path);
+    conn.execute_batch(&format!("VACUUM INTO '{quoted}';"))?;
+
+    // Validate resulting backup early; fail here so callers can react/log.
+    let backup_conn = rusqlite::Connection::open_with_flags(
+        &backup_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let check: String = backup_conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    if check != "ok" {
+        return Err(DbError::migration(format!(
+            "Backup integrity check failed for {}: {}",
+            backup_path.display(),
+            check
+        )));
+    }
+
     Ok(Some(backup_path))
+}
+
+/// Verify database integrity on startup and fail fast on corruption.
+pub fn verify_integrity(conn: &rusqlite::Connection) -> Result<(), DbError> {
+    let check: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    if check == "ok" {
+        return Ok(());
+    }
+    Err(DbError::migration(format!(
+        "Database integrity check failed: {check}"
+    )))
 }
 
 /// Copy the Node/TS-era database to the RS location on first run.
@@ -476,13 +516,33 @@ mod tests {
     fn backup_existing_db_creates_file() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        fs::write(&db_path, b"test data").unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL);
+            INSERT INTO t(v) VALUES ('hello');
+            ",
+        )
+        .unwrap();
 
         let backup = backup_existing_db(&db_path).unwrap();
         assert!(backup.is_some());
         let backup_path = backup.unwrap();
         assert!(backup_path.exists());
         assert!(backup_path.to_string_lossy().contains(".bak."));
+
+        let backup_conn = rusqlite::Connection::open(&backup_path).unwrap();
+        let v: String = backup_conn
+            .query_row("SELECT v FROM t WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(v, "hello");
+    }
+
+    #[test]
+    fn verify_integrity_ok() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(id INTEGER PRIMARY KEY);").unwrap();
+        verify_integrity(&conn).unwrap();
     }
 
     #[test]

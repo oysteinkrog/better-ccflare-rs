@@ -1,7 +1,7 @@
 //! Connection pool and SQLite pragma configuration.
 //!
 //! Uses r2d2 for connection pooling. Each connection is initialized with
-//! WAL mode and performance pragmas matching the TypeScript implementation.
+//! WAL mode and durability-first pragmas.
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -34,18 +34,20 @@ impl Default for PoolConfig {
 
 /// Apply SQLite pragmas to a connection.
 ///
-/// These match the TypeScript implementation's `configurePragmas()`.
+/// Durability is favored over write throughput (`synchronous=FULL`) because
+/// the DB is a single source of truth for accounts and auth state.
 pub fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "
         PRAGMA journal_mode = WAL;
         PRAGMA busy_timeout = 10000;
         PRAGMA cache_size = -10000;
-        PRAGMA synchronous = NORMAL;
+        PRAGMA synchronous = FULL;
         PRAGMA mmap_size = 268435456;
         PRAGMA temp_store = MEMORY;
         PRAGMA foreign_keys = ON;
         PRAGMA wal_autocheckpoint = 1000;
+        PRAGMA checkpoint_fullfsync = ON;
         ",
     )?;
     Ok(())
@@ -77,6 +79,7 @@ pub fn create_pool(db_path: &std::path::Path, config: &PoolConfig) -> Result<DbP
 
     // Initialize schema on a fresh connection
     let conn = pool.get()?;
+    migrations::verify_integrity(&conn)?;
     let already_initialized = migrations::is_initialized(&conn);
 
     if already_initialized {
@@ -195,8 +198,8 @@ mod tests {
         let synchronous: i64 = conn
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .unwrap();
-        // synchronous=NORMAL is value 1
-        assert_eq!(synchronous, 1);
+        // synchronous=FULL is value 2
+        assert_eq!(synchronous, 2);
 
         let temp_store: i64 = conn
             .query_row("PRAGMA temp_store", [], |row| row.get(0))
