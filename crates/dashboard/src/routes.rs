@@ -36,6 +36,15 @@ fn is_auth_failure_status(status: Option<&str>) -> bool {
     })
 }
 
+/// Normalize epoch timestamps to milliseconds.
+fn normalize_epoch_millis(ts: i64) -> i64 {
+    if ts.abs() < 1_000_000_000_000 {
+        ts.saturating_mul(1000)
+    } else {
+        ts
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Embedded static assets
 // ---------------------------------------------------------------------------
@@ -332,18 +341,17 @@ async fn accounts_table_partial(
     let mut rows: Vec<AccountRow> = accounts
         .iter()
         .map(|a| {
-            let token_status_str = {
-                let health = check_token_health(a, now);
-                let auth_failed = is_auth_failure_status(a.rate_limit_status.as_deref());
-                let token_expired = a.expires_at.is_none_or(|exp| exp <= now);
-                if health.requires_reauth || auth_failed || token_expired {
-                    "expired".to_string()
-                } else {
-                    "valid".to_string()
-                }
+            let auth_failed = is_auth_failure_status(a.rate_limit_status.as_deref());
+            let health = check_token_health(a, now);
+            let token_expired = a.expires_at.is_some_and(|exp| exp <= now);
+            let token_status_str = if health.requires_reauth || auth_failed || token_expired {
+                "expired".to_string()
+            } else {
+                "valid".to_string()
             };
 
             let rate_limit_status = if let Some(until) = a.rate_limited_until {
+                let until = normalize_epoch_millis(until);
                 if until > now {
                     let minutes_left = ((until - now) as f64 / 60000.0).ceil() as i64;
                     format!("Rate limited ({minutes_left}m)")
@@ -391,11 +399,23 @@ async fn accounts_table_partial(
             } else {
                 Vec::new()
             };
-            let overage_blocked = overage_blocked_for_row(
-                &a.provider,
-                a.overage_protection,
-                &usage_windows,
+            let routing_state = evaluate_routing_state(a, &usage_map, has_usage, now);
+            let mut status_badges = build_account_status_badges(
+                a,
+                &routing_state,
+                &token_status_str,
+                auth_failed,
+                token_expired || health.requires_reauth,
+                &rate_limit_status,
             );
+            if status_badges.is_empty() {
+                status_badges.push(AccountStatusBadge {
+                    label: "Unknown state".to_string(),
+                    css_class: "muted".to_string(),
+                    title: "No state signals are available for this account".to_string(),
+                    blocks_routing: false,
+                });
+            }
 
             AccountRow {
                 id: a.id.clone(),
@@ -412,7 +432,7 @@ async fn accounts_table_partial(
                 paused: a.paused,
                 auto_fallback_enabled: a.auto_fallback_enabled,
                 token_status_str,
-                auth_failed: is_auth_failure_status(a.rate_limit_status.as_deref()),
+                auth_failed,
                 rate_limit_status,
                 session_info,
                 request_count: a.request_count,
@@ -435,7 +455,10 @@ async fn accounts_table_partial(
                 subscription_tier: a.subscription_tier.clone(),
                 email: a.email.clone(),
                 overage_protection: a.overage_protection,
-                overage_blocked,
+                overage_blocked: routing_state.overage_blocked,
+                status_badges,
+                routing_available: routing_state.routing_available,
+                soft_reserve_hit: routing_state.soft_reserve_hit,
             }
         })
         .collect();
@@ -498,14 +521,10 @@ fn sort_account_rows(rows: &mut Vec<AccountRow>, sort: Option<&str>) {
         Some("active-first") => {
             // Available (not paused, not rate-limited) accounts before unavailable ones.
             // Within each group, preserve priority order.
-            rows.sort_by(|a, b| {
-                let a_ok = !a.paused && a.rate_limit_status == "OK" && !a.overage_blocked;
-                let b_ok = !b.paused && b.rate_limit_status == "OK" && !b.overage_blocked;
-                match (a_ok, b_ok) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.priority.cmp(&b.priority),
-                }
+            rows.sort_by(|a, b| match (a.routing_available, b.routing_available) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.priority.cmp(&b.priority),
             });
         }
         Some("last-used") => {
@@ -547,16 +566,7 @@ fn lb_group(row: &AccountRow, now: i64) -> u8 {
     const SESSION_DURATION_MS: i64 = 5 * 60 * 60 * 1000;
     const RESET_DEBOUNCE_MS: i64 = 15_000;
 
-    let is_available = !row.paused && row.rate_limit_status == "OK" && !row.overage_blocked;
-    let at_reserve = row.reserve_hard
-        && max_usage_pct(row)
-            .map(|p| {
-                let threshold = row.reserve_5h.max(row.reserve_weekly);
-                threshold > 0 && p >= (100 - threshold).max(0)
-            })
-            .unwrap_or(false);
-
-    if !is_available || at_reserve {
+    if !row.routing_available {
         return 4; // unavailable / hard-excluded
     }
 
@@ -580,14 +590,7 @@ fn lb_group(row: &AccountRow, now: i64) -> u8 {
     }
 
     // Group 2/3: available, split by soft reserve
-    let soft_at_reserve = max_usage_pct(row)
-        .map(|p| {
-            let threshold = row.reserve_5h.max(row.reserve_weekly);
-            threshold > 0 && p >= (100 - threshold).max(0)
-        })
-        .unwrap_or(false);
-
-    if soft_at_reserve {
+    if row.soft_reserve_hit {
         3
     } else {
         2
@@ -630,31 +633,216 @@ fn max_usage_pct(row: &AccountRow) -> Option<i64> {
     }
 }
 
-/// Dashboard-side mirror of routing overage protection for status visibility.
-fn overage_blocked_for_row(
-    provider: &str,
-    overage_protection: bool,
-    windows: &[UsageWindowDisplay],
+#[derive(Debug, Clone, Default)]
+struct AccountRoutingState {
+    routing_available: bool,
+    overage_blocked: bool,
+    hard_reserve_blocked: bool,
+    soft_reserve_hit: bool,
+    usage_missing: bool,
+    active_rate_limit: bool,
+}
+
+/// Dashboard-side mirror of routing availability checks.
+fn evaluate_routing_state(
+    account: &bccf_core::types::Account,
+    usage: &std::collections::HashMap<String, bccf_core::types::RoutingUsageInfo>,
+    has_usage: bool,
+    now: i64,
+) -> AccountRoutingState {
+    let usage_info = usage.get(&account.id);
+    let usage_missing = has_usage && usage_info.is_none();
+    let has_reserves = account.reserve_5h > 0 || account.reserve_weekly > 0;
+    let active_rate_limit = account
+        .rate_limited_until
+        .is_some_and(|until| normalize_epoch_millis(until) >= now);
+    let auth_failed = is_auth_failure_status(account.rate_limit_status.as_deref());
+
+    let overage_blocked = if account.overage_protection {
+        usage_info
+            .map(|info| is_at_overage(account, info))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    let hard_reserve_missing_usage = account.reserve_hard && has_reserves && usage_info.is_none();
+    let hard_reserve_hit = account.reserve_hard && is_at_reserve(account, usage);
+    let hard_reserve_blocked = hard_reserve_missing_usage || hard_reserve_hit;
+    let soft_reserve_hit = !account.reserve_hard && is_at_reserve(account, usage);
+
+    let routing_available = !account.paused
+        && !auth_failed
+        && !active_rate_limit
+        && !overage_blocked
+        && !hard_reserve_blocked;
+
+    AccountRoutingState {
+        routing_available,
+        overage_blocked,
+        hard_reserve_blocked,
+        soft_reserve_hit,
+        usage_missing,
+        active_rate_limit,
+    }
+}
+
+/// Dashboard-side mirror of overage checks from the load balancer.
+fn is_at_overage(
+    account: &bccf_core::types::Account,
+    info: &bccf_core::types::RoutingUsageInfo,
 ) -> bool {
-    if !overage_protection {
-        return false;
+    use bccf_core::types::WindowKind;
+    let is_anthropic_family = matches!(account.provider.as_str(), "anthropic" | "claude-oauth");
+
+    if info.windows.is_empty() {
+        if is_anthropic_family {
+            return true;
+        }
+        return !info.utilization_pct.is_finite() || info.utilization_pct >= 100.0;
     }
 
-    let saturated = |w: &UsageWindowDisplay| w.pct >= 100;
-    let is_anthropic_family = matches!(provider, "anthropic" | "claude-oauth");
-    let five_hour_exhausted = windows
+    let five_hour_windows: Vec<_> = info
+        .windows
         .iter()
-        .any(|w| w.label == "5-hour" && saturated(w));
+        .filter(|w| matches!(w.kind, WindowKind::FiveHour))
+        .collect();
+    let five_hour_known = !five_hour_windows.is_empty();
+    let five_hour_exhausted = five_hour_windows
+        .iter()
+        .any(|w| !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0);
 
-    windows.iter().any(|w| {
-        if !saturated(w) {
+    info.windows.iter().any(|w| {
+        let saturated = !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0;
+        if !saturated {
             return false;
         }
-        if is_anthropic_family && w.label == "Extra (Mo)" {
+        if is_anthropic_family && matches!(w.kind, WindowKind::Other) {
+            if !five_hour_known {
+                return true;
+            }
             return five_hour_exhausted;
         }
         true
     })
+}
+
+fn build_account_status_badges(
+    account: &bccf_core::types::Account,
+    state: &AccountRoutingState,
+    token_status_str: &str,
+    auth_failed: bool,
+    token_needs_reauth: bool,
+    rate_limit_status_display: &str,
+) -> Vec<AccountStatusBadge> {
+    let mut badges = Vec::new();
+
+    if account.paused {
+        badges.push(AccountStatusBadge {
+            label: "Paused".to_string(),
+            css_class: "warning".to_string(),
+            title: "Account is manually paused and excluded from routing".to_string(),
+            blocks_routing: true,
+        });
+    }
+    if auth_failed {
+        badges.push(AccountStatusBadge {
+            label: "Auth failed".to_string(),
+            css_class: "danger".to_string(),
+            title: "Upstream authentication failed (401/403); re-authentication required"
+                .to_string(),
+            blocks_routing: true,
+        });
+    }
+    if state.active_rate_limit {
+        badges.push(AccountStatusBadge {
+            label: rate_limit_status_display.to_string(),
+            css_class: "danger".to_string(),
+            title: "Provider rate-limit window is active; account is excluded until reset"
+                .to_string(),
+            blocks_routing: true,
+        });
+    } else if !auth_failed && rate_limit_status_display != "OK" {
+        badges.push(AccountStatusBadge {
+            label: format!("Last upstream status: {rate_limit_status_display}"),
+            css_class: "muted".to_string(),
+            title: "Most recent upstream status captured for this account".to_string(),
+            blocks_routing: false,
+        });
+    }
+    if state.overage_blocked {
+        badges.push(AccountStatusBadge {
+            label: "Overage blocked".to_string(),
+            css_class: "warning".to_string(),
+            title: "Overage protection excluded this account because a billing window is exhausted"
+                .to_string(),
+            blocks_routing: true,
+        });
+    }
+    if state.hard_reserve_blocked {
+        badges.push(AccountStatusBadge {
+            label: "Hard reserve blocked".to_string(),
+            css_class: "warning".to_string(),
+            title: "Hard reserve policy excluded this account (threshold reached or usage data missing)"
+                .to_string(),
+            blocks_routing: true,
+        });
+    } else if state.soft_reserve_hit {
+        badges.push(AccountStatusBadge {
+            label: "Soft reserve active".to_string(),
+            css_class: "warning".to_string(),
+            title: "Reserve threshold reached; account is deprioritized but still routable"
+                .to_string(),
+            blocks_routing: false,
+        });
+    }
+    if token_status_str == "expired" || token_needs_reauth {
+        badges.push(AccountStatusBadge {
+            label: "Token needs re-auth".to_string(),
+            css_class: "muted".to_string(),
+            title: "OAuth token appears expired or near-expiry; refresh is recommended".to_string(),
+            blocks_routing: false,
+        });
+    }
+    if state.usage_missing && account.overage_protection {
+        badges.push(AccountStatusBadge {
+            label: "Usage missing (overage fail-open)".to_string(),
+            css_class: "muted".to_string(),
+            title: "Usage telemetry missing, so overage protection is temporarily not enforced"
+                .to_string(),
+            blocks_routing: false,
+        });
+    }
+    if state.usage_missing
+        && account.reserve_hard
+        && (account.reserve_5h > 0 || account.reserve_weekly > 0)
+    {
+        badges.push(AccountStatusBadge {
+            label: "Usage missing (hard reserve fail-closed)".to_string(),
+            css_class: "danger".to_string(),
+            title: "Usage telemetry missing while hard reserve is enabled; account is excluded"
+                .to_string(),
+            blocks_routing: true,
+        });
+    }
+    if !state.routing_available {
+        badges.push(AccountStatusBadge {
+            label: "Excluded from routing".to_string(),
+            css_class: "danger".to_string(),
+            title: "One or more blocking states prevent this account from being selected"
+                .to_string(),
+            blocks_routing: true,
+        });
+    } else {
+        badges.push(AccountStatusBadge {
+            label: "Routable".to_string(),
+            css_class: "success".to_string(),
+            title: "Account currently passes all routing availability checks".to_string(),
+            blocks_routing: false,
+        });
+    }
+
+    badges
 }
 
 /// Build pool-level aggregate usage summary from all account rows.
@@ -733,10 +921,7 @@ fn build_pool_summary(rows: &[AccountRow]) -> Option<PoolUsageSummary> {
     };
 
     let total_accounts = rows.iter().filter(|r| !r.paused).count();
-    let available_accounts = rows
-        .iter()
-        .filter(|r| !r.paused && r.rate_limit_status == "OK" && !r.overage_blocked)
-        .count();
+    let available_accounts = rows.iter().filter(|r| r.routing_available).count();
 
     Some(PoolUsageSummary {
         windows,
@@ -1041,17 +1226,11 @@ fn predict_next_account(
     let session_duration_ms: i64 = 5 * 60 * 60 * 1000; // 5 hours
 
     let is_available = |a: &bccf_core::types::Account| -> bool {
-        if a.paused {
-            return false;
-        }
-        if a.rate_limited_until.is_some_and(|until| until >= now) {
-            return false;
-        }
-        // Hard reserve: exclude if at/over threshold (per-window)
-        if a.reserve_hard && is_at_reserve(a, usage) {
-            return false;
-        }
-        true
+        let has_usage = matches!(
+            a.provider.as_str(),
+            "claude-oauth" | "anthropic" | "nanogpt" | "zai"
+        );
+        evaluate_routing_state(a, usage, has_usage, now).routing_available
     };
 
     // 1. Auto-fallback candidates (any provider, mirrors SessionStrategy::check_auto_fallback_accounts)
@@ -1663,9 +1842,11 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use bccf_core::config::Config;
+    use bccf_core::types::{Account, RoutingUsageInfo, WindowKind, WindowUsage};
     use bccf_core::AppStateBuilder;
     use bccf_database::pool::{create_memory_pool, PoolConfig};
     use http::Request;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     fn test_state() -> Arc<AppState> {
@@ -1867,5 +2048,99 @@ mod tests {
                 tab.slug
             );
         }
+    }
+
+    fn make_account(id: &str, provider: &str) -> Account {
+        Account {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: provider.to_string(),
+            api_key: None,
+            refresh_token: String::new(),
+            access_token: Some("access-token".to_string()),
+            expires_at: Some(9_999_999_999_999),
+            request_count: 0,
+            total_requests: 0,
+            last_used: None,
+            created_at: 0,
+            rate_limited_until: None,
+            session_start: None,
+            session_request_count: 0,
+            paused: false,
+            rate_limit_reset: None,
+            rate_limit_status: Some("OK".to_string()),
+            rate_limit_remaining: None,
+            priority: 1,
+            auto_fallback_enabled: true,
+            auto_refresh_enabled: true,
+            custom_endpoint: None,
+            model_mappings: None,
+            reserve_5h: 0,
+            reserve_weekly: 0,
+            reserve_hard: false,
+            subscription_tier: None,
+            email: None,
+            refresh_token_updated_at: None,
+            is_shared: false,
+            overage_protection: true,
+        }
+    }
+
+    fn usage_with_windows(
+        account_id: &str,
+        windows: Vec<WindowUsage>,
+    ) -> HashMap<String, RoutingUsageInfo> {
+        HashMap::from([(
+            account_id.to_string(),
+            RoutingUsageInfo {
+                utilization_pct: windows
+                    .iter()
+                    .map(|w| w.utilization_pct)
+                    .fold(0.0_f64, f64::max),
+                resets_at_ms: None,
+                windows,
+            },
+        )])
+    }
+
+    #[test]
+    fn routing_state_auth_failed_is_excluded() {
+        let mut account = make_account("a1", "claude-oauth");
+        account.rate_limit_status = Some("Auth failed (401)".to_string());
+        let usage = HashMap::new();
+
+        let state = evaluate_routing_state(&account, &usage, true, 1_000);
+        assert!(!state.routing_available);
+    }
+
+    #[test]
+    fn routing_state_hard_reserve_missing_usage_is_excluded() {
+        let mut account = make_account("a1", "claude-oauth");
+        account.reserve_hard = true;
+        account.reserve_5h = 20;
+        let usage = HashMap::new();
+
+        let state = evaluate_routing_state(&account, &usage, true, 1_000);
+        assert!(!state.routing_available);
+        assert!(state.hard_reserve_blocked);
+    }
+
+    #[test]
+    fn routing_state_soft_reserve_is_deprioritized_not_excluded() {
+        let mut account = make_account("a1", "claude-oauth");
+        account.reserve_hard = false;
+        account.reserve_5h = 20;
+        let usage = usage_with_windows(
+            "a1",
+            vec![WindowUsage {
+                kind: WindowKind::FiveHour,
+                utilization_pct: 85.0,
+                resets_at_ms: None,
+            }],
+        );
+
+        let state = evaluate_routing_state(&account, &usage, true, 1_000);
+        assert!(state.routing_available);
+        assert!(state.soft_reserve_hit);
     }
 }

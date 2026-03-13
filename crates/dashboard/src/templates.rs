@@ -199,6 +199,18 @@ pub struct UsageWindowDisplay {
 }
 
 /// A single account row in the accounts table partial.
+pub struct AccountStatusBadge {
+    /// Badge text shown in the account card.
+    pub label: String,
+    /// One of: success, warning, danger, muted, primary.
+    pub css_class: String,
+    /// Tooltip describing this state.
+    pub title: String,
+    /// Whether this state excludes the account from routing.
+    pub blocks_routing: bool,
+}
+
+/// A single account row in the accounts table partial.
 pub struct AccountRow {
     pub id: String,
     pub name: String,
@@ -246,6 +258,12 @@ pub struct AccountRow {
     pub overage_protection: bool,
     /// Whether the account is currently excluded by overage protection.
     pub overage_blocked: bool,
+    /// Full state/error/warning badges for this account.
+    pub status_badges: Vec<AccountStatusBadge>,
+    /// Whether this account is currently selectable by the load balancer.
+    pub routing_available: bool,
+    /// Whether this account is currently at/over a soft reserve threshold.
+    pub soft_reserve_hit: bool,
 }
 
 /// Aggregate pool usage summary shown above account cards.

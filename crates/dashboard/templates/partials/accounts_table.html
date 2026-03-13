@@ -740,23 +740,11 @@
                 onclick="startRename(this, this.dataset.acctId, this.dataset.acctName)">{{ acct.name }}</strong>
         <div class="acct-badges">
           {% if acct.is_next %}<span class="badge badge-primary" title="Load balancer will route the next request here">Next</span>{% endif %}
-          {% if acct.paused %}
-            <span class="badge badge-warning" title="Account is manually paused and will not receive requests">Paused</span>
-          {% else if acct.auth_failed %}
-            <span class="badge badge-danger" title="Upstream authentication failed (401/403). Re-authenticate this account to restore routing.">
-              Auth failed — re-auth required
+          {% for badge in acct.status_badges %}
+            <span class="badge badge-{{ badge.css_class }}" title="{{ badge.title }}{% if badge.blocks_routing %} (blocks routing){% endif %}">
+              {{ badge.label }}
             </span>
-          {% else if acct.rate_limit_status != "OK" %}
-            <span class="badge badge-danger" title="Provider returned a rate limit error">{{ acct.rate_limit_status }}</span>
-          {% else if acct.overage_blocked %}
-            <span class="badge badge-warning" title="Excluded by overage protection: one or more billing windows are exhausted.">
-              Overage blocked
-            </span>
-          {% else if acct.token_status_str == "valid" %}
-            <span class="badge badge-success" title="Token is valid and account is ready">Active</span>
-          {% else %}
-            <span class="badge badge-muted" title="Auth token has expired — re-authenticate to restore">Expired</span>
-          {% endif %}
+          {% endfor %}
           {% if let Some(tier) = acct.subscription_tier %}
             <span class="badge badge-tier" title="Anthropic subscription plan">{{ tier }}</span>
           {% endif %}
