@@ -1159,7 +1159,11 @@ fn build_usage_windows(
                                 .ok()
                                 .map(|dt| dt.timestamp_millis())
                         });
-                        let pct = util.round() as i64;
+                        // Anthropic may return utilization either as 0-1 fraction
+                        // (e.g. 1.0 = 100%) or as 0-100 percentage. Mirror the
+                        // load-balancer normalization so UI and routing agree.
+                        let normalized = if util < 2.0 { util * 100.0 } else { util };
+                        let pct = normalized.round() as i64;
                         windows.push(UsageWindowDisplay {
                             label: label.to_string(),
                             pct: pct.clamp(0, 100),
