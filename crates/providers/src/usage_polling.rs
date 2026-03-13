@@ -131,6 +131,20 @@ fn anthropic_representative_window(data: &AnthropicUsageData) -> Option<String> 
 fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo> {
     use bccf_core::types::{WindowKind, WindowUsage};
 
+    // Anthropic usage payloads can be either:
+    // - fractional mode: all utilizations in [0.0, 1.0]
+    // - percentage mode: utilizations in [0.0, 100.0]
+    // Detect mode once per payload to avoid misclassifying small percentage
+    // values (e.g. 1.0 meaning 1%) as 100%.
+    let fractional_mode = data
+        .values()
+        .filter_map(|v| v.get("utilization").and_then(|u| u.as_f64()))
+        .any(|u| u > 0.0)
+        && data
+            .values()
+            .filter_map(|v| v.get("utilization").and_then(|u| u.as_f64()))
+            .all(|u| u <= 1.0);
+
     let mut best_util: f64 = 0.0;
     let mut best_reset: Option<i64> = None;
     let mut windows = Vec::new();
@@ -146,8 +160,8 @@ fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo>
                         .map(|dt| dt.timestamp_millis())
                 });
 
-            // Normalise to 0-100
-            let pct = if util < 2.0 { util * 100.0 } else { util };
+            // Normalize to 0-100 based on detected payload mode.
+            let pct = if fractional_mode { util * 100.0 } else { util };
 
             // Map key to WindowKind
             let kind = match key.as_str() {
@@ -162,22 +176,15 @@ fn anthropic_routing_info(data: &AnthropicUsageData) -> Option<RoutingUsageInfo>
                 resets_at_ms: reset_ms,
             });
 
-            if util > best_util {
-                best_util = util;
+            if pct > best_util {
+                best_util = pct;
                 best_reset = reset_ms;
             }
         }
     }
 
-    // Normalise aggregate to 0-100
-    let pct = if best_util < 2.0 {
-        best_util * 100.0
-    } else {
-        best_util
-    };
-
     Some(RoutingUsageInfo {
-        utilization_pct: pct,
+        utilization_pct: best_util,
         resets_at_ms: best_reset,
         windows,
     })
@@ -906,6 +913,7 @@ async fn fetch_usage_for_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bccf_core::types::WindowKind;
 
     // -- Cache tests --------------------------------------------------------
 
@@ -1265,6 +1273,34 @@ mod tests {
         let info = AnyUsageData::Anthropic(data).routing_info().unwrap();
         assert!((info.utilization_pct - 42.5).abs() < 0.01);
         assert!(info.resets_at_ms.is_none());
+    }
+
+    #[test]
+    fn routing_info_anthropic_mixed_small_percentage_values() {
+        // Mixed payloads with values like 1.0 and 8.0 should be treated as
+        // percentages (not fractional mode).
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "five_hour".to_string(),
+            serde_json::json!({"utilization": 8.0}),
+        );
+        data.insert(
+            "seven_day".to_string(),
+            serde_json::json!({"utilization": 1.0}),
+        );
+        data.insert(
+            "extra_usage".to_string(),
+            serde_json::json!({"utilization": 100.0}),
+        );
+        let info = AnyUsageData::Anthropic(data).routing_info().unwrap();
+        assert!((info.utilization_pct - 100.0).abs() < 0.01);
+        let weekly = info
+            .windows
+            .iter()
+            .find(|w| matches!(w.kind, WindowKind::Weekly))
+            .map(|w| w.utilization_pct)
+            .unwrap();
+        assert!((weekly - 1.0).abs() < 0.01);
     }
 
     #[test]

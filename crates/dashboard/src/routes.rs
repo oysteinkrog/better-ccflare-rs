@@ -1137,6 +1137,15 @@ fn build_usage_windows(
 
     match &data {
         AnyUsageData::Anthropic(map) => {
+            let fractional_mode = map
+                .values()
+                .filter_map(|v| v.get("utilization").and_then(|u| u.as_f64()))
+                .any(|u| u > 0.0)
+                && map
+                    .values()
+                    .filter_map(|v| v.get("utilization").and_then(|u| u.as_f64()))
+                    .all(|u| u <= 1.0);
+
             // Show each known window from the Anthropic usage API.
             // The API returns utilization as a percentage (0-100).
             let window_order = [
@@ -1159,10 +1168,9 @@ fn build_usage_windows(
                                 .ok()
                                 .map(|dt| dt.timestamp_millis())
                         });
-                        // Anthropic may return utilization either as 0-1 fraction
-                        // (e.g. 1.0 = 100%) or as 0-100 percentage. Mirror the
-                        // load-balancer normalization so UI and routing agree.
-                        let normalized = if util < 2.0 { util * 100.0 } else { util };
+                        // Normalize exactly like routing parser to keep dashboard
+                        // percentages and balancer decisions consistent.
+                        let normalized = if fractional_mode { util * 100.0 } else { util };
                         let pct = normalized.round() as i64;
                         windows.push(UsageWindowDisplay {
                             label: label.to_string(),
