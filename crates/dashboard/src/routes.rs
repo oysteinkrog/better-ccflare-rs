@@ -399,6 +399,7 @@ async fn accounts_table_partial(
             } else {
                 Vec::new()
             };
+            let show_overage_control = should_show_overage_control(usage_cache, a);
             let routing_state = evaluate_routing_state(a, &usage_map, has_usage, now);
             let mut status_badges = build_account_status_badges(
                 a,
@@ -455,6 +456,7 @@ async fn accounts_table_partial(
                 subscription_tier: a.subscription_tier.clone(),
                 email: a.email.clone(),
                 overage_protection: a.overage_protection,
+                show_overage_control,
                 overage_blocked: routing_state.overage_blocked,
                 status_badges,
                 routing_available: routing_state.routing_available,
@@ -487,6 +489,29 @@ async fn accounts_table_partial(
             Html("<p>Error rendering accounts table</p>".to_string()).into_response()
         }
     }
+}
+
+fn should_show_overage_control(
+    cache: Option<&bccf_providers::UsageCache>,
+    account: &bccf_core::types::Account,
+) -> bool {
+    let is_anthropic_family = matches!(account.provider.as_str(), "anthropic" | "claude-oauth");
+    if !is_anthropic_family {
+        return matches!(account.provider.as_str(), "nanogpt" | "zai");
+    }
+    let Some(cache) = cache else {
+        return false;
+    };
+    let Some(data) = cache.get(&account.id) else {
+        return false;
+    };
+    let bccf_providers::usage_polling::AnyUsageData::Anthropic(map) = data else {
+        return false;
+    };
+    map.get("extra_usage")
+        .and_then(|v| v.get("is_enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Sort account rows according to the requested sort key.

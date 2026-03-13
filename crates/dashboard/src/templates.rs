@@ -256,6 +256,8 @@ pub struct AccountRow {
     pub email: Option<String>,
     /// Whether overage protection is enabled (skip account at 100% usage).
     pub overage_protection: bool,
+    /// Whether the UI should expose the overage-protection toggle.
+    pub show_overage_control: bool,
     /// Whether the account is currently excluded by overage protection.
     pub overage_blocked: bool,
     /// Full state/error/warning badges for this account.
