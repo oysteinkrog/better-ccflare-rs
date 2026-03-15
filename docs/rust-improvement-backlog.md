@@ -17,6 +17,26 @@ This document tracks engineering improvements for `better-ccflare-rs`, with prio
 - Added `normalize_epoch_millis()` in `core::account_eligibility`.
 - Consumers now reuse one implementation instead of duplicating sec/ms handling.
 
+## Coverage runbook (this repo)
+
+Use this exact command in this environment:
+
+```bash
+CC=/usr/bin/gcc CXX=/usr/bin/g++ RUSTFLAGS='-Clinker=/usr/bin/gcc' \
+cargo +nightly-2026-01-22-x86_64-unknown-linux-gnu llvm-cov --workspace --summary-only
+```
+
+Why this override is needed:
+- `.cargo/config.toml` forces `CC=/c/users/oystein/.local/bin/cc` (a local `zig cc` wrapper).
+- With `cargo llvm-cov`, that wrapper can fail linking `__llvm_profile_runtime`.
+- For coverage runs, forcing `gcc` avoids that linker/runtime mismatch.
+
+Current baseline (2026-03-15):
+- Total: `72.07% regions`, `74.01% functions`, `70.49% lines`.
+- Eligibility/routing core path is strong:
+  - `crates/core/src/account_eligibility.rs`: `95.47% lines`
+  - `crates/load-balancer/src/lib.rs`: `99.03% lines`
+
 ## High priority next
 
 1. Snapshot-test dashboard account cards
@@ -41,6 +61,27 @@ This document tracks engineering improvements for `better-ccflare-rs`, with prio
   - `rate_limited`
   - `recovered`
 - Goal: debug “out of the blue” incidents quickly.
+
+4. Coverage ROI: top 5 next test targets
+- 1) `crates/proxy/src/handlers/xfactor.rs` (0.00% lines)
+  - Add route-level tests for each endpoint outcome:
+  - empty state, valid state, malformed query/body, auth/permissions denied.
+- 2) `src/main.rs` (0.00% lines)
+  - Add smoke tests for CLI startup paths:
+  - `--help`, `--version`, invalid flag handling, basic argument wiring.
+- 3) `crates/dashboard/src/routes.rs` (27.78% lines)
+  - Add focused handler tests for untested tabs/actions:
+  - account actions, config updates, failed dependency responses.
+- 4) `crates/proxy/src/oauth.rs` (30.99% lines)
+  - Add integration-style tests for callback/session lifecycle:
+  - success path, state mismatch, session expiry, provider error propagation.
+- 5) `crates/proxy/src/handlers/analytics.rs` (49.44% lines)
+  - Add deterministic analytics tests:
+  - empty windows, mixed provider/account filters, percentile/aggregation edge cases.
+
+Expected impact:
+- These five files are both low-coverage and high operational value.
+- Bringing them to ~70% line coverage should materially lift workspace totals and reduce regression risk in known incident paths.
 
 ## Medium priority
 
