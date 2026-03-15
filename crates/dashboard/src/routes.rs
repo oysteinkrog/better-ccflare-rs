@@ -16,6 +16,10 @@ use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
 
+use bccf_core::account_eligibility::{
+    evaluate_account_eligibility, is_at_reserve as core_is_at_reserve, normalize_epoch_millis,
+    UpstreamStatus,
+};
 use bccf_core::AppState;
 use bccf_database::DbPool;
 use bccf_providers::token_health::check_token_health;
@@ -24,25 +28,7 @@ use crate::templates::*;
 
 /// Check whether a provider status string indicates upstream auth failure.
 fn is_auth_failure_status(status: Option<&str>) -> bool {
-    status.is_some_and(|s| {
-        let lowered = s.trim().to_ascii_lowercase();
-        lowered.starts_with("auth failed")
-            || lowered.starts_with("authentication failed")
-            || lowered.contains("unauthorized")
-            || lowered.contains("forbidden")
-            || lowered.contains("re-authentication")
-            || lowered.contains("reauth")
-            || lowered.contains("refresh token revoked")
-    })
-}
-
-/// Normalize epoch timestamps to milliseconds.
-fn normalize_epoch_millis(ts: i64) -> i64 {
-    if ts.abs() < 1_000_000_000_000 {
-        ts.saturating_mul(1000)
-    } else {
-        ts
-    }
+    UpstreamStatus::from_raw(status).is_auth_failure()
 }
 
 // ---------------------------------------------------------------------------
@@ -675,81 +661,17 @@ fn evaluate_routing_state(
     has_usage: bool,
     now: i64,
 ) -> AccountRoutingState {
-    let usage_info = usage.get(&account.id);
-    let usage_missing = has_usage && usage_info.is_none();
-    let has_reserves = account.reserve_5h > 0 || account.reserve_weekly > 0;
-    let active_rate_limit = account
-        .rate_limited_until
-        .is_some_and(|until| normalize_epoch_millis(until) >= now);
-    let auth_failed = is_auth_failure_status(account.rate_limit_status.as_deref());
-
-    let overage_blocked = if account.overage_protection {
-        usage_info
-            .map(|info| is_at_overage(account, info))
-            .unwrap_or(false)
-    } else {
-        false
-    };
-
-    let hard_reserve_missing_usage = account.reserve_hard && has_reserves && usage_info.is_none();
-    let hard_reserve_hit = account.reserve_hard && is_at_reserve(account, usage);
-    let hard_reserve_blocked = hard_reserve_missing_usage || hard_reserve_hit;
-    let soft_reserve_hit = !account.reserve_hard && is_at_reserve(account, usage);
-
-    let routing_available = !account.paused
-        && !auth_failed
-        && !active_rate_limit
-        && !overage_blocked
-        && !hard_reserve_blocked;
+    let eligibility = evaluate_account_eligibility(account, usage, now);
+    let usage_missing = has_usage && eligibility.usage_missing;
 
     AccountRoutingState {
-        routing_available,
-        overage_blocked,
-        hard_reserve_blocked,
-        soft_reserve_hit,
+        routing_available: eligibility.routable,
+        overage_blocked: eligibility.overage_blocked,
+        hard_reserve_blocked: eligibility.hard_reserve_blocked,
+        soft_reserve_hit: eligibility.soft_reserve_hit,
         usage_missing,
-        active_rate_limit,
+        active_rate_limit: eligibility.active_rate_limit,
     }
-}
-
-/// Dashboard-side mirror of overage checks from the load balancer.
-fn is_at_overage(
-    account: &bccf_core::types::Account,
-    info: &bccf_core::types::RoutingUsageInfo,
-) -> bool {
-    use bccf_core::types::WindowKind;
-    let is_anthropic_family = matches!(account.provider.as_str(), "anthropic" | "claude-oauth");
-
-    if info.windows.is_empty() {
-        if is_anthropic_family {
-            return true;
-        }
-        return !info.utilization_pct.is_finite() || info.utilization_pct >= 100.0;
-    }
-
-    let five_hour_windows: Vec<_> = info
-        .windows
-        .iter()
-        .filter(|w| matches!(w.kind, WindowKind::FiveHour))
-        .collect();
-    let five_hour_known = !five_hour_windows.is_empty();
-    let five_hour_exhausted = five_hour_windows
-        .iter()
-        .any(|w| !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0);
-
-    info.windows.iter().any(|w| {
-        let saturated = !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0;
-        if !saturated {
-            return false;
-        }
-        if is_anthropic_family && matches!(w.kind, WindowKind::Other) {
-            if !five_hour_known {
-                return true;
-            }
-            return five_hour_exhausted;
-        }
-        true
-    })
 }
 
 fn build_account_status_badges(
@@ -1331,35 +1253,7 @@ fn is_at_reserve(
     account: &bccf_core::types::Account,
     usage: &std::collections::HashMap<String, bccf_core::types::RoutingUsageInfo>,
 ) -> bool {
-    use bccf_core::types::WindowKind;
-
-    if account.reserve_5h <= 0 && account.reserve_weekly <= 0 {
-        return false;
-    }
-    let Some(info) = usage.get(&account.id) else {
-        return false;
-    };
-
-    if !info.windows.is_empty() {
-        for w in &info.windows {
-            let threshold = match w.kind {
-                WindowKind::FiveHour => account.reserve_5h,
-                WindowKind::Weekly => account.reserve_weekly,
-                WindowKind::Other => account.reserve_5h,
-            };
-            if threshold > 0 && w.utilization_pct >= (100 - threshold) as f64 {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Fallback: aggregate
-    let threshold = account.reserve_5h.max(account.reserve_weekly);
-    if threshold > 0 && info.utilization_pct >= (100 - threshold) as f64 {
-        return true;
-    }
-    false
+    core_is_at_reserve(account, usage)
 }
 
 /// CSS class for utilization percentage.

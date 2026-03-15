@@ -7,6 +7,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use bccf_core::account_eligibility::{
+    evaluate_account_eligibility, is_at_reserve as core_is_at_reserve,
+    normalize_epoch_millis as core_normalize_epoch_millis,
+};
 use bccf_core::constants::time;
 use bccf_core::providers::Provider;
 use bccf_core::types::{Account, RoutingUsageInfo};
@@ -19,6 +23,14 @@ use tracing::warn;
 /// reset nearly simultaneously — gives usage polling time to fetch fresh data
 /// before the load balancer starts routing to the "recovered" account.
 const RESET_DEBOUNCE_MS: i64 = 15_000;
+
+/// Normalize epoch timestamps to milliseconds.
+///
+/// Older/heterogeneous providers may emit rate-limit reset values in seconds.
+/// We accept both units and convert to ms for internal comparisons.
+fn normalize_epoch_millis(ts: i64) -> i64 {
+    core_normalize_epoch_millis(ts)
+}
 
 /// Metadata about an incoming request, used by the strategy to make routing decisions.
 #[derive(Debug, Clone, Default)]
@@ -235,7 +247,7 @@ impl SessionStrategy {
         let rate_limit_window_reset = account.provider == Provider::Anthropic.to_string()
             && account
                 .rate_limit_reset
-                .is_some_and(|reset| reset < now - RESET_DEBOUNCE_MS);
+                .is_some_and(|reset| normalize_epoch_millis(reset) < now - RESET_DEBOUNCE_MS);
 
         if fixed_duration_expired || rate_limit_window_reset {
             account.session_start = Some(now);
@@ -288,7 +300,7 @@ impl SessionStrategy {
                 // Check if the usage window has reset (works for all providers)
                 let window_reset = a
                     .rate_limit_reset
-                    .is_some_and(|reset| reset < now - RESET_DEBOUNCE_MS);
+                    .is_some_and(|reset| normalize_epoch_millis(reset) < now - RESET_DEBOUNCE_MS);
 
                 // Must pass full availability check (paused, rate-limited, hard reserve)
                 window_reset && is_account_available(a, usage, now)
@@ -317,76 +329,20 @@ pub fn is_account_available(
     usage: &HashMap<String, RoutingUsageInfo>,
     now: i64,
 ) -> bool {
-    if account.paused {
-        return false;
+    let eligibility = evaluate_account_eligibility(account, usage, now);
+    if eligibility.usage_missing_overage_fail_open {
+        warn!(
+            account = %account.name,
+            "Usage data unavailable, skipping overage gate for availability"
+        );
     }
-    if account.rate_limited_until.is_some_and(|until| until >= now) {
-        return false;
+    if eligibility.usage_missing_hard_reserve_fail_closed {
+        warn!(
+            account = %account.name,
+            "Usage data unavailable, treating as at hard reserve (fail-closed)"
+        );
     }
-    // Overage protection: hard-stop at 100% to prevent overage billing.
-    // Fail-open on missing usage data: avoid turning transient telemetry gaps
-    // into full routing outages. We still enforce overage once usage exists.
-    if account.overage_protection {
-        if let Some(info) = usage.get(&account.id) {
-            if is_at_overage(account, info) {
-                return false;
-            }
-        } else {
-            warn!(
-                account = %account.name,
-                "Usage data unavailable, skipping overage gate for availability"
-            );
-        }
-    }
-    // Hard reserve: exclude account when any window hits its reserve threshold.
-    // Fail-closed: if usage data is missing/stale and reserves are configured, skip.
-    if account.reserve_hard {
-        if (account.reserve_5h > 0 || account.reserve_weekly > 0)
-            && !usage.contains_key(&account.id)
-        {
-            warn!(
-                account = %account.name,
-                "Usage data unavailable, treating as at hard reserve (fail-closed)"
-            );
-            return false;
-        }
-        if is_at_reserve(account, usage) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Whether an account should be considered overage-exhausted.
-///
-/// General rule: any window at 100% blocks routing when overage protection is on.
-///
-/// Anthropic nuance: `extra_usage` is represented as `WindowKind::Other`.
-/// That monthly budget should only block routing when the 5-hour window is
-/// also exhausted. This avoids false blocking when short-term capacity exists.
-fn is_at_overage(account: &Account, info: &RoutingUsageInfo) -> bool {
-    use bccf_core::types::WindowKind;
-
-    if info.windows.is_empty() {
-        return !info.utilization_pct.is_finite() || info.utilization_pct >= 100.0;
-    }
-
-    let is_anthropic_family = matches!(account.provider.as_str(), "anthropic" | "claude-oauth");
-    let five_hour_exhausted = info
-        .windows
-        .iter()
-        .any(|w| matches!(w.kind, WindowKind::FiveHour) && (!w.utilization_pct.is_finite() || w.utilization_pct >= 100.0));
-
-    info.windows.iter().any(|w| {
-        let saturated = !w.utilization_pct.is_finite() || w.utilization_pct >= 100.0;
-        if !saturated {
-            return false;
-        }
-        if is_anthropic_family && matches!(w.kind, WindowKind::Other) {
-            return five_hour_exhausted;
-        }
-        true
-    })
+    eligibility.routable
 }
 
 /// Sort accounts for routing: primary key is priority, secondary key is
@@ -431,42 +387,7 @@ fn sort_accounts_usage_aware(accounts: &mut [Account], usage: &HashMap<String, R
 /// Returns `true` if any window exceeds its threshold.
 /// Returns `false` if no reserve is configured or no usage data is available.
 fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo>) -> bool {
-    use bccf_core::types::WindowKind;
-
-    if account.reserve_5h == 0 && account.reserve_weekly == 0 {
-        return false;
-    }
-    let Some(info) = usage.get(&account.id) else {
-        return false; // no data = assume under reserve
-    };
-
-    // Check per-window thresholds
-    if !info.windows.is_empty() {
-        for w in &info.windows {
-            let threshold = match w.kind {
-                WindowKind::FiveHour => account.reserve_5h,
-                WindowKind::Weekly => account.reserve_weekly,
-                WindowKind::Other => account.reserve_5h, // fallback to 5h for non-Anthropic
-            };
-            // Clamp to [0, 100]: reserve values >100 would produce negative target
-            // utilization, incorrectly marking every account as at-reserve.
-            let trigger_at = (100_i64.saturating_sub(threshold)).max(0) as f64;
-            if threshold > 0
-                && (!w.utilization_pct.is_finite() || w.utilization_pct >= trigger_at)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Fallback for accounts with no per-window data: use aggregate
-    let threshold = account.reserve_5h.max(account.reserve_weekly);
-    let trigger_at = (100_i64.saturating_sub(threshold)).max(0) as f64;
-    if threshold > 0 && (!info.utilization_pct.is_finite() || info.utilization_pct >= trigger_at) {
-        return true;
-    }
-    false
+    core_is_at_reserve(account, usage)
 }
 
 /// Check if a provider string requires session duration tracking.
@@ -557,6 +478,19 @@ mod tests {
         let strategy = SessionStrategy::default();
         let mut limited = make_account("limited", "zai", 1);
         limited.rate_limited_until = Some(NOW + 60_000); // Rate limited for 60 more seconds
+        let available = make_account("available", "zai", 5);
+
+        let (result, _) = strategy.select(&[limited, available], &no_usage(), &default_meta(), NOW);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "available");
+    }
+
+    #[test]
+    fn skip_rate_limited_accounts_when_until_is_seconds_epoch() {
+        let strategy = SessionStrategy::default();
+        let mut limited = make_account("limited", "zai", 1);
+        // Same instant as NOW+60s, but stored as epoch seconds.
+        limited.rate_limited_until = Some((NOW + 60_000) / 1000);
         let available = make_account("available", "zai", 5);
 
         let (result, _) = strategy.select(&[limited, available], &no_usage(), &default_meta(), NOW);
@@ -879,6 +813,14 @@ mod tests {
         let mut expired_rl = make_account("d", "zai", 1);
         expired_rl.rate_limited_until = Some(NOW - 1000);
         assert!(is_account_available(&expired_rl, &usage, NOW));
+    }
+
+    #[test]
+    fn auth_failed_status_excludes_account() {
+        let usage = no_usage();
+        let mut auth_failed = make_account("auth-failed", "claude-oauth", 1);
+        auth_failed.rate_limit_status = Some("Auth failed (401)".to_string());
+        assert!(!is_account_available(&auth_failed, &usage, NOW));
     }
 
     // -----------------------------------------------------------------------
@@ -1212,6 +1154,35 @@ mod tests {
         assert!(!is_at_reserve(&a, &usage));
     }
 
+    #[test]
+    fn per_window_anthropic_other_does_not_trigger_reserve_when_5h_not_exhausted() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "claude-oauth", 1);
+        a.reserve_5h = 25;
+        a.reserve_hard = true;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 0.0,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Other,
+                    utilization_pct: 100.0,
+                    resets_at_ms: None,
+                },
+            ]),
+        );
+
+        assert!(!is_at_reserve(&a, &usage));
+        assert!(is_account_available(&a, &usage, NOW));
+    }
+
     // -----------------------------------------------------------------------
     // Overage protection tests
     // -----------------------------------------------------------------------
@@ -1228,12 +1199,27 @@ mod tests {
     }
 
     #[test]
-    fn overage_protection_allows_under_100() {
+    fn overage_protection_allows_under_100_with_window_data() {
         let mut a = make_account("a", "anthropic", 1);
         a.overage_protection = true;
 
+        use bccf_core::types::{WindowKind, WindowUsage};
         let mut usage = HashMap::new();
-        usage.insert("a".to_string(), make_usage(99.9, None));
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![
+                WindowUsage {
+                    kind: WindowKind::FiveHour,
+                    utilization_pct: 99.9,
+                    resets_at_ms: None,
+                },
+                WindowUsage {
+                    kind: WindowKind::Other,
+                    utilization_pct: 10.0,
+                    resets_at_ms: None,
+                },
+            ]),
+        );
 
         assert!(is_account_available(&a, &usage, NOW));
     }
@@ -1254,7 +1240,14 @@ mod tests {
         let mut a = make_account("a", "anthropic", 1);
         a.overage_protection = true;
 
-        // Missing usage data should not block routing availability.
+        // Missing telemetry should not hard-stop routing.
+        assert!(is_account_available(&a, &no_usage(), NOW));
+    }
+
+    #[test]
+    fn overage_protection_no_usage_data_non_anthropic_still_fails_open() {
+        let mut a = make_account("a", "zai", 1);
+        a.overage_protection = true;
         assert!(is_account_available(&a, &no_usage(), NOW));
     }
 
@@ -1321,6 +1314,26 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_other_window_without_five_hour_data_blocks_fail_closed() {
+        use bccf_core::types::{WindowKind, WindowUsage};
+
+        let mut a = make_account("a", "claude-oauth", 1);
+        a.overage_protection = true;
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "a".to_string(),
+            make_usage_with_windows(vec![WindowUsage {
+                kind: WindowKind::Other,
+                utilization_pct: 100.0,
+                resets_at_ms: None,
+            }]),
+        );
+
+        assert!(!is_account_available(&a, &usage, NOW));
+    }
+
+    #[test]
     fn anthropic_other_window_blocks_when_five_hour_is_exhausted() {
         use bccf_core::types::{WindowKind, WindowUsage};
 
@@ -1373,17 +1386,16 @@ mod tests {
     }
 
     #[test]
-    fn overage_protection_skipped_in_select_when_no_usage() {
+    fn overage_protection_missing_usage_keeps_anthropic_eligible() {
         let strategy = SessionStrategy::default();
         let mut a = make_account("a", "anthropic", 1);
         a.overage_protection = true;
 
         let b = make_account("b", "zai", 2);
 
-        // a has overage_protection but no usage data → fail-open, normal priority applies
+        // Missing usage telemetry should not remove anthropic account from pool.
         let (result, _) = strategy.select(&[a, b], &no_usage(), &default_meta(), NOW);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "a");
-        assert_eq!(result[1].id, "b");
     }
 }

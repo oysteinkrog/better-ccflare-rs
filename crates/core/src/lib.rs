@@ -1,3 +1,4 @@
+pub mod account_eligibility;
 pub mod config;
 pub mod config_watcher;
 pub mod constants;
@@ -23,8 +24,8 @@ pub use events::{Event, TokenUsage, EVENT_BUS_CAPACITY};
 pub use logging::init_logging;
 pub use models::DEFAULT_AGENT_MODEL;
 pub use providers::{AccountMode, Provider};
-pub use redact::Redacted;
 pub use rate_limit::RpmTracker;
+pub use redact::Redacted;
 pub use state::{AppState, AppStateBuilder, EventBus};
 pub use types::{Account, StrategyName, DEFAULT_STRATEGY};
 pub use version::get_version;
