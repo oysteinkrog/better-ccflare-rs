@@ -247,6 +247,7 @@ pub fn is_at_reserve(account: &Account, usage: &HashMap<String, RoutingUsageInfo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::WindowUsage;
 
     fn make_account(id: &str, provider: &str) -> Account {
         Account {
@@ -311,5 +312,91 @@ mod tests {
         let e = evaluate_account_eligibility(&a, &usage, 1_000);
         assert!(!e.routable);
         assert!(e.blocked_by.contains(&AccountBlockReason::AuthFailed));
+    }
+
+    fn usage_info(windows: Vec<WindowUsage>) -> RoutingUsageInfo {
+        RoutingUsageInfo {
+            utilization_pct: windows
+                .iter()
+                .map(|w| w.utilization_pct)
+                .fold(0.0_f64, f64::max),
+            resets_at_ms: None,
+            windows,
+        }
+    }
+
+    #[test]
+    fn eligibility_blocks_active_rate_limit_seconds_epoch() {
+        let mut a = make_account("a", "claude-oauth");
+        a.rate_limited_until = Some(1_800); // seconds
+        let e = evaluate_account_eligibility(&a, &HashMap::new(), 1_700_000);
+        assert!(!e.routable);
+        assert!(e.blocked_by.contains(&AccountBlockReason::ActiveRateLimit));
+    }
+
+    #[test]
+    fn overage_ignores_other_when_five_hour_not_exhausted() {
+        let a = make_account("a", "claude-oauth");
+        let info = usage_info(vec![
+            WindowUsage {
+                kind: WindowKind::FiveHour,
+                utilization_pct: 42.0,
+                resets_at_ms: None,
+            },
+            WindowUsage {
+                kind: WindowKind::Other,
+                utilization_pct: 100.0,
+                resets_at_ms: None,
+            },
+        ]);
+        assert!(!is_at_overage(&a, &info));
+    }
+
+    #[test]
+    fn overage_blocks_other_when_five_hour_exhausted() {
+        let a = make_account("a", "claude-oauth");
+        let info = usage_info(vec![
+            WindowUsage {
+                kind: WindowKind::FiveHour,
+                utilization_pct: 100.0,
+                resets_at_ms: None,
+            },
+            WindowUsage {
+                kind: WindowKind::Other,
+                utilization_pct: 100.0,
+                resets_at_ms: None,
+            },
+        ]);
+        assert!(is_at_overage(&a, &info));
+    }
+
+    #[test]
+    fn hard_reserve_missing_usage_fails_closed() {
+        let mut a = make_account("a", "claude-oauth");
+        a.reserve_hard = true;
+        a.reserve_5h = 20;
+        let e = evaluate_account_eligibility(&a, &HashMap::new(), 1_000);
+        assert!(!e.routable);
+        assert!(e.hard_reserve_blocked);
+        assert!(e.usage_missing_hard_reserve_fail_closed);
+    }
+
+    #[test]
+    fn soft_reserve_is_routable_but_flagged() {
+        let mut a = make_account("a", "claude-oauth");
+        a.reserve_hard = false;
+        a.reserve_5h = 20;
+        let mut usage = HashMap::new();
+        usage.insert(
+            a.id.clone(),
+            usage_info(vec![WindowUsage {
+                kind: WindowKind::FiveHour,
+                utilization_pct: 85.0,
+                resets_at_ms: None,
+            }]),
+        );
+        let e = evaluate_account_eligibility(&a, &usage, 1_000);
+        assert!(e.routable);
+        assert!(e.soft_reserve_hit);
     }
 }
